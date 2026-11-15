@@ -228,9 +228,9 @@ branch protection, rulesets and CODEOWNERS are not enforced on this
 plan. Sentinel failures are visible but do not block a merge, and the
 agent works with the owner's GitHub credentials, so it technically has
 admin rights. Until the plan or visibility changes (ADR-022: after the
-repo goes public, rulesets, secret scanning, push protection, code
-scanning and private vulnerability reporting are enabled immediately, and
-this section is then revisited):
+repo went public on 2026-11-14, rulesets, secret scanning, push
+protection, code scanning and private vulnerability reporting were
+enabled immediately, and this section is then revisited):
 
 -   The owner merges only with the local `safemerge` fish function,
     which waits for Sentinel checks to pass and merges only the head
@@ -314,7 +314,8 @@ versions to PyPI's advisory API; no token is involved.
 on every push (#25). GitHub code scanning (CodeQL, SARIF uploads, the
 Security tab) isn't available while the repository is private: it needs a
 GitHub Code Security license, which needs a Team or Enterprise plan. It is
-free for public repositories, so ADR-022 enables it right after the flip.
+free for public repositories, so ADR-022 enabled it right after the flip
+(2026-11-14).
 
 Not covered (accepted gaps): vulnerabilities in our own code beyond
 ruff's `S` rules; malicious packages without a published advisory (only
