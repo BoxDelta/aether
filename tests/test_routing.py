@@ -22,7 +22,7 @@ from router.contract import (
     ProviderKind,
     ProviderUnavailable,
 )
-from router.hardware import UNKNOWN_GPU, GpuState, HardwareSnapshot, Headroom
+from router.hardware import HardwareSnapshot, Headroom
 from router.routing import (
     Candidate,
     NoRoute,
@@ -31,8 +31,8 @@ from router.routing import (
     Router,
     choose_route,
 )
+from tests.fakes import snapshot
 
-GIB = 1024**3
 ROOM = Headroom(True, "free VRAM 4096 MiB meets reserve 1536 MiB")
 NO_ROOM = Headroom(False, "free VRAM 512 MiB below reserve 1536 MiB")
 UNKNOWN = Headroom(False, "GPU state unknown")
@@ -393,11 +393,6 @@ class FakeProvider(Provider):
         if self.raise_on_check:
             raise RuntimeError("bug")
         return self.available
-
-
-def snapshot(free_gib: float | None) -> HardwareSnapshot:
-    gpu = UNKNOWN_GPU if free_gib is None else GpuState("nvml", 8 * GIB, int(free_gib * GIB), 10)
-    return HardwareSnapshot(gpu=gpu, ram_available_bytes=16 * GIB)
 
 
 class Probe:
