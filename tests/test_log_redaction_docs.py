@@ -8,7 +8,11 @@ from core.config import Settings
 
 
 def _settings_read_by_secrets_from() -> set[str]:
-    """Settings fields ``secrets_from()`` reads, as their environment variable names."""
+    """Settings fields ``secrets_from()`` reads, as their environment variable names.
+
+    Catches direct ``settings.<field>`` reads, the style ``secrets_from()`` uses. A read
+    through ``getattr``, an alias or a helper would not be seen; keep the direct style.
+    """
     tree = ast.parse(inspect.getsource(log.secrets_from))
     fields = {
         node.attr
@@ -39,3 +43,11 @@ def test_every_key_pattern_is_documented() -> None:
     for fragment, wording in documented.items():
         assert any(fragment in p.pattern for p in log._KEY_PATTERNS), fragment
         assert wording in doc, f"core/log.py docstring does not mention {wording}"
+
+
+def test_documented_lengths_match_the_code() -> None:
+    doc = log.__doc__ or ""
+    assert f"``MIN_SECRET_LENGTH`` ({log.MIN_SECRET_LENGTH} characters)" in doc
+    # Both key patterns require 8+ characters after their prefix.
+    assert all("{8,}" in p.pattern for p in log._KEY_PATTERNS)
+    assert "8+ characters" in doc
