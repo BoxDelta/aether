@@ -90,6 +90,14 @@ confidence is not a substitute for authorization.
     password in any `scheme://user:password@host` URL, configured or not
     (`core/log.py`). Database errors are reported from safe parts only
     (`core/db.py`, ADR-020).
+-   The Claude client takes its key and endpoint only from AETHER's
+    settings: `router/claude.py` passes the API key, `auth_token=None` and
+    the fixed base URL `https://api.anthropic.com` explicitly, so a stray
+    `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` or credentials profile in
+    the environment cannot redirect the key and prompts (checked against
+    anthropic 2.8.0; tested). **Known limitation:** the SDK still merges
+    `ANTHROPIC_CUSTOM_HEADERS` from the environment into request headers;
+    it cannot change the host. Tracked in #18.
 -   Events hold metadata only: IDs, privacy level, route decision and
     reason, scrubbed error type/message, latency, token counts. They never
     hold prompts, answers, memory content, secrets or tracebacks. This is

@@ -5,6 +5,13 @@ Uses the official ``anthropic`` SDK. Design points:
 - The API key comes only from ``Settings`` (``ANTHROPIC_API_KEY``). Without it no
   client is built, so the SDK never falls back to other credential sources
   (``ant auth`` profiles, other env vars) behind AETHER's back.
+- The endpoint is fixed (#9): ``base_url`` is always ``ANTHROPIC_API_BASE_URL`` and
+  ``auth_token`` is always ``None``. Checked against anthropic 2.8.0: without an
+  explicit ``base_url`` the SDK reads ``ANTHROPIC_BASE_URL`` from the environment,
+  so a stray variable would send the key and prompts to another host. With an
+  explicit ``api_key`` it does not read ``ANTHROPIC_API_KEY``,
+  ``ANTHROPIC_AUTH_TOKEN`` or profiles. It still merges ``ANTHROPIC_CUSTOM_HEADERS``
+  into request headers; that does not change the host (docs/05 §5, #18).
 - Server-side refusal fallback is on (``fallbacks="default"``): if the model
   declines, the API re-runs the request on Anthropic's recommended fallback model
   inside the same call. If the whole chain declines, the response has
@@ -51,6 +58,10 @@ PROVIDER_NAME = "claude"
 
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
+# The only endpoint AETHER talks to (#9). Not configurable, and never taken from the
+# environment.
+ANTHROPIC_API_BASE_URL = "https://api.anthropic.com"
+
 
 _FINISH_REASONS: dict[str, FinishReason] = {
     "end_turn": "stop",
@@ -89,6 +100,10 @@ class ClaudeProvider(Provider):
         if api_key is not None:
             self._client = AsyncAnthropic(
                 api_key=api_key.get_secret_value(),
+                # Explicit, so the SDK never reads ANTHROPIC_BASE_URL or
+                # ANTHROPIC_AUTH_TOKEN from the environment (#9).
+                auth_token=None,
+                base_url=ANTHROPIC_API_BASE_URL,
                 max_retries=max_retries,
                 http_client=http_client,
             )

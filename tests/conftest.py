@@ -9,6 +9,8 @@ from core.log import QUIET_LOGGERS
 ENV_VARS = (
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_MODEL",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
     "OLLAMA_HOST",
     "OLLAMA_MODEL",
     "LOG_LEVEL",
