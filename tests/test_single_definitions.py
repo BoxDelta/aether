@@ -28,17 +28,24 @@ def _sources() -> list[Path]:
     return sorted(p for d in ("core", "router") for p in (ROOT / d).rglob("*.py"))
 
 
+def _assigned_names(tree: ast.AST) -> set[str]:
+    """Names bound by ``X = ...``, ``X: T = ...`` and ``type X = ...`` statements."""
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+        elif isinstance(node, ast.TypeAlias) and isinstance(node.name, ast.Name):
+            names.add(node.name.id)
+    return names
+
+
 def test_one_definition_each() -> None:
     for path in _sources():
         rel = path.relative_to(ROOT).as_posix()
         tree = ast.parse(path.read_text())
-        assigned = {
-            target.id
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Assign)
-            for target in node.targets
-            if isinstance(target, ast.Name)
-        }
+        assigned = _assigned_names(tree)
         for name, home in DEFINITIONS.items():
             if rel != home:
                 assert name not in assigned, f"{rel} redefines {name}; import it from {home}"
@@ -59,7 +66,8 @@ def test_migration_keeps_frozen_copies() -> None:
 
 @pytest.mark.parametrize(
     "value",
-    ["abc-123", "a.b_c", "x" * 128, "x" * 129, "", "bad id", "new\nline", "é", "a/b"],
+    # "abc\n": the one input where Python's re treats ^...$ and fullmatch differently.
+    ["abc-123", "a.b_c", "x" * 128, "x" * 129, "", "bad id", "new\nline", "abc\n", "é", "a/b"],
 )
 def test_middleware_and_event_model_agree_on_ids(value: str) -> None:
     adapter = TypeAdapter(request_context.SafeId)
