@@ -65,10 +65,11 @@ TRUSTED_CATEGORIES: frozenset[HostCategory] = frozenset(_TRUSTED_NETWORKS)
 def classify_host(host_url: str) -> HostCategory:
     """Category of the host in an Ollama URL, from its text only (no DNS lookup).
 
-    Only ``localhost`` counts as a trusted name; every other name is ``hostname``.
+    Only the exact name ``localhost`` counts as trusted (not ``localhost.``); every
+    other name is ``hostname``. ``localhost`` is still resolved by the OS on connect.
     IPv4-mapped IPv6 and other forms outside the listed ranges are ``other_ip``.
     """
-    host = httpx.URL(host_url).host.lower().rstrip(".")
+    host = httpx.URL(host_url).host.lower()
     if host == "localhost":
         return "loopback"
     try:
@@ -119,6 +120,12 @@ class OllamaProvider(Provider):
             )
         client_kwargs: dict[str, Any] = {
             "timeout": httpx.Timeout(None, connect=CONNECT_TIMEOUT_S),
+            # Host trust (#10) is checked on the configured URL only, so the client must
+            # not go anywhere else: no redirects (the SDK defaults to following them,
+            # which would re-send a Sensitive body to the redirect target) and no
+            # proxies from HTTP_PROXY/HTTPS_PROXY/ALL_PROXY.
+            "follow_redirects": False,
+            "trust_env": False,
         }
         if transport is not None:
             client_kwargs["transport"] = transport  # tests inject httpx.MockTransport

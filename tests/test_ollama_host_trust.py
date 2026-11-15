@@ -11,7 +11,13 @@ from pydantic import AnyHttpUrl
 
 from core.config import Settings
 from core.identity import Identity, load_identity
-from router.contract import Message, ModelRequest, PrivacyLevel, PrivacyNotAllowed
+from router.contract import (
+    Message,
+    ModelRequest,
+    PrivacyLevel,
+    PrivacyNotAllowed,
+    ProviderBadResponse,
+)
 from router.hardware import GpuState, HardwareSnapshot
 from router.ollama import OllamaProvider, classify_host
 from router.routing import NoRoute, RouteOptions, Router
@@ -52,7 +58,8 @@ def request(privacy: PrivacyLevel) -> ModelRequest:
     ("host", "category"),
     [
         ("http://localhost:11434", "loopback"),
-        ("http://LOCALHOST.:11434", "loopback"),
+        ("http://LOCALHOST:11434", "loopback"),
+        ("http://localhost.:11434", "hostname"),  # only the exact name is trusted
         ("http://127.0.0.1:11434", "loopback"),
         ("http://127.8.9.10:11434", "loopback"),
         ("http://[::1]:11434", "loopback"),
@@ -151,6 +158,53 @@ def test_opt_in_trusts_another_host(caplog: pytest.LogCaptureFixture) -> None:
     [record] = caplog.records
     assert record.__dict__["host_category"] == "other_ip"
     assert "100.64.0.1" not in str(record.__dict__)
+
+
+def test_redirect_is_not_followed() -> None:
+    seen: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(307, headers={"location": "https://collector.example.net/api/chat"})
+
+    p = OllamaProvider("http://127.0.0.1:11434", MODEL, transport=httpx.MockTransport(respond))
+
+    with pytest.raises(ProviderBadResponse):
+        asyncio.run(p.generate(request("sensitive")))
+    assert [str(q.url.host) for q in seen] == ["127.0.0.1"]
+
+
+def test_client_ignores_proxy_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.example.net:3128")
+    monkeypatch.setenv("ALL_PROXY", "http://proxy.example.net:3128")
+
+    p = OllamaProvider("http://127.0.0.1:11434", MODEL)
+
+    inner = p._client._client
+    assert inner.trust_env is False
+    assert inner.follow_redirects is False
+
+
+@pytest.mark.parametrize(
+    ("raw", "host", "category"),
+    [
+        ("http://127.1:11434", "127.0.0.1", "loopback"),
+        ("http://2130706433:11434", "127.0.0.1", "loopback"),
+        ("http://0x7f.0.0.1:11434", "127.0.0.1", "loopback"),
+        ("http://127.0.0.1.:11434", "127.0.0.1", "loopback"),
+        ("http://LOCALHOST:11434", "localhost", "loopback"),
+        ("http://localhost.:11434", "localhost.", "hostname"),
+        ("http://[::1]:11434", "::1", "loopback"),
+        (f"https://{UNTRUSTED_HOST_MARKER}", UNTRUSTED_HOST_MARKER, "hostname"),
+    ],
+)
+def test_classifier_and_client_see_the_same_host(raw: str, host: str, category: str) -> None:
+    # Production input goes through AnyHttpUrl, which normalises odd IPv4 spellings;
+    # the classifier and the SDK must agree on the normalised host.
+    p = OllamaProvider.from_settings(Settings(_env_file=None, ollama_host=AnyHttpUrl(raw)))
+
+    assert p.host_category == category
+    assert p._client._client.base_url.host == host
 
 
 # --- settings ----------------------------------------------------------------------

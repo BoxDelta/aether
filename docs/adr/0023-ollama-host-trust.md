@@ -15,8 +15,12 @@ by class, wherever `OLLAMA_HOST` pointed. A remote or https
 
 1.  The Ollama provider may receive Sensitive content only when
     `OLLAMA_HOST` is trusted. Trust is decided from the URL text alone;
-    DNS is never resolved (a name could resolve differently later).
-2.  Trusted: `localhost`, and IP literals in 127.0.0.0/8, ::1,
+    the classifier never resolves DNS (a name could resolve differently
+    later). The Ollama HTTP client follows no redirects and ignores proxy
+    environment variables, so requests go only to the host that was
+    checked.
+2.  Trusted: the exact name `localhost` (not `localhost.`), and IP
+    literals in 127.0.0.0/8, ::1,
     10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 and link-local
     (169.254.0.0/16, fe80::/10). Everything else is untrusted: other
     names, public IPs, CGNAT/overlay ranges such as 100.64.0.0/10, IPv6
@@ -31,7 +35,7 @@ by class, wherever `OLLAMA_HOST` pointed. A remote or https
     logs a warning (category only) that the opt-in is active.
 5.  The provider stays `kind="local"`, so routing rules are unchanged:
     a Personal request can still go to an untrusted Ollama host without
-    `allow_cloud`.
+    `allow_cloud` (#22).
 
 Options considered: resolving DNS and checking the addresses (rejected:
 DNS can change after startup, and a lookup is itself a leak); refusing
@@ -46,11 +50,12 @@ setup for Public and Personal use); treating an untrusted host as
     not only for which adapter is used. Tested.
 -   Harder: an owner with a remote GPU over an overlay network must set
     the opt-in to keep Sensitive requests working.
--   Risks: a private-range address is trusted even if it belongs to a
+-   Risks: `localhost` is trusted by name and resolved by the OS when
+    the client connects. A private-range address is trusted even if it belongs to a
     network the owner doesn't control (for example public Wi-Fi). The
     opt-in trusts the host the owner names, with no further check.
     Personal data still goes to an untrusted Ollama host without
-    `allow_cloud`.
+    `allow_cloud` (#22).
 
 ## Revisit when
 
