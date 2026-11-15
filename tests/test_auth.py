@@ -22,7 +22,8 @@ from core.log import REDACTED, Redactor, configure_logging, secrets_from
 from core.request_context import REQUEST_ID_HEADER
 from router.contract import ProviderUnavailable
 from router.routing import Router
-from tests.test_chat import ANSWER, PROMPT, Fake, MemoryWriter, snapshot
+from tests.chat_helpers import ANSWER, PROMPT, USAGE
+from tests.fakes import FakeProvider, MemoryWriter, snapshot
 
 TOKEN = "fake-api-token-auth-tests-0123456789abcdef"  # noqa: S105  # gitleaks:allow
 WRONG = "fake-api-token-auth-WRONG-0123456789abcdef"  # gitleaks:allow
@@ -38,7 +39,7 @@ class App:
         # Capture logging before create_app so startup warnings are seen.
         configure_logging(self.settings, stream=self.log)
         identity = load_identity()
-        self.local = Fake("ollama", "local", error=local_error)
+        self.local = FakeProvider("ollama", "local", error=local_error, answer=ANSWER, usage=USAGE)
         self.writer = MemoryWriter(Redactor(secrets_from(self.settings)))
         self.app = create_app(
             self.settings,
