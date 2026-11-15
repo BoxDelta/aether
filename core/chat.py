@@ -24,7 +24,7 @@ Safety rules applied here:
 """
 
 import logging
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Request
 from fastapi.exceptions import RequestValidationError
@@ -32,6 +32,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from core.errors import AttemptInfo, ErrorResponse, error_json
 from core.events import (
     Event,
     EventRecorder,
@@ -99,14 +100,6 @@ class ChatRequest(_Strict):
         return self
 
 
-class AttemptInfo(BaseModel):
-    """One failed provider call: never the exception itself."""
-
-    provider: str
-    error_type: str
-    message: str
-
-
 class ChatResponse(BaseModel):
     request_id: str | None
     text: str
@@ -120,24 +113,6 @@ class ChatResponse(BaseModel):
     input_tokens: int | None = None
     output_tokens: int | None = None
     latency_ms: float
-
-
-class ErrorInfo(BaseModel):
-    type: str
-    message: str
-    attempts: list[AttemptInfo] = []
-
-
-class ErrorResponse(BaseModel):
-    request_id: str | None
-    error: ErrorInfo
-
-
-def error_json(status: int, error_type: str, message: str, **extra: Any) -> JSONResponse:
-    body = ErrorResponse(
-        request_id=get_request_id(), error=ErrorInfo(type=error_type, message=message, **extra)
-    )
-    return JSONResponse(status_code=status, content=body.model_dump())
 
 
 # --- size guard ----------------------------------------------------------
@@ -291,24 +266,3 @@ async def chat(
         output_tokens=usage.output_tokens if usage else None,
         latency_ms=round(response.latency_ms, 1),
     )
-
-
-# --- app-wide error handlers (installed by create_app) -------------------------------
-
-
-def _safe_validation_errors(errors: Any) -> list[dict[str, Any]]:
-    # Location and message only: pydantic's "input"/"ctx" can echo the request.
-    return [
-        {"loc": [str(part) for part in e.get("loc", ())], "msg": str(e.get("msg", ""))}
-        for e in errors
-    ]
-
-
-async def validation_error_handler(_request: Request, exc: Exception) -> JSONResponse:
-    errors: Any = exc.errors() if isinstance(exc, RequestValidationError) else []
-    body = ErrorResponse(
-        request_id=get_request_id(),
-        error=ErrorInfo(type="ValidationError", message="invalid request"),
-    ).model_dump()
-    body["error"]["fields"] = _safe_validation_errors(errors)
-    return JSONResponse(status_code=422, content=body)

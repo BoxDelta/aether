@@ -9,7 +9,8 @@ the design, follow the ADR numbers into `docs/adr/`.
 -   `core/`: the FastAPI service ("Core"). The app factory (`app.py`),
     settings (`config.py`), bearer-token auth (`auth.py`), request IDs
     (`request_context.py`), JSON logging and secret redaction (`log.py`),
-    the `/chat` endpoint (`chat.py`), `/ready` (`ready.py`), the Postgres
+    the shared error format and 422 handler (`errors.py`), the `/chat`
+    endpoint (`chat.py`), `/ready` (`ready.py`), the Postgres
     engine (`db.py`), the append-only event log (`events.py`) and the
     identity loader and system-prompt builder (`identity.py`).
 -   `router/`: "Nexus", which picks a model and calls it. The provider
@@ -44,9 +45,9 @@ the design, follow the ADR numbers into `docs/adr/`.
     validates the JSON. The caller sets `privacy`
     (public / personal / sensitive / secret); if they don't, it defaults to
     `personal`. `allow_cloud` defaults to `false`. Validation errors never
-    echo the input. The handler `chat()` turns the body into a
-    `ModelRequest` (`router/contract.py`) and records a `request_received`
-    event.
+    echo the input (`validation_error_handler`, `core/errors.py`). The
+    handler `chat()` turns the body into a `ModelRequest`
+    (`router/contract.py`) and records a `request_received` event.
 5.  **Routing.** `Router.handle()` → `Router.decide()`
     (`router/routing.py`):
     -   `secret` is refused before anything else;
@@ -71,8 +72,10 @@ the design, follow the ADR numbers into `docs/adr/`.
     applies to the fallback. A refusal or a cut-off answer is not an
     error and never fails over.
 8.  **Response.** `chat()` returns `ChatResponse` with the text, the
-    provider, the route reason and token counts, or a fixed error shape
-    (`RouteFailed` 502, `NoRoute` 503) that carries no exception text.
+    provider, the route reason and token counts, or the shared error shape
+    from `core/errors.py` (`RouteFailed` 502, `NoRoute` 503) that carries no
+    exception text. Auth (401/503), the size limit (413) and validation
+    (422) use the same shape.
 9.  **Events.** After the response is sent, a background task
     (`EventRecorder.record()` → `EventWriter`, `core/events.py`) writes the
     events to Postgres: received, route selected, any failed attempt,
