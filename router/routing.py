@@ -344,11 +344,16 @@ class Router:
         options: RouteOptions,
         *,
         on_decision: Callable[[RouteDecision], None] | None = None,
+        on_attempt_failed: Callable[[Attempt], None] | None = None,
     ) -> RoutedResponse:
         """Decide, call through ``call_with_identity``, fail over at most once.
 
         ``on_decision`` (optional) is told about every route chosen, before the
         call: the first decision and, on failover, the fallback (used for events).
+
+        ``on_attempt_failed`` (optional) is told about each failed call as soon as
+        it fails, before any fallback is chosen (used for events). It only reports:
+        if it raises, routing goes on as if it had not been called.
 
         Raises ``NoRoute`` if no provider may take the request (nothing was
         called), or ``RouteFailed`` if a call failed and no fallback answered.
@@ -360,6 +365,7 @@ class Router:
             response = await self._call(decision, request)
         except ProviderError as exc:
             first = Attempt.from_error(exc)
+            _report_failure(on_attempt_failed, first)
             # Raises RouteFailed when there is no fallback.
             fallback = await self._fallback_decision(request, options, first, exc)
         else:
@@ -367,20 +373,25 @@ class Router:
             return RoutedResponse(decision, response)
         if on_decision is not None:
             on_decision(fallback)
-        return await self._call_fallback(fallback, request, first)
+        return await self._call_fallback(fallback, request, first, on_attempt_failed)
 
     async def _call(self, decision: RouteDecision, request: ModelRequest) -> ModelResponse:
         provider = self._by_name[decision.provider]
         return await call_with_identity(provider, request, self._identity)
 
     async def _call_fallback(
-        self, fallback: RouteDecision, request: ModelRequest, first: Attempt
+        self,
+        fallback: RouteDecision,
+        request: ModelRequest,
+        first: Attempt,
+        on_attempt_failed: Callable[[Attempt], None] | None,
     ) -> RoutedResponse:
         """The one fallback call. Any failure ends routing: at most one fallback."""
         try:
             response = await self._call(fallback, request)
         except ProviderError as exc:
             second = Attempt.from_error(exc)
+            _report_failure(on_attempt_failed, second)
             reason = f"fallback {second.provider} also failed ({second.error_type})"
             logger.error(
                 "Failover failed",
@@ -422,6 +433,20 @@ class Router:
         logger.warning("No failover", extra={**_attempt_fields(first), "reason": reason})
         # Raised outside the NoRoute handler: the chain is the provider error, as before.
         raise RouteFailed(reason, [first]) from cause
+
+
+def _report_failure(callback: Callable[[Attempt], None] | None, attempt: Attempt) -> None:
+    """Tell ``callback`` about a failed call. It can never change or break routing."""
+    if callback is None:
+        return
+    try:
+        callback(attempt)
+    except Exception as exc:  # a reporting hook must not affect routing
+        # Metadata only: the hook's error type, never its message.
+        logger.warning(
+            "Attempt callback failed",
+            extra={"provider": attempt.provider, "callback_error_type": type(exc).__name__},
+        )
 
 
 def _attempt_fields(attempt: Attempt) -> dict[str, object]:

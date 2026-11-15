@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from collections.abc import Callable
 
 import pytest
 
@@ -22,7 +23,14 @@ from router.contract import (
     ProviderUnavailable,
 )
 from router.hardware import GpuState, HardwareSnapshot
-from router.routing import NoRoute, RoutedResponse, RouteFailed, RouteOptions, Router
+from router.routing import (
+    Attempt,
+    NoRoute,
+    RoutedResponse,
+    RouteFailed,
+    RouteOptions,
+    Router,
+)
 
 GIB = 1024**3
 PROMPT_TEXT = "PRIVATE-PROMPT-MARKER"
@@ -441,3 +449,98 @@ def test_failed_fallback_chains_the_second_provider_error(identity: Identity) ->
         run(identity, [local, cloud], allow_cloud=True)
 
     assert info.value.__cause__ is second
+
+
+# --- on_attempt_failed (#30): reports each failure as it happens, never steers -------
+
+CALLBACK_CASES = [
+    # (local error, cloud error, options): failover succeeds / fails / no fallback.
+    pytest.param(ProviderTimeout("ollama", "slow"), None, {"allow_cloud": True}, id="succeeds"),
+    pytest.param(
+        ProviderTimeout("ollama", "slow"),
+        ProviderUnavailable("claude", "down"),
+        {"allow_cloud": True},
+        id="fails",
+    ),
+    pytest.param(
+        ProviderBadResponse("ollama", "bad"), None, {"allow_cloud": True}, id="no-fallback"
+    ),
+]
+
+
+def handle_with(
+    identity: Identity,
+    local_error: ProviderError,
+    cloud_error: ProviderError | None,
+    options: dict[str, object],
+    on_attempt_failed: Callable[[Attempt], None],
+    seen: list[tuple[str, str]],
+) -> tuple[object, list[int]]:
+    local = Fake("ollama", "local", error=local_error)
+    cloud = Fake("claude", "cloud", error=cloud_error)
+    router = Router([local, cloud], identity, probe=lambda: probe(ROOM))
+    request = ModelRequest(messages=(Message(role="user", content=PROMPT_TEXT),))
+    try:
+        result = asyncio.run(
+            router.handle(
+                request,
+                RouteOptions.model_validate(options),
+                on_decision=lambda d: seen.append(("decision", d.provider)),
+                on_attempt_failed=on_attempt_failed,
+            )
+        )
+        outcome: object = ("ok", result.decision.provider, result.failed_first)
+    except RouteFailed as exc:
+        chain = (exc.__cause__, exc.__context__, exc.__suppress_context__)
+        outcome = ("RouteFailed", exc.reason, exc.attempts, chain)
+    return outcome, [local.calls, cloud.calls]
+
+
+@pytest.mark.parametrize(("local_error", "cloud_error", "options"), CALLBACK_CASES)
+def test_on_attempt_failed_reports_each_failure_when_it_happens(
+    identity: Identity,
+    local_error: ProviderError,
+    cloud_error: ProviderError | None,
+    options: dict[str, object],
+) -> None:
+    seen: list[tuple[str, str]] = []
+
+    handle_with(
+        identity,
+        local_error,
+        cloud_error,
+        options,
+        lambda a: seen.append(("failed", a.provider)),
+        seen,
+    )
+
+    expected = [("decision", "ollama"), ("failed", "ollama")]
+    if local_error.retryable:
+        expected.append(("decision", "claude"))
+        if cloud_error is not None:
+            expected.append(("failed", "claude"))
+    assert seen == expected
+
+
+@pytest.mark.parametrize(("local_error", "cloud_error", "options"), CALLBACK_CASES)
+def test_raising_on_attempt_failed_never_changes_routing(
+    identity: Identity,
+    logs: pytest.LogCaptureFixture,
+    local_error: ProviderError,
+    cloud_error: ProviderError | None,
+    options: dict[str, object],
+) -> None:
+    def broken(_: Attempt) -> None:
+        raise RuntimeError(f"hook broke {LEAKY_TEXT} {PROMPT_TEXT}")
+
+    quiet = handle_with(identity, local_error, cloud_error, options, lambda _: None, [])
+    logs.clear()
+    loud = handle_with(identity, local_error, cloud_error, options, broken, [])
+
+    assert loud == quiet  # same result or RouteFailed (reason, attempts, chain), same calls
+    warnings = records(logs, "Attempt callback failed")
+    assert len(warnings) == (2 if cloud_error is not None else 1)
+    assert {(w.levelname, w.__dict__["callback_error_type"]) for w in warnings} == {
+        ("WARNING", "RuntimeError")
+    }
+    assert_no_leaks(logs)
