@@ -239,6 +239,10 @@ Consequences and risks. - Date and owners. - Revisit conditions.
   ADR-022                 Go public via a new     Accepted
                           repo from a clean       
                           snapshot                
+
+  ADR-023                 Ollama is local only on Proposed
+                          a loopback or private   
+                          host                    
   -----------------------------------------------------------------------
 
 ## 8. Validation checklist before adopting a dependency

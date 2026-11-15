@@ -19,7 +19,7 @@ from router.contract import (
 )
 from router.ollama import OllamaProvider
 
-HOST = "http://ollama.test:11434"
+HOST = "http://127.0.0.1:11434"
 MODEL = "llama3.1:8b"
 
 Handler = Callable[[httpx.Request], httpx.Response]
@@ -134,7 +134,7 @@ def test_finish_reason_mapping(done_reason: str, expected: str) -> None:
 
 
 def test_trailing_slash_host_from_settings_works() -> None:
-    settings = Settings(_env_file=None, ollama_host=AnyHttpUrl("http://ollama.test:11434/"))
+    settings = Settings(_env_file=None, ollama_host=AnyHttpUrl("http://127.0.0.1:11434/"))
     p = OllamaProvider.from_settings(settings)
 
     assert p.info.default_model == "llama3.1:8b"
