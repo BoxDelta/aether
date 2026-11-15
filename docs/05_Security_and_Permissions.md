@@ -85,10 +85,12 @@ confidence is not a substitute for authorization.
     and each attempt's provider, error type and scrubbed message. Never
     exception text, `__cause__` or a traceback. Validation errors never
     echo the submitted input.
--   Logs redact configured secrets by value (`ANTHROPIC_API_KEY`, the
-    `DATABASE_URL` password), Anthropic-key-shaped strings, and the
-    password in any `scheme://user:password@host` URL, configured or not
-    (`core/log.py`). Database errors are reported from safe parts only
+-   Logs redact configured secrets by value (`ANTHROPIC_API_KEY`,
+    `AETHER_API_TOKEN`, and the `DATABASE_URL` password as written and
+    percent-decoded), Anthropic-key-shaped strings, `Bearer <credential>`
+    values, and the password in any `scheme://user:password@host` URL,
+    configured or not (`core/log.py`; its module docstring is the full
+    list). Database errors are reported from safe parts only
     (`core/db.py`, ADR-020).
 -   The Claude client takes its key and endpoint from AETHER's settings:
     `router/claude.py` passes the API key and the fixed base URL
