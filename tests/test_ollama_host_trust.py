@@ -10,7 +10,7 @@ import pytest
 from pydantic import AnyHttpUrl
 
 from core.config import Settings
-from core.identity import Identity, load_identity
+from core.identity import Identity
 from router.contract import (
     Message,
     ModelRequest,
@@ -242,11 +242,6 @@ def test_default_settings_host_is_trusted() -> None:
 
 
 # --- routing ---------------------------------------------------------------------
-
-
-@pytest.fixture
-def identity() -> Identity:
-    return load_identity()
 
 
 def probe() -> HardwareSnapshot:

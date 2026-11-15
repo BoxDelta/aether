@@ -10,7 +10,7 @@ import pytest
 from pydantic import SecretStr, ValidationError
 
 from core.config import Settings
-from core.identity import Identity, load_identity
+from core.identity import Identity
 from router.contract import (
     PRIVACY_ORDER,
     Message,
@@ -411,11 +411,6 @@ class Probe:
         if self.fail:
             raise RuntimeError("probe bug")
         return snapshot(self.free_gib)
-
-
-@pytest.fixture
-def identity() -> Identity:
-    return load_identity()
 
 
 def req(privacy: PrivacyLevel = "personal") -> ModelRequest:

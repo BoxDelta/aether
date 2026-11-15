@@ -9,7 +9,6 @@ Run (fish):  env AETHER_DB_TESTS=1 uv run pytest -m db
 """
 
 import asyncio
-import os
 import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -28,29 +27,14 @@ from core.events import EventWriter, provider_unavailable, request_failed, route
 from core.log import Redactor
 from router.contract import Message, ModelRequest, ProviderUnavailable
 from router.routing import Attempt, RouteDecision, RouteFailed, RouteOptions
+from tests.conftest import LIVE_DB
 
-pytestmark = [
-    pytest.mark.db,
-    pytest.mark.skipif(
-        os.environ.get("AETHER_DB_TESTS") != "1",
-        reason="live Postgres tests: set AETHER_DB_TESTS=1 (needs docker compose up -d)",
-    ),
-]
+pytestmark = LIVE_DB
 
 REPO = Path(__file__).resolve().parent.parent
 FAKE_SECRET = "fake-configured-secret-live-4e8a"  # noqa: S105  # gitleaks:allow
 FAKE_KEY = "sk-ant-api03-FAKE-live-unconfigured-abcdef"  # gitleaks:allow
 PROMPT = "PRIVATE-PROMPT-MARKER live: my bank PIN is 4711"
-
-
-@pytest.fixture
-def live() -> Settings:
-    s = Settings()  # reads .env on purpose: the owner's local database
-    if s.database_url is None:
-        # Opted in with AETHER_DB_TESTS=1: a missing database is a failure, not a
-        # skip, so CI can't pass without running these (#52).
-        pytest.fail("AETHER_DB_TESTS=1 but DATABASE_URL is not set in .env")
-    return s
 
 
 def in_rolled_back_tx(settings: Settings, body: Callable[[AsyncConnection], Awaitable[Any]]) -> Any:

@@ -6,7 +6,7 @@ from collections.abc import Callable
 
 import pytest
 
-from core.identity import Identity, load_identity
+from core.identity import Identity
 from router.contract import (
     Message,
     ModelRequest,
@@ -33,11 +33,6 @@ LEAKY_TEXT = "sk-ant-LEAKED-IN-EXCEPTION"  # gitleaks:allow
 
 ROOM = 4.0
 NO_ROOM = 0.5
-
-
-@pytest.fixture
-def identity() -> Identity:
-    return load_identity()
 
 
 @pytest.fixture

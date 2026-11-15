@@ -10,37 +10,20 @@ Run (fish):  env AETHER_DB_TESTS=1 uv run pytest -m db
 import asyncio
 import io
 import logging
-import os
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-import pytest
 from pydantic import SecretStr
 from sqlalchemy import text
 
 from core.config import Settings
 from core.db import check_database, create_engine
 from core.log import configure_logging
+from tests.conftest import LIVE_DB
 
-pytestmark = [
-    pytest.mark.db,
-    pytest.mark.skipif(
-        os.environ.get("AETHER_DB_TESTS") != "1",
-        reason="live Postgres tests: set AETHER_DB_TESTS=1 (needs docker compose up -d)",
-    ),
-]
+pytestmark = LIVE_DB
 
 WRONG_PASSWORD = "definitely-wrong-password-for-test"  # noqa: S105  # gitleaks:allow
-
-
-@pytest.fixture
-def live() -> Settings:
-    s = Settings()  # reads .env on purpose: this is the owner's real database
-    if s.database_url is None:
-        # Opted in with AETHER_DB_TESTS=1: a missing database is a failure, not a
-        # skip, so CI can't pass without running these (#52).
-        pytest.fail("AETHER_DB_TESTS=1 but DATABASE_URL is not set in .env")
-    return s
 
 
 def real_password(s: Settings) -> str:
