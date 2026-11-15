@@ -202,9 +202,9 @@ Avoid storing unnecessary sensitive payloads in audit logs.
 
 ### 10.1 Enforcing independence with GitHub (Sentinel v1)
 
-Independence is enforced by GitHub permissions, not by trusting an AI.
-Since the public flip on 2026-11-14 (ADR-022), part of this is enforced
-by GitHub and part is still only a rule.
+Independence is meant to come from GitHub permissions rather than trust
+in an AI. Since the public flip on 2026-11-14 (ADR-022), part of it
+does; the rest is still only a rule.
 
 **Enforced by the `protect-main` ruleset on `main`** (ADR-022, "Ruleset
 design"):
@@ -214,9 +214,12 @@ design"):
     GitHub Actions as their source, so a failing check blocks the merge
     and a status with the same name from elsewhere cannot satisfy them;
 -   force pushes and branch deletion are blocked;
--   the bypass list is empty;
--   no approvals are required (one maintainer, and GitHub does not let an
-    author approve their own PR).
+-   the bypass list is empty.
+
+These hold as long as the ruleset is unchanged; admin credentials can
+edit or disable it (see below). Not required: approvals or code-owner
+review (one maintainer, and GitHub does not let an author approve their
+own PR).
 
 **Still only a rule, not a permission.** The agent works with the
 owner's GitHub credentials, which have admin rights, so GitHub does not
@@ -225,7 +228,9 @@ them and the owner checks:
 
 -   The owner merges, only with the local `safemerge` fish function,
     which waits for Sentinel checks to pass and merges only the head
-    commit it checked, pinned to the head hash the owner reviewed. The
+    commit it checked. When given the reviewed hash
+    (`safemerge <PR> <hash>`, the normal practice), it refuses to merge
+    unless the PR head matches it. The
     live function stays in the owner's fish config. A backup and
     documentation copy is in `scripts/safemerge.fish` (README, "Merging
     with `safemerge`"), and is never sourced or symlinked, so a pull
