@@ -1,0 +1,18 @@
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+node_modules/
+*.log
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.claude/settings.local.json
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Identity continuity output (#23): model answers stay local, never committed.
+tests/identity/results-*.md

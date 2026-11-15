@@ -1,0 +1,33 @@
+# Local Postgres for AETHER: one database for memory, runtime tasks and events
+# (ADR-011, ADR-020). Commands (fish) are in README.md.
+#
+# The password comes from POSTGRES_PASSWORD in .env (git-ignored); compose reads
+# .env from this directory. Postgres stores it only when the data volume is first
+# created: changing it in .env later does NOT change the database password.
+# Note: `docker compose config` prints the resolved password; don't paste its output.
+name: aether
+
+services:
+  postgres:
+    # Pinned by digest (multi-arch index); the tag is for humans.
+    image: postgres:18.7-alpine@sha256:1018733457011bf88d81db98cf43aac6d5150afc18787dbe204771fedf80ff95
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: aether
+      POSTGRES_DB: aether
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (see .env.example)}
+    ports:
+      # Loopback only: not reachable from the LAN or over Tailscale.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      # Docker named volume "aether_pgdata" (Postgres 18 images keep data under
+      # /var/lib/postgresql/18/docker inside this mount).
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aether -d aether"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:

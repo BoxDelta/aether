@@ -1,0 +1,11 @@
+# Review requests for CI (Sentinel) and AI assistant rules go to the owner (not enforced; see ADR-018)
+/.github/   @BoxDelta
+/CLAUDE.md  @BoxDelta
+/.claude/                              @BoxDelta
+/.pre-commit-config.yaml               @BoxDelta
+/scripts/safemerge.fish                @BoxDelta
+/docs/05_Security_and_Permissions.md   @BoxDelta
+/LICENSE                               @BoxDelta
+/NOTICE                                @BoxDelta
+/SECURITY.md                           @BoxDelta
+/CONTRIBUTING.md                       @BoxDelta

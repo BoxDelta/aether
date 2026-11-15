@@ -1,0 +1,36 @@
+# Local guardrails (#42): fast checks before a commit leaves the machine.
+# Sentinel (CI) stays the real gate; `git commit --no-verify` skips these hooks.
+# Setup (fish): uv sync; uv run pre-commit install
+# Third-party hooks are pinned to commit SHAs (tag in the comment) and updated by
+# Dependabot (`pre-commit` ecosystem) or `uv run pre-commit autoupdate --freeze`.
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e # frozen: v8.30.1
+    hooks:
+      - id: gitleaks # scans staged changes; built with Go on first run
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c # frozen: v6.0.0
+    hooks:
+      - id: detect-private-key
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+      - id: check-merge-conflict
+
+  # Ruff from uv.lock, same version and scope as Sentinel. These hooks fix what
+  # they can; if they change a file the commit stops so you can review and
+  # re-stage (`git add -u`, then commit again). Sentinel only checks.
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check --fix
+        entry: uv run --locked ruff check --fix .
+        language: system
+        pass_filenames: false
+        types_or: [python, pyi, markdown, toml]
+      - id: ruff-format
+        name: ruff format
+        entry: uv run --locked ruff format .
+        language: system
+        pass_filenames: false
+        types_or: [python, pyi, markdown, toml]

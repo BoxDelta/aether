@@ -1,0 +1,74 @@
+name: Sentinel
+on: [push, pull_request]
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Lint, format, type checks and tests (ADR-018, ADR-019).
+  # Python version comes from .python-version; mypy scope from pyproject.toml.
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.8"
+          enable-cache: true
+      - name: Install dependencies from lockfile
+        run: uv sync --locked
+      - name: Ruff lint
+        run: uv run ruff check --output-format=github .
+      - name: Ruff format
+        run: uv run ruff format --check .
+      - name: Type check (mypy, strict)
+        run: uv run mypy
+      # Known-vulnerability scan of every locked package (#61). pip-audit itself comes
+      # from uv.lock (dev group). Any finding fails the job; an unfixable advisory can
+      # be skipped with --ignore-vuln <ID> after review.
+      - name: Dependency audit (pip-audit)
+        run: |
+          uv export --locked --format requirements-txt --all-groups --no-emit-project --quiet -o "$RUNNER_TEMP/requirements.txt"
+          uv run pip-audit -r "$RUNNER_TEMP/requirements.txt" --require-hashes --disable-pip --progress-spinner off
+      # Coverage is report-only (#43): no minimum yet. The table also goes to
+      # the job summary; no upload services.
+      - name: Tests with coverage
+        run: uv run pytest -W error::DeprecationWarning --cov --cov-report=term-missing
+      - name: Coverage summary
+        if: ${{ !cancelled() }}
+        run: |
+          if [ ! -f .coverage ]; then
+            echo 'No coverage data (tests did not run).'
+            exit 0
+          fi
+          {
+            echo '## Coverage (core, router)'
+            echo
+            uv run coverage report --format=markdown
+          } >> "$GITHUB_STEP_SUMMARY"
+      # Live Postgres tests (#52): the database from docker-compose.yml (same pinned
+      # digest), with a throwaway password generated for this run and masked. It
+      # goes only into .env on the runner, like a local setup; nothing is stored.
+      - name: Live database tests
+        if: ${{ !cancelled() }}
+        run: |
+          pw="$(openssl rand -hex 24)"
+          echo "::add-mask::$pw"
+          umask 077
+          printf 'POSTGRES_PASSWORD=%s\nDATABASE_URL=postgresql+asyncpg://aether:%s@127.0.0.1:5432/aether\n' "$pw" "$pw" > .env
+          docker compose up -d --wait --wait-timeout 120 postgres
+          uv run alembic upgrade head
+          AETHER_DB_TESTS=1 uv run pytest -m db -W error::DeprecationWarning
