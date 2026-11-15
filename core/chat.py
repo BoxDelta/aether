@@ -48,13 +48,13 @@ from router.contract import (
     ModelRequest,
     PrivacyLevel,
     ProviderKind,
+    ProviderName,
     Role,
 )
 from router.contract import Message as ModelMessage
 from router.routing import (
     Attempt,
     NoRoute,
-    ProviderName,
     RouteDecision,
     RouteFailed,
     RouteOptions,

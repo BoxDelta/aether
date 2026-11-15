@@ -41,9 +41,8 @@ import asyncio
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, StringConstraints
+from pydantic import BaseModel, ConfigDict
 
 from core.config import Settings
 from core.identity import Identity
@@ -56,16 +55,13 @@ from router.contract import (
     Provider,
     ProviderError,
     ProviderKind,
+    ProviderName,
 )
 from router.hardware import MIN_FREE_VRAM_BYTES, HardwareSnapshot, Headroom, has_local_headroom
 from router.identity_call import call_with_identity
 from router.ollama import OllamaProvider
 
 logger = logging.getLogger("aether.router.routing")
-
-# Provider names are short identifiers; the pattern keeps an override safe to echo
-# in reasons and logs.
-ProviderName = Annotated[str, StringConstraints(pattern=r"^[a-z0-9_-]{1,32}$")]
 
 
 class RouteOptions(BaseModel):
