@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr, ValidationError
 
+import core.db
 import core.ready
 from core.app import create_app
 from core.config import Settings
@@ -109,7 +110,7 @@ def db_ok(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
             pass
 
     monkeypatch.setattr(core.ready, "check_database", fake_check)
-    monkeypatch.setattr(core.ready, "create_engine", lambda settings: Engine())
+    monkeypatch.setattr(core.db, "create_engine", lambda settings: Engine())
     return answers
 
 

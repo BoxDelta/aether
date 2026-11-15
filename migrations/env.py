@@ -10,7 +10,7 @@ from alembic import context
 from sqlalchemy.engine import Connection
 
 from core.config import get_settings
-from core.db import DatabaseNotConfigured, create_engine
+from core.db import NOT_SET_MESSAGE, DatabaseNotConfigured, engine_for
 from core.log import configure_logging
 
 settings = get_settings()
@@ -23,7 +23,7 @@ target_metadata = None
 def run_migrations_offline() -> None:
     """``alembic upgrade --sql``: print SQL, no connection."""
     if settings.database_url is None:
-        raise DatabaseNotConfigured("DATABASE_URL is not set (see .env.example)")
+        raise DatabaseNotConfigured(NOT_SET_MESSAGE)
     context.configure(
         url=settings.database_url.get_secret_value(),
         target_metadata=target_metadata,
@@ -40,12 +40,8 @@ def _run(connection: Connection) -> None:
 
 
 async def run_migrations_online() -> None:
-    engine = create_engine(settings)
-    try:
-        async with engine.connect() as connection:
-            await connection.run_sync(_run)
-    finally:
-        await engine.dispose()
+    async with engine_for(settings, None) as engine, engine.connect() as connection:
+        await connection.run_sync(_run)
 
 
 # A caller (tests) may hand in a sync connection it controls, e.g. inside a

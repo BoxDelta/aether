@@ -16,7 +16,8 @@ Check the database from a shell (fish), exit code 0 when reachable::
 
 import asyncio
 import sys
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import urlsplit
@@ -28,6 +29,7 @@ from core.config import DATABASE_SCHEME, Settings, get_settings
 from core.log import Redactor, secrets_from
 
 CONNECT_TIMEOUT_S = 5.0
+NOT_SET_MESSAGE = "DATABASE_URL is not set (see .env.example)"
 
 Problem = Literal[
     "ok",
@@ -75,16 +77,26 @@ class DbStatus:
     message: str
 
 
+def url_status(settings: Settings) -> DbStatus | None:
+    """Why ``DATABASE_URL`` can't be used (``not_configured`` / ``misconfigured``), or
+    None if it is set and well-formed. The message never contains any part of the URL."""
+    if settings.database_url is None:
+        return DbStatus(False, "not_configured", NOT_SET_MESSAGE)
+    problem = url_problem(settings.database_url.get_secret_value())
+    if problem is not None:
+        return DbStatus(False, "misconfigured", problem)
+    return None
+
+
 def create_engine(settings: Settings) -> AsyncEngine:
     """Async engine for ``DATABASE_URL``. Does not connect yet."""
     if settings.database_url is None:
-        raise DatabaseNotConfigured("DATABASE_URL is not set (see .env.example)")
-    url = settings.database_url.get_secret_value()
-    problem = url_problem(url)
-    if problem is not None:
-        raise DatabaseConfigError(problem)
+        raise DatabaseNotConfigured(NOT_SET_MESSAGE)
+    status = url_status(settings)
+    if status is not None:
+        raise DatabaseConfigError(status.message)
     return create_async_engine(
-        url,
+        settings.database_url.get_secret_value(),
         pool_pre_ping=True,
         # Keep bound parameters (memory content, later) out of exception text.
         hide_parameters=True,
@@ -92,11 +104,24 @@ def create_engine(settings: Settings) -> AsyncEngine:
     )
 
 
+@asynccontextmanager
+async def engine_for(settings: Settings, engine: AsyncEngine | None) -> AsyncIterator[AsyncEngine]:
+    """``engine`` if given; otherwise a new one, disposed on exit. A passed-in engine
+    is never disposed: its owner (the app) does that."""
+    own_engine = engine is None
+    current = engine if engine is not None else create_engine(settings)
+    try:
+        yield current
+    finally:
+        if own_engine:
+            await current.dispose()
+
+
 def describe_target(settings: Settings) -> str:
     """``user@host:port/db`` without the password, for messages."""
     if settings.database_url is None:
         return "(not configured)"
-    if url_problem(settings.database_url.get_secret_value()) is not None:
+    if url_status(settings) is not None:
         return "(invalid DATABASE_URL)"
     parts = urlsplit(settings.database_url.get_secret_value())
     port = parts.port or 5432
@@ -151,23 +176,17 @@ def classify(exc: BaseException, target: str) -> DbStatus:
 
 async def check_database(settings: Settings, engine: AsyncEngine | None = None) -> DbStatus:
     """Connect and run ``SELECT 1``. Never raises (except cancellation)."""
-    if settings.database_url is None:
-        return DbStatus(False, "not_configured", "DATABASE_URL is not set (see .env.example)")
-    problem = url_problem(settings.database_url.get_secret_value())
-    if problem is not None:
-        return DbStatus(False, "misconfigured", problem)
+    status = url_status(settings)
+    if status is not None:
+        return status
     target = describe_target(settings)
-    own_engine = engine is None
-    engine = engine if engine is not None else create_engine(settings)
-    try:
-        async with asyncio.timeout(CONNECT_TIMEOUT_S + 1):
-            async with engine.connect() as conn:
-                await conn.execute(text("SELECT 1"))
-    except Exception as exc:
-        return classify(exc, target)
-    finally:
-        if own_engine:
-            await engine.dispose()
+    async with engine_for(settings, engine) as current:
+        try:
+            async with asyncio.timeout(CONNECT_TIMEOUT_S + 1):
+                async with current.connect() as conn:
+                    await conn.execute(text("SELECT 1"))
+        except Exception as exc:
+            return classify(exc, target)
     return DbStatus(True, "ok", f"connected to {target}")
 
 
