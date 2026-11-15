@@ -82,7 +82,11 @@ the design, follow the ADR numbers into `docs/adr/`.
     completed or failed. Events hold metadata only, never prompt or answer
     text. Free text is redacted and blanked if it contains the request's
     own text. Without `DATABASE_URL`, events are skipped with one startup
-    warning, and a failed write never affects the request.
+    warning, and a failed write never affects the request. The events are
+    built by two reporting hooks on `Router.handle()` (`on_decision`,
+    `on_attempt_failed`). If building one raises, routing goes on, that one
+    event is missing, and a metadata-only "Decision callback failed" or
+    "Attempt callback failed" warning is logged.
 
 ## Where to start reading
 
