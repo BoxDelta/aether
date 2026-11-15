@@ -10,7 +10,7 @@ import pytest
 from pydantic import SecretStr, ValidationError
 
 from core.config import Settings
-from core.identity import Identity, load_identity
+from core.identity import Identity
 from router.contract import (
     PRIVACY_ORDER,
     Message,
@@ -22,7 +22,7 @@ from router.contract import (
     ProviderKind,
     ProviderUnavailable,
 )
-from router.hardware import UNKNOWN_GPU, GpuState, HardwareSnapshot, Headroom
+from router.hardware import HardwareSnapshot, Headroom
 from router.routing import (
     Candidate,
     NoRoute,
@@ -31,8 +31,8 @@ from router.routing import (
     Router,
     choose_route,
 )
+from tests.fakes import snapshot
 
-GIB = 1024**3
 ROOM = Headroom(True, "free VRAM 4096 MiB meets reserve 1536 MiB")
 NO_ROOM = Headroom(False, "free VRAM 512 MiB below reserve 1536 MiB")
 UNKNOWN = Headroom(False, "GPU state unknown")
@@ -395,11 +395,6 @@ class FakeProvider(Provider):
         return self.available
 
 
-def snapshot(free_gib: float | None) -> HardwareSnapshot:
-    gpu = UNKNOWN_GPU if free_gib is None else GpuState("nvml", 8 * GIB, int(free_gib * GIB), 10)
-    return HardwareSnapshot(gpu=gpu, ram_available_bytes=16 * GIB)
-
-
 class Probe:
     def __init__(self, free_gib: float | None = 4.0, *, fail: bool = False) -> None:
         self.free_gib = free_gib
@@ -411,11 +406,6 @@ class Probe:
         if self.fail:
             raise RuntimeError("probe bug")
         return snapshot(self.free_gib)
-
-
-@pytest.fixture
-def identity() -> Identity:
-    return load_identity()
 
 
 def req(privacy: PrivacyLevel = "personal") -> ModelRequest:

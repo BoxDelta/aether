@@ -5,6 +5,7 @@ from collections.abc import Iterator
 import pytest
 
 from core.config import Settings, get_settings
+from core.identity import Identity, load_identity
 from core.log import QUIET_LOGGERS
 
 
@@ -69,3 +70,32 @@ def restore_logging() -> Iterator[None]:
         lg.handlers[:] = handlers
         lg.setLevel(level)
         lg.propagate = propagate
+
+
+# --- shared fixtures (#37) ------------------------------------------------------------
+
+
+@pytest.fixture
+def identity() -> Identity:
+    return load_identity()
+
+
+# Live Postgres tests (test_db_live.py, test_events_live.py): ``pytestmark = LIVE_DB``.
+LIVE_DB = [
+    pytest.mark.db,
+    pytest.mark.skipif(
+        os.environ.get("AETHER_DB_TESTS") != "1",
+        reason="live Postgres tests: set AETHER_DB_TESTS=1 (needs docker compose up -d)",
+    ),
+]
+
+
+@pytest.fixture
+def live() -> Settings:
+    """The owner's real database settings, for the opted-in live tests only."""
+    s = Settings()  # reads .env on purpose: the owner's local database
+    if s.database_url is None:
+        # Opted in with AETHER_DB_TESTS=1: a missing database is a failure, not a
+        # skip, so CI can't pass without running these (#52).
+        pytest.fail("AETHER_DB_TESTS=1 but DATABASE_URL is not set in .env")
+    return s

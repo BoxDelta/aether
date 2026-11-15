@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from core.app import create_app
 from core.config import Settings
 from core.identity import load_identity
-from tests.test_chat import Setup, error_with_key_cause
+from tests.chat_helpers import Setup, error_with_key_cause
 
 HEADERS = {"x-request-id": "pin-1"}
 JSON = {"content-type": "application/json"}

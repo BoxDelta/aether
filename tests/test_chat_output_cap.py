@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from tests.test_chat import ANSWER, PROMPT, Setup, assert_no_content
+from tests.chat_helpers import ANSWER, PROMPT, Setup, assert_no_content
 
 
 def completed(rows: list[dict[str, Any]]) -> dict[str, Any]:
