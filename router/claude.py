@@ -11,7 +11,8 @@ Uses the official ``anthropic`` SDK. Design points:
   so a stray variable would send the key and prompts to another host. With an
   explicit ``api_key`` it does not read ``ANTHROPIC_API_KEY``,
   ``ANTHROPIC_AUTH_TOKEN`` or profiles. It still merges ``ANTHROPIC_CUSTOM_HEADERS``
-  into request headers; that does not change the host (docs/05 §5, #18).
+  into request headers, which can override ``Authorization`` but not the host
+  (docs/05 §5, #18).
 - Server-side refusal fallback is on (``fallbacks="default"``): if the model
   declines, the API re-runs the request on Anthropic's recommended fallback model
   inside the same call. If the whole chain declines, the response has
@@ -100,8 +101,9 @@ class ClaudeProvider(Provider):
         if api_key is not None:
             self._client = AsyncAnthropic(
                 api_key=api_key.get_secret_value(),
-                # Explicit, so the SDK never reads ANTHROPIC_BASE_URL or
-                # ANTHROPIC_AUTH_TOKEN from the environment (#9).
+                # The explicit api_key is what stops the SDK reading ANTHROPIC_API_KEY,
+                # ANTHROPIC_AUTH_TOKEN or profiles; auth_token=None states that intent.
+                # The explicit base_url stops it reading ANTHROPIC_BASE_URL (#9).
                 auth_token=None,
                 base_url=ANTHROPIC_API_BASE_URL,
                 max_retries=max_retries,
