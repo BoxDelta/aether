@@ -159,6 +159,29 @@ def _why_not(
     return f"{kind} unavailable"
 
 
+def _override_route(
+    privacy: PrivacyLevel,
+    options: RouteOptions,
+    candidates: Sequence[Candidate],
+    headroom: Headroom | None,
+) -> RouteDecision:
+    """Rule 2: the manual override, never substituted. Raises ``NoRoute``."""
+    name = options.override
+    match = next((c for c in candidates if c.name == name), None)
+    if match is None:
+        raise NoRoute(f"override '{name}' is not a configured provider")
+    if match.kind == "cloud" and not options.allow_cloud:
+        raise NoRoute(f"override '{name}' is cloud, but this request does not allow cloud")
+    if not match.allows_privacy:
+        raise NoRoute(f"override '{name}' may not receive {privacy} data")
+    if not match.available:
+        raise NoRoute(f"override '{name}' is unavailable")
+    reason = f"manual override: {name}"
+    if match.kind == "local" and not (headroom is not None and headroom.ok):
+        reason += f" (desktop VRAM reserve not met: {_room_text(headroom)})"
+    return RouteDecision(match.name, match.kind, reason)
+
+
 def choose_route(
     privacy: PrivacyLevel,
     options: RouteOptions,
@@ -171,20 +194,7 @@ def choose_route(
     has_room = headroom is not None and headroom.ok
 
     if options.override is not None:
-        name = options.override
-        match = next((c for c in candidates if c.name == name), None)
-        if match is None:
-            raise NoRoute(f"override '{name}' is not a configured provider")
-        if match.kind == "cloud" and not options.allow_cloud:
-            raise NoRoute(f"override '{name}' is cloud, but this request does not allow cloud")
-        if not match.allows_privacy:
-            raise NoRoute(f"override '{name}' may not receive {privacy} data")
-        if not match.available:
-            raise NoRoute(f"override '{name}' is unavailable")
-        reason = f"manual override: {name}"
-        if match.kind == "local" and not has_room:
-            reason += f" (desktop VRAM reserve not met: {_room_text(headroom)})"
-        return RouteDecision(match.name, match.kind, reason)
+        return _override_route(privacy, options, candidates, headroom)
 
     local = [c for c in candidates if c.kind == "local" and c.allows_privacy and c.available]
     cloud = [
