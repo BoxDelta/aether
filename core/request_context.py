@@ -13,8 +13,9 @@ import logging
 import re
 import uuid
 from contextvars import ContextVar
-from typing import TypeGuard
+from typing import Annotated, TypeGuard
 
+from pydantic import StringConstraints
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -22,7 +23,11 @@ REQUEST_ID_HEADER = "X-Request-ID"
 SESSION_ID_HEADER = "X-Session-ID"
 
 # Letters, digits, '.', '_', '-'; 1-128 chars. Covers UUIDs, ULIDs and most tracer IDs.
-_SAFE_ID = re.compile(r"[A-Za-z0-9._-]{1,128}")
+# The one definition (#33): the middleware and the Event model both use it; the
+# events table's CHECK constraint keeps a frozen copy.
+SAFE_ID_PATTERN = r"[A-Za-z0-9._-]{1,128}"
+_SAFE_ID = re.compile(SAFE_ID_PATTERN)
+SafeId = Annotated[str, StringConstraints(pattern=rf"^{SAFE_ID_PATTERN}$")]
 
 logger = logging.getLogger("aether.core.request")
 

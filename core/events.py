@@ -40,8 +40,15 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from core.log import Redactor
-from core.request_context import get_request_id, get_session_id
-from router.contract import FinishReason, ModelRequest, ModelResponse, PrivacyLevel, ProviderKind
+from core.request_context import SafeId, get_request_id, get_session_id
+from router.contract import (
+    FinishReason,
+    ModelRequest,
+    ModelResponse,
+    PrivacyLevel,
+    ProviderKind,
+    ProviderName,
+)
 from router.routing import Attempt, NoRoute, RouteDecision, RouteFailed, RouteOptions
 
 logger = logging.getLogger("aether.core.events")
@@ -66,8 +73,6 @@ EventType = Literal[
 Actor = Literal["core", "router"]
 Outcome = Literal["ok", "refusal", "error"]
 
-SafeId = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9._-]{1,128}$")]
-ProviderName = Annotated[str, StringConstraints(pattern=r"^[a-z0-9_-]{1,32}$")]
 ModelName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9._:/-]{1,200}$")]
 TypeName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")]
 SafeText = Annotated[str, StringConstraints(max_length=MAX_TEXT)]

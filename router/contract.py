@@ -28,6 +28,11 @@ from pydantic import (
     model_validator,
 )
 
+# Provider names are short identifiers, safe to echo in reasons, logs and events.
+# The one definition (#33); the events table's CHECK constraint keeps a frozen copy.
+PROVIDER_NAME_PATTERN = r"[a-z0-9_-]{1,32}"
+ProviderName = Annotated[str, StringConstraints(pattern=rf"^{PROVIDER_NAME_PATTERN}$")]
+
 # The one place the privacy level names are listed (docs/05 §7.1, #58), lowest first.
 # Everything else derives from it: the order, the ranks, and the non-secret subset.
 PrivacyLevel = Literal["public", "personal", "sensitive", "secret"]
