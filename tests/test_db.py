@@ -299,3 +299,63 @@ def test_compose_binds_loopback_and_takes_password_from_env() -> None:
     assert pg["ports"] == ["127.0.0.1:5432:5432"]
     assert pg["environment"]["POSTGRES_PASSWORD"].startswith("${POSTGRES_PASSWORD:?")
     assert pg["volumes"] == ["pgdata:/var/lib/postgresql"]
+
+
+# --- shared helpers (#34) -----------------------------------------------------------
+
+
+def test_url_status_categories() -> None:
+    assert core.db.url_status(settings()) == DbStatus(
+        False, "not_configured", core.db.NOT_SET_MESSAGE
+    )
+    assert core.db.NOT_SET_MESSAGE == "DATABASE_URL is not set (see .env.example)"
+    assert core.db.url_status(settings(database_url=DB_URL)) is None
+
+
+@pytest.mark.parametrize(("url", "error"), BAD_URLS)
+def test_url_status_never_echoes_the_url(url: str, error: str) -> None:
+    status = core.db.url_status(settings(database_url=url))
+    assert status is not None
+    assert status.problem == "misconfigured"
+    assert error in status.message
+    assert DB_PASSWORD not in status.message
+    assert "aether:" not in status.message  # no part of the URL at all
+
+
+class _FakeEngine:
+    def __init__(self) -> None:
+        self.disposed = 0
+
+    async def dispose(self) -> None:
+        self.disposed += 1
+
+
+def test_engine_for_disposes_only_its_own_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    made: list[Any] = []
+
+    def fake_create(_: Settings) -> _FakeEngine:
+        engine = _FakeEngine()
+        made.append(engine)
+        return engine
+
+    monkeypatch.setattr(core.db, "create_engine", fake_create)
+    passed: Any = _FakeEngine()
+
+    async def run() -> None:
+        async with core.db.engine_for(settings(), passed) as e:
+            assert e is passed
+        async with core.db.engine_for(settings(), None) as e:
+            assert e is made[0]
+        with pytest.raises(RuntimeError):
+            async with core.db.engine_for(settings(), None):
+                raise RuntimeError("boom")
+
+    async def returns_early() -> str:
+        # The path check_database and ready._database use: return from inside.
+        async with core.db.engine_for(settings(), None):
+            return "early"
+
+    asyncio.run(run())
+    assert asyncio.run(returns_early()) == "early"
+    assert passed.disposed == 0
+    assert [m.disposed for m in made] == [1, 1, 1]

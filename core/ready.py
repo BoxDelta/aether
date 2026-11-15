@@ -37,7 +37,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from core.config import Settings
-from core.db import Problem, check_database, create_engine, url_problem
+from core.db import Problem, check_database, engine_for, url_status
 from router.contract import Provider
 from router.routing import Router
 
@@ -103,26 +103,21 @@ async def _claude(provider: Provider | None) -> ClaudeStatus:
 
 
 async def _database(settings: Settings, engine: AsyncEngine | None) -> DatabaseStatus:
-    url = settings.database_url
-    if url is None or url_problem(url.get_secret_value()) is not None:
-        return (await check_database(settings)).problem  # not_configured / misconfigured
-    own_engine = engine is None
-    engine = engine if engine is not None else create_engine(settings)
-    try:
-        status = await check_database(settings, engine)
+    url = url_status(settings)
+    if url is not None:
+        return url.problem  # not_configured / misconfigured
+    async with engine_for(settings, engine) as db:
+        status = await check_database(settings, db)
         if not status.ok:
             return status.problem  # category only; status.message names the host
-        async with engine.connect() as conn:
+        async with db.connect() as conn:
             exists = await conn.scalar(text("SELECT to_regclass('public.alembic_version')"))
             current = (
                 await conn.scalar(text("SELECT version_num FROM alembic_version"))
                 if exists
                 else None
             )
-        return "ok" if current is not None and current == migration_head() else "not_migrated"
-    finally:
-        if own_engine:
-            await engine.dispose()
+    return "ok" if current is not None and current == migration_head() else "not_migrated"
 
 
 def overall(components: Components) -> Overall:
