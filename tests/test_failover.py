@@ -389,3 +389,55 @@ def test_on_decision_not_called_for_no_route(identity: Identity) -> None:
         asyncio.run(router.handle(request, RouteOptions(), on_decision=lambda d: seen.append("x")))
 
     assert seen == []
+
+
+# --- no-fallback paths after a failed call (#32) ------------------------------------
+
+NO_FALLBACK = [
+    # (first error, extra route options, providers available): one case per reason.
+    pytest.param(ProviderBadResponse("ollama", "bad"), {"allow_cloud": True}, id="not-retryable"),
+    pytest.param(
+        ProviderUnavailable("ollama", "down"),
+        {"allow_cloud": True, "override": "ollama"},
+        id="override",
+    ),
+    pytest.param(ProviderUnavailable("ollama", "down"), {}, id="no-other-route"),
+]
+
+
+@pytest.mark.parametrize(("error", "options"), NO_FALLBACK)
+def test_no_fallback_chains_the_provider_error_and_reports_one_decision(
+    identity: Identity, error: ProviderError, options: dict[str, object]
+) -> None:
+    local, cloud = Fake("ollama", "local", error=error), Fake("claude", "cloud")
+    seen: list[str] = []
+    router = Router([local, cloud], identity, probe=lambda: probe(ROOM))
+    request = ModelRequest(messages=(Message(role="user", content=PROMPT_TEXT),))
+
+    with pytest.raises(RouteFailed) as info:
+        asyncio.run(
+            router.handle(
+                request,
+                RouteOptions.model_validate(options),
+                on_decision=lambda d: seen.append(d.provider),
+            )
+        )
+
+    assert seen == ["ollama"]  # no fallback decision is reported
+    assert cloud.calls == 0
+    assert [a.provider for a in info.value.attempts] == ["ollama"]
+    # Raised "from" the first provider error, with that same error as context.
+    assert info.value.__cause__ is error
+    assert info.value.__context__ is error
+    assert info.value.__suppress_context__
+
+
+def test_failed_fallback_chains_the_second_provider_error(identity: Identity) -> None:
+    second = ProviderUnavailable("claude", "down")
+    local = Fake("ollama", "local", error=ProviderUnavailable("ollama", "down"))
+    cloud = Fake("claude", "cloud", error=second)
+
+    with pytest.raises(RouteFailed) as info:
+        run(identity, [local, cloud], allow_cloud=True)
+
+    assert info.value.__cause__ is second

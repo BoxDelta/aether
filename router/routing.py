@@ -360,15 +360,23 @@ class Router:
             response = await self._call(decision, request)
         except ProviderError as exc:
             first = Attempt.from_error(exc)
-            fallback = await self._fallback_decision(request, options, first)
-            if isinstance(fallback, str):
-                raise RouteFailed(fallback, [first]) from exc
-            if on_decision is not None:
-                on_decision(fallback)
+            # Raises RouteFailed when there is no fallback.
+            fallback = await self._fallback_decision(request, options, first, exc)
         else:
             # Any response is final, including finish_reason="refusal".
             return RoutedResponse(decision, response)
+        if on_decision is not None:
+            on_decision(fallback)
+        return await self._call_fallback(fallback, request, first)
 
+    async def _call(self, decision: RouteDecision, request: ModelRequest) -> ModelResponse:
+        provider = self._by_name[decision.provider]
+        return await call_with_identity(provider, request, self._identity)
+
+    async def _call_fallback(
+        self, fallback: RouteDecision, request: ModelRequest, first: Attempt
+    ) -> RoutedResponse:
+        """The one fallback call. Any failure ends routing: at most one fallback."""
         try:
             response = await self._call(fallback, request)
         except ProviderError as exc:
@@ -382,14 +390,14 @@ class Router:
             raise RouteFailed(reason, [first, second]) from exc
         return RoutedResponse(fallback, response, failed_first=first)
 
-    async def _call(self, decision: RouteDecision, request: ModelRequest) -> ModelResponse:
-        provider = self._by_name[decision.provider]
-        return await call_with_identity(provider, request, self._identity)
-
     async def _fallback_decision(
-        self, request: ModelRequest, options: RouteOptions, first: Attempt
-    ) -> RouteDecision | str:
-        """The fallback route, or the reason there is none (logged as "No failover")."""
+        self, request: ModelRequest, options: RouteOptions, first: Attempt, cause: ProviderError
+    ) -> RouteDecision:
+        """The fallback route, chosen by ``decide()`` without the failed provider.
+
+        Raises ``RouteFailed`` with the one failed attempt (logged as "No failover") if
+        the error is not retryable, a manual override is set, or no other route exists.
+        """
         if not first.retryable:
             reason = f"no failover: {first.provider} error is not retryable ({first.error_type})"
         elif options.override is not None:
@@ -412,7 +420,8 @@ class Router:
                 )
                 return decision
         logger.warning("No failover", extra={**_attempt_fields(first), "reason": reason})
-        return reason
+        # Raised outside the NoRoute handler: the chain is the provider error, as before.
+        raise RouteFailed(reason, [first]) from cause
 
 
 def _attempt_fields(attempt: Attempt) -> dict[str, object]:
