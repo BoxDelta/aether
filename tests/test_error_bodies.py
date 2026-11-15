@@ -4,9 +4,15 @@ The bytes below were captured from ``main`` before the error format moved to
 ``core/errors.py``; any change to an error body must be deliberate.
 """
 
+from typing import cast
+
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from tests.test_chat import Setup
+from core.app import create_app
+from core.config import Settings
+from core.identity import load_identity
+from tests.test_chat import Setup, error_with_key_cause
 
 HEADERS = {"x-request-id": "pin-1"}
 JSON = {"content-type": "application/json"}
@@ -62,7 +68,43 @@ def test_other_error_bodies_have_no_fields_key() -> None:
     )
 
 
+def test_502_route_failed_body_is_pinned() -> None:
+    s = Setup(
+        local_error=error_with_key_cause("ollama"), cloud_error=error_with_key_cause("claude")
+    )
+    r = s.client.post(
+        "/chat",
+        json={"messages": [{"role": "user", "content": "hi"}], "allow_cloud": True},
+        headers=HEADERS,
+    )
+    assert r.status_code == 502
+    assert r.content == (
+        b'{"request_id":"pin-1","error":{"type":"RouteFailed",'
+        b'"message":"fallback claude also failed (ProviderUnavailable)","attempts":['
+        b'{"provider":"ollama","error_type":"ProviderUnavailable",'
+        b'"message":"cannot connect to ollama"},'
+        b'{"provider":"claude","error_type":"ProviderUnavailable",'
+        b'"message":"cannot connect to claude"}'
+        b"]}}"
+    )
+
+
+def test_503_auth_not_configured_body_is_pinned() -> None:
+    # No AETHER_API_TOKEN: every protected route answers 503 AuthNotConfigured.
+    router = cast(FastAPI, Setup().client.app).state.router
+    app = create_app(Settings(_env_file=None), load_identity(), router=router)
+    r = TestClient(app).post(
+        "/chat", json={"messages": [{"role": "user", "content": "hi"}]}, headers=HEADERS
+    )
+    assert r.status_code == 503
+    assert r.content == (
+        b'{"request_id":"pin-1","error":{"type":"AuthNotConfigured",'
+        b'"message":"API token is not configured on the server","attempts":[]}}'
+    )
+
+
 def test_documented_422_model_has_fields() -> None:
     schema = TestClient(Setup().client.app).get("/openapi.json", headers=Setup().client.headers)
     error_info = schema.json()["components"]["schemas"]["ErrorInfo"]
     assert "fields" in error_info["properties"]
+    assert "only on 422" in error_info["properties"]["fields"]["description"]

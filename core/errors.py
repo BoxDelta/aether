@@ -37,8 +37,12 @@ class ErrorInfo(BaseModel):
     type: str
     message: str
     attempts: list[AttemptInfo] = []
-    # Only on 422 validation errors; left out of the JSON otherwise.
-    fields: list[FieldError] | None = Field(default=None, exclude_if=lambda v: v is None)
+    # Only on 422 validation errors; error_json() leaves it out of the JSON otherwise.
+    fields: list[FieldError] | None = Field(
+        default=None,
+        description="Present only on 422 validation errors (location and message per "
+        "problem, never the input); omitted from every other error.",
+    )
 
 
 class ErrorResponse(BaseModel):
@@ -50,7 +54,9 @@ def error_json(status: int, error_type: str, message: str, **extra: Any) -> JSON
     body = ErrorResponse(
         request_id=get_request_id(), error=ErrorInfo(type=error_type, message=message, **extra)
     )
-    return JSONResponse(status_code=status, content=body.model_dump())
+    # ``fields`` is omitted, not null, when unset, so non-422 bodies are unchanged.
+    exclude = {"error": {"fields"}} if body.error.fields is None else None
+    return JSONResponse(status_code=status, content=body.model_dump(exclude=exclude))
 
 
 def _safe_validation_errors(errors: Any) -> list[FieldError]:
