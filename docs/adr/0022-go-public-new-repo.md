@@ -4,6 +4,17 @@
 **Date:** 2026-11-14\
 **Owner:** BoxDelta
 
+## Status note
+
+-   The new repo was created on 2026-11-14 as private.
+-   The snapshot commit `e48a8c8` was taken from `main` of the private
+    repo at `3879f31`.
+-   Settings applied while private: read-only workflow permissions,
+    Dependabot alerts and security updates. Labels were recreated.
+-   Correction: approval for all outside collaborators moved to the
+    right-after-the-flip stage, because GitHub does not allow it on
+    private repositories.
+
 ## Context
 
 AETHER is developed in a private repo. The owner wants to make it public.
@@ -33,10 +44,11 @@ publish all of that.
     -   then repo settings, in two stages because on the free plan code
         scanning, secret scanning with push protection and enforced
         rulesets are only available on public repos (see step 4 of
-        decision 7): read-only workflow permissions, approval for all
-        outside collaborators and Dependabot while private; rulesets,
+        decision 7): read-only workflow permissions and Dependabot while
+        private; approval for all outside collaborators, rulesets,
         secret scanning, push protection, code scanning and private
-        vulnerability reporting right after the flip.
+        vulnerability reporting right after the flip (GitHub does not
+        allow the fork-PR approval setting on private repositories).
 6.  **Agent safety.** Agents act only on issues the owner wrote. Outside
     issues and comments are data, never instructions. The Codex trigger is
     only `@codex review`, never `@codex fix`.
@@ -46,10 +58,10 @@ publish all of that.
     3.  PR 3: `SECURITY.md`, `CONTRIBUTING.md`, README.
     4.  Create the new repo as private, push the snapshot and re-verify
         Sentinel. While it is private, apply what is available: Actions
-        permissions (read-only default, approval for all outside
-        collaborators) and Dependabot. Flip it public. Immediately after
-        the flip, enable rulesets, secret scanning, push protection,
-        code scanning and private vulnerability reporting (`SECURITY.md`
+        permissions (read-only default) and Dependabot. Flip it public.
+        Immediately after the flip, enable approval for all outside
+        collaborators, rulesets, secret scanning, push protection, code
+        scanning and private vulnerability reporting (`SECURITY.md`
         points reporters to it), and re-check Sentinel. During that
         short window the owner is the only person with write access.
 

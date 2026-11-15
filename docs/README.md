@@ -53,6 +53,12 @@ host environment is Arch / GNOME, with Android access planned.
                                                  (Phase 1 exit check, #23)
   ----------------------------------------------------------------------------------
 
+## Issue references
+
+References like `#NN` in these docs and in code comments point to issues
+and pull requests in the original private development repository (now
+archived as `aether-private-archive`), not to this repository.
+
 ## Important status note
 
 This documentation describes a proposed system. It does not mean the
