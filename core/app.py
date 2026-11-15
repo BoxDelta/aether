@@ -12,15 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from core import __version__
 from core.auth import BearerAuth, configured_token
-from core.chat import (
-    CHAT_PATH,
-    MAX_BODY_BYTES,
-    BodySizeLimit,
-    chat_router,
-    validation_error_handler,
-)
+from core.chat import CHAT_PATH, MAX_BODY_BYTES, BodySizeLimit, chat_router
 from core.config import Settings, get_settings
 from core.db import DatabaseConfigError, create_engine
+from core.errors import validation_error_handler
 from core.events import EventRecorder, EventWriter
 from core.identity import Identity, load_identity
 from core.log import Redactor, configure_logging, secrets_from

@@ -21,8 +21,8 @@ from typing import Literal
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from core.chat import error_json
 from core.config import Settings
+from core.errors import error_json
 
 logger = logging.getLogger("aether.core.auth")
 
