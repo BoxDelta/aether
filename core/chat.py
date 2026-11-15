@@ -225,13 +225,20 @@ async def chat(
     # Runs after the response is sent; sees every event appended below.
     background.add_task(recorder.record, events, request)
 
+    # Events are appended as things happen, so the list order and each occurred_at
+    # match reality: received, selected, unavailable, selected (fallback), then
+    # completed, or unavailable (fallback) and failed.
     def on_decision(decision: RouteDecision) -> None:
         events.append(route_selected(decision, request, options))
 
+    def on_attempt_failed(attempt: Attempt) -> None:
+        events.append(provider_unavailable(attempt, request))
+
     try:
-        routed = await router.handle(request, options, on_decision=on_decision)
+        routed = await router.handle(
+            request, options, on_decision=on_decision, on_attempt_failed=on_attempt_failed
+        )
     except RouteFailed as exc:
-        events.extend(provider_unavailable(a, request) for a in exc.attempts)
         events.append(request_failed(exc, request, options))
         return error_json(
             502,
@@ -246,9 +253,6 @@ async def chat(
     response = routed.response
     failover_from = None
     if routed.failed_first is not None:
-        # Event order: received, selected (first), unavailable (first),
-        # selected (fallback), completed.
-        events.insert(2, provider_unavailable(routed.failed_first, request))
         failover_from = _attempt_info(routed.failed_first, redact)
     events.append(call_completed(response, request))
 

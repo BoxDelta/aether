@@ -583,3 +583,78 @@ def test_real_writer_with_unreachable_database_still_answers(
     assert warnings[0]["error_type"] in {"OSError", "ConnectionRefusedError"}
     assert "not-a-real-pw-456" not in out
     assert PROMPT not in out and ANSWER not in out
+
+
+# --- event order (#30): appended as things happen, one order for every path ---------
+
+EVENT_ORDERS = [
+    pytest.param(
+        {},
+        {},
+        200,
+        [
+            ("request.received", None),
+            ("model.route.selected", "ollama"),
+            ("model.call.completed", "ollama"),
+        ],
+        id="no-failover",
+    ),
+    pytest.param(
+        {"local_error": ProviderTimeout("ollama", "slow")},
+        {"allow_cloud": True},
+        200,
+        [
+            ("request.received", None),
+            ("model.route.selected", "ollama"),
+            ("provider.unavailable", "ollama"),
+            ("model.route.selected", "claude"),
+            ("model.call.completed", "claude"),
+        ],
+        id="failover-succeeds",
+    ),
+    pytest.param(
+        {
+            "local_error": error_with_key_cause("ollama"),
+            "cloud_error": error_with_key_cause("claude"),
+        },
+        {"allow_cloud": True},
+        502,
+        [
+            ("request.received", None),
+            ("model.route.selected", "ollama"),
+            ("provider.unavailable", "ollama"),
+            ("model.route.selected", "claude"),
+            ("provider.unavailable", "claude"),
+            ("request.failed", None),
+        ],
+        id="failover-fails",
+    ),
+    pytest.param(
+        {"local_error": error_with_key_cause("ollama")},
+        {},  # allow_cloud defaults to false: no fallback
+        502,
+        [
+            ("request.received", None),
+            ("model.route.selected", "ollama"),
+            ("provider.unavailable", "ollama"),
+            ("request.failed", None),
+        ],
+        id="no-fallback",
+    ),
+]
+
+
+@pytest.mark.parametrize(("setup", "body", "status", "expected"), EVENT_ORDERS)
+def test_events_are_recorded_in_the_order_they_happen(
+    setup: dict[str, Any], body: dict[str, Any], status: int, expected: list[tuple[str, Any]]
+) -> None:
+    s = Setup(**setup)
+
+    r = s.post(**body)
+
+    assert r.status_code == status
+    assert [(e["event_type"], e["provider"]) for e in s.rows] == expected
+    # Each occurred_at is taken when the thing happened, so they never go backwards.
+    times = [e["occurred_at"] for e in s.rows]
+    assert times == sorted(times)
+    assert_no_content(repr(s.rows))
