@@ -12,7 +12,7 @@ from pydantic import SecretStr
 
 from core.config import DEFAULT_CLOUD_MAX_OUTPUT_TOKENS, Settings
 from core.log import configure_logging
-from router.claude import FALLBACK_BETA, ClaudeProvider
+from router.claude import ANTHROPIC_API_BASE_URL, FALLBACK_BETA, ClaudeProvider
 from router.contract import (
     Message,
     ModelRequest,
@@ -182,6 +182,29 @@ def test_api_key_is_sent_only_in_its_header() -> None:
     assert carrying_key == ["authorization"]
     assert FAKE_KEY not in sent.content.decode()
     assert FAKE_KEY not in str(sent.url)
+
+
+def test_environment_cannot_redirect_the_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    # #9: a stray ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN must not change where the
+    # key and prompts go, or which credential is sent.
+    env_credential = "env-auth-token-should-never-be-sent"  # gitleaks:allow
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://attacker.example.net")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", env_credential)
+    rec = Recorder(ok)
+
+    p = provider(rec)
+    generate(p)
+
+    assert ANTHROPIC_API_BASE_URL == "https://api.anthropic.com"
+    assert p._client is not None
+    assert str(p._client.base_url).rstrip("/") == ANTHROPIC_API_BASE_URL
+    assert p._client.auth_token is None
+    sent = rec.requests[-1]
+    assert sent.url.scheme == "https"
+    assert sent.url.host == "api.anthropic.com"
+    assert sent.headers["authorization"] == f"Bearer {FAKE_KEY}"
+    assert all(env_credential not in value for value in sent.headers.values())
+    assert "attacker.example.net" not in str(sent.url)
 
 
 def test_only_text_blocks_become_text() -> None:
