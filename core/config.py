@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     # Default cloud model (Claude API).
     anthropic_model: str = Field(default="claude-opus-5-5", min_length=1)
     ollama_host: AnyHttpUrl = AnyHttpUrl("http://localhost:11434")
+    # Opt-in (#10, ADR-023): let Ollama receive Sensitive data on a host that is not
+    # loopback or a private/link-local IP literal, e.g. a private overlay network.
+    # Off by default; without it such a host is capped at "personal".
+    aether_ollama_trust_host: bool = False
     # Default local model. Must fit the VRAM budget (Charter: keep >= 1.5 GB of 8 GB free);
     # confirmed on the real PC in the Phase 1 exit check (#23).
     ollama_model: str = Field(default="llama3.1:8b", min_length=1)
@@ -91,6 +95,14 @@ class Settings(BaseSettings):
         raw = value.get_secret_value() if isinstance(value, SecretStr) else value
         if isinstance(raw, str) and not raw.strip():
             return None
+        return value
+
+    @field_validator("aether_ollama_trust_host", mode="before")
+    @classmethod
+    def _empty_flag_is_off(cls, value: object) -> object:
+        # `AETHER_OLLAMA_TRUST_HOST=` left empty (as in .env.example) means off.
+        if isinstance(value, str) and not value.strip():
+            return False
         return value
 
     @field_validator("log_level", mode="before")

@@ -183,6 +183,32 @@ In code, the level names and their order are defined once, in
 a test fails if any other module lists the names again or if the events
 table's CHECK constraint drifts from that order (#58).
 
+**Trust boundary: `OLLAMA_HOST` (ADR-023, #10).** "Local only" means
+the Ollama host is on this machine or the local network, not just that
+the Ollama adapter is used. Core decides this from the URL text, without
+resolving DNS, and the Ollama client follows no redirects and ignores
+proxy environment variables, so it only talks to the host it checked:
+
+-   Trusted (`max_privacy` `sensitive`): the exact name `localhost`
+    (resolved by the OS on connect) and IP literals in
+    127.0.0.0/8, ::1, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 and
+    link-local (169.254.0.0/16, fe80::/10).
+-   Any other host (a name, a public IP, an overlay or CGNAT address,
+    IPv6 unique-local): Ollama is capped at `personal`, Sensitive
+    requests are refused, and Core logs one fixed-text startup warning
+    that carries no host or other value.
+-   `AETHER_OLLAMA_TRUST_HOST=true` (off by default) trusts such a host
+    deliberately, for example a private overlay network; Core then logs
+    that the opt-in is active.
+-   Known limitations: a private-range address is trusted even on a
+    network the owner doesn't control; the opt-in is not checked
+    further; and an untrusted Ollama host still receives Personal
+    requests without `allow_cloud`, because it stays `kind="local"`
+    (#22); and an https `OLLAMA_HOST` signed by a private CA is not
+    trusted, because the client ignores `SSL_CERT_FILE`/`SSL_CERT_DIR`
+    and verifies against the certifi bundle, not the system trust store
+    (#24).
+
 ## 8. Execution isolation
 
 -   Run code tests in a dedicated workspace or container where feasible.

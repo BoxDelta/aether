@@ -6,4 +6,5 @@ and add it to the register in `../03_Technology_Stack_and_Decisions.md`.
 ADR-001 to ADR-008 are recorded in that register (original baseline);
 ADR-005 also has its own file since it was accepted. ADR-009 onward
 have their own files here. ADR-022 (go public via a new repo) is
-Accepted (2026-11-14).
+Accepted (2026-11-14). ADR-023 (Ollama host trust) is
+Accepted (2026-11-15).
