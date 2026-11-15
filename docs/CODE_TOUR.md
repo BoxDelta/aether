@@ -45,9 +45,9 @@ the design, follow the ADR numbers into `docs/adr/`.
     validates the JSON. The caller sets `privacy`
     (public / personal / sensitive / secret); if they don't, it defaults to
     `personal`. `allow_cloud` defaults to `false`. Validation errors never
-    echo the input (`validation_error_handler`, `core/errors.py`). The handler `chat()` turns the body into a
-    `ModelRequest` (`router/contract.py`) and records a `request_received`
-    event.
+    echo the input (`validation_error_handler`, `core/errors.py`). The
+    handler `chat()` turns the body into a `ModelRequest`
+    (`router/contract.py`) and records a `request_received` event.
 5.  **Routing.** `Router.handle()` → `Router.decide()`
     (`router/routing.py`):
     -   `secret` is refused before anything else;
