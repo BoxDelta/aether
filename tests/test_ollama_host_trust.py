@@ -130,12 +130,15 @@ def test_untrusted_host_is_capped_at_personal(host: str) -> None:
 def test_untrusted_host_warning_is_metadata_only(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.WARNING, logger="aether.router.ollama")
 
-    provider(f"https://{UNTRUSTED_HOST_MARKER}:11434", [])
+    p = provider(f"https://{UNTRUSTED_HOST_MARKER}:11434", [])
 
     [record] = caplog.records
     assert record.levelno == logging.WARNING
-    assert record.__dict__["host_category"] == "hostname"
+    assert "capped at personal" in record.getMessage()
+    assert "host_category" not in record.__dict__  # fixed text, no extra fields
+    assert p.host_category == "hostname"
     assert all(UNTRUSTED_HOST_MARKER not in str(r.__dict__) for r in caplog.records)
+    assert UNTRUSTED_HOST_MARKER not in caplog.text
 
 
 def test_trusted_host_logs_nothing(caplog: pytest.LogCaptureFixture) -> None:
@@ -156,8 +159,10 @@ def test_opt_in_trusts_another_host(caplog: pytest.LogCaptureFixture) -> None:
     asyncio.run(p.generate(request("sensitive")))
     assert len(seen) == 1
     [record] = caplog.records
-    assert record.__dict__["host_category"] == "other_ip"
+    assert "AETHER_OLLAMA_TRUST_HOST" in record.getMessage()
+    assert p.host_category == "other_ip"
     assert "100.64.0.1" not in str(record.__dict__)
+    assert "100.64.0.1" not in caplog.text
 
 
 def test_redirect_is_not_followed() -> None:

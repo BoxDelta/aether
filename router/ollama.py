@@ -11,7 +11,7 @@ classified from the URL text alone; DNS is never resolved. Trusted: ``localhost`
 and literal IPs in 127.0.0.0/8, ::1, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
 and link-local (169.254.0.0/16, fe80::/10). Any other host (a name, a public IP,
 an overlay-network address) caps the provider at ``personal`` and logs one
-metadata-only warning, unless ``AETHER_OLLAMA_TRUST_HOST`` is set. The host value
+fixed-text warning (no variables), unless ``AETHER_OLLAMA_TRUST_HOST`` is set. The host value
 is never logged.
 """
 
@@ -105,18 +105,17 @@ class OllamaProvider(Provider):
         )
         self.host_category: HostCategory = category
         if not trusted:
-            # Metadata only: the category, never the host value.
+            # Fixed text only: no variable reaches the log call, so the host can't
+            # leak. The category stays on the provider (host_category).
             logger.warning(
                 "OLLAMA_HOST is not loopback or a private address; Ollama is capped at "
                 "personal and will refuse sensitive requests. Set AETHER_OLLAMA_TRUST_HOST "
                 "only if you deliberately trust that host.",
-                extra={"host_category": category},
             )
         elif category not in TRUSTED_CATEGORIES:
             logger.warning(
                 "OLLAMA_HOST is not loopback or a private address but is trusted by "
                 "AETHER_OLLAMA_TRUST_HOST; Ollama may receive sensitive requests.",
-                extra={"host_category": category},
             )
         client_kwargs: dict[str, Any] = {
             "timeout": httpx.Timeout(None, connect=CONNECT_TIMEOUT_S),

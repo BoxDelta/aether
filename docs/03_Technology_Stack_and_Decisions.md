@@ -240,7 +240,7 @@ Consequences and risks. - Date and owners. - Revisit conditions.
                           repo from a clean       
                           snapshot                
 
-  ADR-023                 Ollama is local only on Proposed
+  ADR-023                 Ollama is local only on Accepted
                           a loopback or private   
                           host                    
   -----------------------------------------------------------------------

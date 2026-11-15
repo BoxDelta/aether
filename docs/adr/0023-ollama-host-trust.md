@@ -1,6 +1,6 @@
 # ADR-023: Treat Ollama as local only on a loopback or private host
 
-**Status:** Proposed (owner to accept)\
+**Status:** Accepted (owner, 2026-11-15)\
 **Date:** 2026-11-14\
 **Owner:** BoxDelta
 
@@ -27,12 +27,13 @@ by class, wherever `OLLAMA_HOST` pointed. A remote or https
     unique-local (fc00::/7), IPv4-mapped IPv6 and `0.0.0.0`.
 3.  An untrusted host caps the provider at `max_privacy="personal"`.
     Sensitive requests are refused for it (and, with no other allowed
-    provider, get `NoRoute`). Core logs one warning at startup with the
-    host category only, never the host value.
+    provider, get `NoRoute`). Core logs one fixed-text warning at
+    startup that carries no host or other value; the category is kept on
+    the provider (`host_category`).
 4.  `AETHER_OLLAMA_TRUST_HOST=true` is an explicit opt-in, off by
     default, for an owner who deliberately trusts another host (for
     example a private overlay network). It restores `sensitive` and
-    logs a warning (category only) that the opt-in is active.
+    logs a fixed-text warning that the opt-in is active.
 5.  The provider stays `kind="local"`, so routing rules are unchanged:
     a Personal request can still go to an untrusted Ollama host without
     `allow_cloud` (#22).
@@ -55,7 +56,10 @@ setup for Public and Personal use); treating an untrusted host as
     network the owner doesn't control (for example public Wi-Fi). The
     opt-in trusts the host the owner names, with no further check.
     Personal data still goes to an untrusted Ollama host without
-    `allow_cloud` (#22).
+    `allow_cloud` (#22). Because the client ignores the environment, an
+    https `OLLAMA_HOST` signed by a private CA is not trusted:
+    `SSL_CERT_FILE`/`SSL_CERT_DIR` are ignored and httpx verifies
+    against the certifi bundle, not the system trust store (#24).
 
 ## Revisit when
 

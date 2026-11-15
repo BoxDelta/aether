@@ -195,8 +195,8 @@ proxy environment variables, so it only talks to the host it checked:
     link-local (169.254.0.0/16, fe80::/10).
 -   Any other host (a name, a public IP, an overlay or CGNAT address,
     IPv6 unique-local): Ollama is capped at `personal`, Sensitive
-    requests are refused, and Core logs one startup warning with the
-    host category only, never the host.
+    requests are refused, and Core logs one fixed-text startup warning
+    that carries no host or other value.
 -   `AETHER_OLLAMA_TRUST_HOST=true` (off by default) trusts such a host
     deliberately, for example a private overlay network; Core then logs
     that the opt-in is active.
@@ -204,7 +204,10 @@ proxy environment variables, so it only talks to the host it checked:
     network the owner doesn't control; the opt-in is not checked
     further; and an untrusted Ollama host still receives Personal
     requests without `allow_cloud`, because it stays `kind="local"`
-    (#22).
+    (#22); and an https `OLLAMA_HOST` signed by a private CA is not
+    trusted, because the client ignores `SSL_CERT_FILE`/`SSL_CERT_DIR`
+    and verifies against the certifi bundle, not the system trust store
+    (#24).
 
 ## 8. Execution isolation
 
