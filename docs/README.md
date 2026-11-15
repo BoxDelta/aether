@@ -47,6 +47,9 @@ host environment is Arch / GNOME, with Android access planned.
   `07_Identity_Specification.md`                 What the single AETHER identity
                                                  is and how it is applied
 
+  `CODE_TOUR.md`                                 One-page tour of the code for a
+                                                 new developer
+
   `adr/`                                         Architecture decision records
 
   `runbooks/`                                    Step-by-step checks on the real PC
