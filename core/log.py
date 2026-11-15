@@ -3,12 +3,24 @@
 Every record becomes one JSON line with: timestamp (UTC), level, logger, message,
 request_id, session_id, any ``extra`` fields, and ``exc_info`` when present.
 
-Redaction runs on the final rendered values (message, extras, traceback):
-- exact values of configured secrets (``ANTHROPIC_API_KEY``, the password in
-  ``DATABASE_URL``),
-- anything that looks like an Anthropic API key, configured or not, and
-- the password in any ``scheme://user:password@host`` URL, configured or not
-  (user and host are kept so the log stays useful).
+Redaction runs on the final rendered values (message, extras, traceback), in
+this order:
+
+1. Exact values of configured secrets (``secrets_from()``), longest first:
+   - ``ANTHROPIC_API_KEY``;
+   - ``AETHER_API_TOKEN``;
+   - the password in ``DATABASE_URL``, both as written and percent-decoded.
+
+   Values shorter than ``MIN_SECRET_LENGTH`` (8) are not redacted by value, so
+   ordinary log text isn't corrupted; the patterns below still apply.
+2. Patterns, configured or not (``_KEY_PATTERNS``):
+   - anything that looks like an Anthropic API key (``sk-ant-...``);
+   - any ``Bearer <credential>`` value (8+ characters), e.g. a wrong token.
+3. The password in any ``scheme://user:password@host`` URL, configured or not
+   (``_URL_CREDENTIALS``; user and host are kept so the log stays useful).
+
+``tests/test_log_redaction_docs.py`` fails if ``secrets_from()`` reads a setting
+or ``_KEY_PATTERNS`` gains a pattern that this docstring doesn't list.
 """
 
 import json
