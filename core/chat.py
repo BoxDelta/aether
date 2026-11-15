@@ -271,7 +271,8 @@ async def chat(
     response = routed.response
     failover_from = None
     if routed.failed_first is not None:
-        # received, selected(first), unavailable(first), selected(fallback), completed
+        # Event order: received, selected (first), unavailable (first),
+        # selected (fallback), completed.
         events.insert(2, provider_unavailable(routed.failed_first, request))
         failover_from = _attempt_info(routed.failed_first, redact)
     events.append(call_completed(response, request))
@@ -303,7 +304,7 @@ def _safe_validation_errors(errors: Any) -> list[dict[str, Any]]:
     ]
 
 
-async def validation_error_handler(request: Request, exc: Exception) -> JSONResponse:
+async def validation_error_handler(_request: Request, exc: Exception) -> JSONResponse:
     errors: Any = exc.errors() if isinstance(exc, RequestValidationError) else []
     body = ErrorResponse(
         request_id=get_request_id(),

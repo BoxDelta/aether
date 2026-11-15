@@ -208,23 +208,24 @@ def _map_error(exc: anthropic.AnthropicError) -> ProviderError:
     if isinstance(exc, anthropic.APIConnectionError):
         return ProviderUnavailable(PROVIDER_NAME, "cannot connect to the Claude API")
     if isinstance(exc, anthropic.APIStatusError):
-        status = exc.status_code
-        ref = (
-            f" (HTTP {status}, request_id={exc.request_id})"
-            if exc.request_id
-            else f" (HTTP {status})"
-        )
-        if isinstance(exc, anthropic.AuthenticationError | anthropic.PermissionDeniedError):
-            return ProviderUnavailable(
-                PROVIDER_NAME, f"authentication failed{ref}", retryable=False
-            )
-        if isinstance(exc, anthropic.NotFoundError):
-            return ProviderUnavailable(PROVIDER_NAME, f"model not found{ref}", retryable=False)
-        if isinstance(exc, anthropic.RateLimitError):
-            return ProviderUnavailable(PROVIDER_NAME, f"rate limited{ref}")
-        if isinstance(exc, anthropic.RequestTimeoutError):
-            return ProviderTimeout(PROVIDER_NAME, f"request timed out{ref}")
-        if status >= 500:
-            return ProviderUnavailable(PROVIDER_NAME, f"server error or overloaded{ref}")
-        return ProviderBadResponse(PROVIDER_NAME, f"request rejected{ref}")
+        return _map_status_error(exc)
     return ProviderBadResponse(PROVIDER_NAME, f"unexpected {type(exc).__name__} from the SDK")
+
+
+def _map_status_error(exc: anthropic.APIStatusError) -> ProviderError:
+    """Map an HTTP status error from the SDK, using only the status and request id."""
+    status = exc.status_code
+    ref = (
+        f" (HTTP {status}, request_id={exc.request_id})" if exc.request_id else f" (HTTP {status})"
+    )
+    if isinstance(exc, anthropic.AuthenticationError | anthropic.PermissionDeniedError):
+        return ProviderUnavailable(PROVIDER_NAME, f"authentication failed{ref}", retryable=False)
+    if isinstance(exc, anthropic.NotFoundError):
+        return ProviderUnavailable(PROVIDER_NAME, f"model not found{ref}", retryable=False)
+    if isinstance(exc, anthropic.RateLimitError):
+        return ProviderUnavailable(PROVIDER_NAME, f"rate limited{ref}")
+    if isinstance(exc, anthropic.RequestTimeoutError):
+        return ProviderTimeout(PROVIDER_NAME, f"request timed out{ref}")
+    if status >= 500:
+        return ProviderUnavailable(PROVIDER_NAME, f"server error or overloaded{ref}")
+    return ProviderBadResponse(PROVIDER_NAME, f"request rejected{ref}")
