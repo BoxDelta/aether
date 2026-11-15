@@ -49,13 +49,14 @@ _KEY_PATTERNS = (
     re.compile(r"sk-ant-[A-Za-z0-9_\-]{8,}"),
     # Any bearer credential, configured or not (e.g. a wrong token): backstop only,
     # the auth middleware never logs header values (#57).
-    # The word and its whitespace are kept (group "head"); only the credential goes.
-    re.compile(r"(?P<head>(?i:bearer)\s+)[A-Za-z0-9._~+/=\-]{8,}"),
+    # The word is a fixed-width lookbehind (so a credential ending in "bearer" can't
+    # hide the next one) and the whitespace is kept (group "head").
+    re.compile(r"(?<=(?i:bearer))(?P<head>\s+)[A-Za-z0-9._~+/=\-]{8,}"),
 )
 
 
 def _redact_match(match: re.Match[str]) -> str:
-    # Keep a pattern's "head" group (e.g. "Bearer "), replace the rest.
+    # Keep a pattern's "head" group (the whitespace after "Bearer"), replace the rest.
     return (match.groupdict().get("head") or "") + REDACTED
 
 
@@ -91,9 +92,12 @@ class Redactor:
     def __call__(self, text: str) -> str:
         for secret in self._secrets:
             text = text.replace(secret, REDACTED)
+        # URL passwords first: a key pattern could otherwise eat the scheme
+        # ("bearer postgresql://...") and hide the URL from _URL_CREDENTIALS.
+        text = _URL_CREDENTIALS.sub(rf"\g<head>{REDACTED}@", text)
         for pattern in _KEY_PATTERNS:
             text = pattern.sub(_redact_match, text)
-        return _URL_CREDENTIALS.sub(rf"\g<head>{REDACTED}@", text)
+        return text
 
 
 class JsonFormatter(logging.Formatter):

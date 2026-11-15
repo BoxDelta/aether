@@ -50,7 +50,7 @@ def test_bearer_pattern_rules_are_documented() -> None:
     doc = " ".join((log.__doc__ or "").split())
     assert "in any casing" in doc
     assert "one or more whitespace characters" in doc
-    assert "(?i:bearer)\\s+" in log._KEY_PATTERNS[1].pattern
+    assert "(?<=(?i:bearer))(?P<head>\\s+)" in log._KEY_PATTERNS[1].pattern
 
 
 def test_documented_lengths_match_the_code() -> None:

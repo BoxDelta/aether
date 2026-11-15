@@ -324,6 +324,23 @@ def test_ordinary_text_with_the_word_bearer_is_not_corrupted() -> None:
     assert redact("a bearer instrument") == f"a bearer {REDACTED}"
 
 
+def test_credential_ending_in_bearer_does_not_hide_the_next_one() -> None:
+    # Review of #42: matches must not overlap, as with the old lookbehind.
+    redact = Redactor()
+    assert redact("Bearer abc.def.bearer SECRET12345") == f"Bearer {REDACTED} {REDACTED}"
+    assert redact("Bearer abcdefgBEARER\tsecret999") == f"Bearer {REDACTED}\t{REDACTED}"
+
+
+@pytest.mark.parametrize("prefix", ["bearer ", "BEARER ", "Bearer\t"])
+def test_url_password_after_bearer_is_redacted(prefix: str) -> None:
+    # Review of #42: URL passwords are redacted before the key patterns, so the
+    # Bearer pattern can't eat the scheme and hide the URL.
+    redact = Redactor()
+    out = redact(f"{prefix}postgresql://user:longpassword99@host/db")
+    assert "longpassword99" not in out
+    assert f":{REDACTED}@host/db" in out
+
+
 def test_token_in_provider_error_never_reaches_body_or_events() -> None:
     # A provider error message that (somehow) contains the token: scrubbed everywhere.
     a = App(local_error=ProviderUnavailable("ollama", f"rejected {TOKEN}"))
