@@ -350,6 +350,12 @@ def test_engine_for_disposes_only_its_own_engine(monkeypatch: pytest.MonkeyPatch
             async with core.db.engine_for(settings(), None):
                 raise RuntimeError("boom")
 
+    async def returns_early() -> str:
+        # The path check_database and ready._database use: return from inside.
+        async with core.db.engine_for(settings(), None):
+            return "early"
+
     asyncio.run(run())
+    assert asyncio.run(returns_early()) == "early"
     assert passed.disposed == 0
-    assert [m.disposed for m in made] == [1, 1]
+    assert [m.disposed for m in made] == [1, 1, 1]
