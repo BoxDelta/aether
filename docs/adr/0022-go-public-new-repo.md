@@ -14,6 +14,18 @@
 -   Correction: approval for all outside collaborators moved to the
     right-after-the-flip stage, because GitHub does not allow it on
     private repositories.
+-   The repo was made public on 2026-11-14.
+-   Applied right after the flip:
+    -   ruleset "protect-main": pull request required, required checks
+        `checks` and `secrets` from GitHub Actions, no force push or
+        branch deletion, empty bypass list, no required approvals;
+    -   secret scanning and push protection;
+    -   code scanning (default setup);
+    -   private vulnerability reporting;
+    -   fork-PR approval for all external contributors;
+    -   repository topics.
+-   Verified: a direct push to `main` was rejected by the ruleset.
+-   The old repo is archived and private.
 
 ## Context
 
