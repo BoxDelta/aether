@@ -26,6 +26,7 @@ from router.hardware import GpuState, HardwareSnapshot
 from router.routing import (
     Attempt,
     NoRoute,
+    RouteDecision,
     RoutedResponse,
     RouteFailed,
     RouteOptions,
@@ -544,3 +545,83 @@ def test_raising_on_attempt_failed_never_changes_routing(
         ("WARNING", "RuntimeError")
     }
     assert_no_leaks(logs)
+
+
+# --- on_decision (#48): guarded like on_attempt_failed --------------------------------
+
+DECISION_CASES = [
+    # (local error, cloud error, options, decisions reported)
+    pytest.param(None, None, {"allow_cloud": True}, 1, id="no-failover"),
+    pytest.param(ProviderTimeout("ollama", "slow"), None, {"allow_cloud": True}, 2, id="succeeds"),
+    pytest.param(
+        ProviderTimeout("ollama", "slow"),
+        ProviderUnavailable("claude", "down"),
+        {"allow_cloud": True},
+        2,
+        id="fails",
+    ),
+    pytest.param(
+        ProviderBadResponse("ollama", "bad"), None, {"allow_cloud": True}, 1, id="no-fallback"
+    ),
+]
+
+
+def outcome_with_on_decision(
+    identity: Identity,
+    local_error: ProviderError | None,
+    cloud_error: ProviderError | None,
+    options: dict[str, object],
+    on_decision: Callable[[RouteDecision], None],
+) -> tuple[object, list[int]]:
+    local = Fake("ollama", "local", error=local_error)
+    cloud = Fake("claude", "cloud", error=cloud_error)
+    router = Router([local, cloud], identity, probe=lambda: probe(ROOM))
+    request = ModelRequest(messages=(Message(role="user", content=PROMPT_TEXT),))
+    try:
+        result = asyncio.run(
+            router.handle(request, RouteOptions.model_validate(options), on_decision=on_decision)
+        )
+        outcome: object = ("ok", result.decision, result.response.text, result.failed_first)
+    except RouteFailed as exc:
+        chain = (exc.__cause__, exc.__context__, exc.__suppress_context__)
+        outcome = ("RouteFailed", exc.reason, exc.attempts, chain)
+    return outcome, [local.calls, cloud.calls]
+
+
+@pytest.mark.parametrize(("local_error", "cloud_error", "options", "decisions"), DECISION_CASES)
+def test_raising_on_decision_never_changes_routing(
+    identity: Identity,
+    logs: pytest.LogCaptureFixture,
+    local_error: ProviderError | None,
+    cloud_error: ProviderError | None,
+    options: dict[str, object],
+    decisions: int,
+) -> None:
+    def broken(_: RouteDecision) -> None:
+        raise RuntimeError(f"hook broke {LEAKY_TEXT} {PROMPT_TEXT}")
+
+    quiet = outcome_with_on_decision(identity, local_error, cloud_error, options, lambda _: None)
+    logs.clear()
+    loud = outcome_with_on_decision(identity, local_error, cloud_error, options, broken)
+
+    assert loud == quiet  # same result or RouteFailed (reason, attempts, chain), same calls
+    warnings = records(logs, "Decision callback failed")
+    assert len(warnings) == decisions
+    assert [(w.levelname, w.__dict__["callback_error_type"]) for w in warnings] == [
+        ("WARNING", "RuntimeError")
+    ] * decisions
+    assert [w.__dict__["provider"] for w in warnings] == ["ollama", "claude"][:decisions]
+    assert_no_leaks(logs)
+
+
+def test_on_decision_cancellation_still_propagates(identity: Identity) -> None:
+    def cancelled(_: RouteDecision) -> None:
+        raise asyncio.CancelledError
+
+    local, cloud = Fake("ollama", "local"), Fake("claude", "cloud")
+    router = Router([local, cloud], identity, probe=lambda: probe(ROOM))
+    request = ModelRequest(messages=(Message(role="user", content=PROMPT_TEXT),))
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(router.handle(request, RouteOptions(), on_decision=cancelled))
+    assert local.calls == 0  # cancelled before the call
