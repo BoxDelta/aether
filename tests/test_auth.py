@@ -300,6 +300,30 @@ def test_unconfigured_bearer_value_redacted_by_pattern() -> None:
     assert redact("Bearer short") == "Bearer short"  # under 8 chars: not a credential
 
 
+@pytest.mark.parametrize(
+    "prefix",
+    ["BEARER ", "bearer ", "Bearer\t", "Bearer  ", "bEaReR \t "],
+    ids=["upper", "lower", "tab", "two-spaces", "mixed"],
+)
+def test_bearer_pattern_any_casing_and_whitespace(prefix: str) -> None:
+    # The word and the whitespace are kept exactly; only the credential is replaced.
+    redact = Redactor()
+    assert redact(f"Authorization: {prefix}{WRONG}") == f"Authorization: {prefix}{REDACTED}"
+    assert WRONG not in redact(f"{prefix}{WRONG}")
+    assert redact(f"{prefix}short") == f"{prefix}short"  # still 8+ characters only
+
+
+def test_ordinary_text_with_the_word_bearer_is_not_corrupted() -> None:
+    redact = Redactor()
+    sentence = "The bearer of this note may collect the parcel; bearers of bad news too."
+    assert redact(sentence) == sentence
+    assert redact("Bearer") == "Bearer"
+    assert redact("BEARER\n") == "BEARER\n"
+    # Known trade-off (unchanged from before): a long word right after "bearer" is
+    # indistinguishable from a credential, so it is redacted. That is the safe side.
+    assert redact("a bearer instrument") == f"a bearer {REDACTED}"
+
+
 def test_token_in_provider_error_never_reaches_body_or_events() -> None:
     # A provider error message that (somehow) contains the token: scrubbed everywhere.
     a = App(local_error=ProviderUnavailable("ollama", f"rejected {TOKEN}"))

@@ -16,10 +16,10 @@ and stack info; bool, number and None extras are kept as they are), in this orde
 2. Patterns, configured or not (``_KEY_PATTERNS``):
    - anything that looks like an Anthropic API key (``sk-ant-...``);
    - the credential (8+ characters) in ``Bearer <credential>``, where the word is
-     ``Bearer`` or ``bearer`` followed by exactly one space, e.g. a wrong token. Only
-     a backstop:
-     the auth middleware never logs header values, and the configured token is
-     redacted by value.
+     in any casing (``Bearer``, ``bearer``, ``BEARER``...) followed by one or more
+     whitespace characters, e.g. a wrong token. The word and the whitespace are kept.
+     Only a backstop: the auth middleware never logs header values, and the
+     configured token is redacted by value.
 3. The password in any ``scheme://user:password@host`` URL, configured or not
    (``_URL_CREDENTIALS``; user and host are kept so the log stays useful).
 
@@ -49,8 +49,15 @@ _KEY_PATTERNS = (
     re.compile(r"sk-ant-[A-Za-z0-9_\-]{8,}"),
     # Any bearer credential, configured or not (e.g. a wrong token): backstop only,
     # the auth middleware never logs header values (#57).
-    re.compile(r"(?<=[Bb]earer )[A-Za-z0-9._~+/=\-]{8,}"),
+    # The word and its whitespace are kept (group "head"); only the credential goes.
+    re.compile(r"(?P<head>(?i:bearer)\s+)[A-Za-z0-9._~+/=\-]{8,}"),
 )
+
+
+def _redact_match(match: re.Match[str]) -> str:
+    # Keep a pattern's "head" group (e.g. "Bearer "), replace the rest.
+    return (match.groupdict().get("head") or "") + REDACTED
+
 
 # scheme://user:password@host -> scheme://user:[REDACTED]@host. The password runs
 # to the next "@" (or whitespace), so a password containing "/" or ":" is covered;
@@ -85,7 +92,7 @@ class Redactor:
         for secret in self._secrets:
             text = text.replace(secret, REDACTED)
         for pattern in _KEY_PATTERNS:
-            text = pattern.sub(REDACTED, text)
+            text = pattern.sub(_redact_match, text)
         return _URL_CREDENTIALS.sub(rf"\g<head>{REDACTED}@", text)
 
 

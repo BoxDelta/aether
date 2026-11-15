@@ -35,7 +35,7 @@ def test_every_secret_source_is_documented() -> None:
 
 def test_every_key_pattern_is_documented() -> None:
     # One documented bullet per pattern; update both together.
-    documented = {"sk-ant-": "``sk-ant-...``", "earer ": "``Bearer <credential>``"}
+    documented = {"sk-ant-": "``sk-ant-...``", "bearer": "``Bearer <credential>``"}
     doc = log.__doc__ or ""
     assert len(log._KEY_PATTERNS) == len(documented), (
         "_KEY_PATTERNS changed; document the new pattern in core/log.py and here"
@@ -43,6 +43,14 @@ def test_every_key_pattern_is_documented() -> None:
     for fragment, wording in documented.items():
         assert any(fragment in p.pattern for p in log._KEY_PATTERNS), fragment
         assert wording in doc, f"core/log.py docstring does not mention {wording}"
+
+
+def test_bearer_pattern_rules_are_documented() -> None:
+    # The docstring states the casing and spacing the Bearer pattern accepts.
+    doc = " ".join((log.__doc__ or "").split())
+    assert "in any casing" in doc
+    assert "one or more whitespace characters" in doc
+    assert "(?i:bearer)\\s+" in log._KEY_PATTERNS[1].pattern
 
 
 def test_documented_lengths_match_the_code() -> None:
