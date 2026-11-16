@@ -10,7 +10,7 @@ import pytest
 from pydantic import AnyHttpUrl
 
 from core.config import Settings
-from core.identity import Identity, load_identity
+from core.identity import Identity
 from router.contract import (
     Message,
     ModelRequest,
@@ -18,12 +18,11 @@ from router.contract import (
     PrivacyNotAllowed,
     ProviderBadResponse,
 )
-from router.hardware import GpuState, HardwareSnapshot
 from router.ollama import OllamaProvider, classify_host
 from router.routing import NoRoute, RouteOptions, Router
+from tests.fakes import snapshot
 
 MODEL = "llama3.1:8b"
-GIB = 1024**3
 UNTRUSTED_HOST_MARKER = "gpu-box.example.org"
 
 
@@ -244,19 +243,8 @@ def test_default_settings_host_is_trusted() -> None:
 # --- routing ---------------------------------------------------------------------
 
 
-@pytest.fixture
-def identity() -> Identity:
-    return load_identity()
-
-
-def probe() -> HardwareSnapshot:
-    return HardwareSnapshot(
-        gpu=GpuState("nvml", 8 * GIB, 4 * GIB, 10), ram_available_bytes=16 * GIB
-    )
-
-
 def router(host: str, seen: list[httpx.Request], identity: Identity) -> Router:
-    return Router([provider(host, seen)], identity, probe=probe)
+    return Router([provider(host, seen)], identity, probe=snapshot)
 
 
 def test_sensitive_is_refused_for_untrusted_host(identity: Identity) -> None:

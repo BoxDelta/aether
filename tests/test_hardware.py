@@ -21,8 +21,7 @@ from router.hardware import (
     probe_gpu,
     probe_ram,
 )
-
-GIB = 1024 * MIB
+from tests.fakes import GIB
 
 
 class FakeNvmlError(Exception):

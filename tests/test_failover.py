@@ -6,23 +6,17 @@ from collections.abc import Callable
 
 import pytest
 
-from core.identity import Identity, load_identity
+from core.identity import Identity
 from router.contract import (
-    FinishReason,
     Message,
     ModelRequest,
-    ModelResponse,
     PrivacyLevel,
     PrivacyNotAllowed,
-    Provider,
     ProviderBadResponse,
     ProviderError,
-    ProviderInfo,
-    ProviderKind,
     ProviderTimeout,
     ProviderUnavailable,
 )
-from router.hardware import GpuState, HardwareSnapshot
 from router.routing import (
     Attempt,
     NoRoute,
@@ -32,69 +26,14 @@ from router.routing import (
     RouteOptions,
     Router,
 )
+from tests.fakes import FakeProvider, snapshot
 
-GIB = 1024**3
 PROMPT_TEXT = "PRIVATE-PROMPT-MARKER"
 LEAKY_TEXT = "sk-ant-LEAKED-IN-EXCEPTION"  # gitleaks:allow
 
 
-class Fake(Provider):
-    def __init__(
-        self,
-        name: str,
-        kind: ProviderKind,
-        *,
-        error: ProviderError | Exception | None = None,
-        finish_reason: FinishReason = "stop",
-        available: bool = True,
-        delay_s: float = 0.0,
-    ) -> None:
-        super().__init__(
-            ProviderInfo(
-                name=name,
-                kind=kind,
-                default_model=f"{name}-model",
-                max_privacy="sensitive" if kind == "local" else "personal",
-            )
-        )
-        self.error = error
-        self.finish_reason = finish_reason
-        self.available = available
-        self.delay_s = delay_s
-        self.calls = 0
-        self.checks = 0
-
-    async def _generate(self, request: ModelRequest) -> ModelResponse:
-        self.calls += 1
-        if self.delay_s:
-            await asyncio.sleep(self.delay_s)
-        if self.error is not None:
-            raise self.error
-        refused = self.finish_reason == "refusal"
-        return ModelResponse(
-            text="" if refused else f"answer from {self.name}",
-            provider=self.name,
-            model=self.info.default_model,
-            kind=self.info.kind,
-            finish_reason=self.finish_reason,
-        )
-
-    async def check_available(self) -> bool:
-        self.checks += 1
-        return self.available
-
-
-def probe(free_gib: float) -> HardwareSnapshot:
-    return HardwareSnapshot(GpuState("nvml", 8 * GIB, int(free_gib * GIB), 10), 16 * GIB)
-
-
 ROOM = 4.0
 NO_ROOM = 0.5
-
-
-@pytest.fixture
-def identity() -> Identity:
-    return load_identity()
 
 
 @pytest.fixture
@@ -105,14 +44,14 @@ def logs(caplog: pytest.LogCaptureFixture) -> pytest.LogCaptureFixture:
 
 def run(
     identity: Identity,
-    providers: list[Fake],
+    providers: list[FakeProvider],
     *,
     privacy: PrivacyLevel = "personal",
     free_gib: float = ROOM,
     timeout_s: float = 60.0,
     **options: object,
 ) -> RoutedResponse:
-    router = Router(providers, identity, probe=lambda: probe(free_gib))
+    router = Router(providers, identity, probe=lambda: snapshot(free_gib))
     request = ModelRequest(
         messages=(Message(role="user", content=PROMPT_TEXT),),
         privacy=privacy,
@@ -151,7 +90,7 @@ NOT_RETRYABLE = [
 def test_local_only_never_reaches_claude_even_when_ollama_fails(
     identity: Identity, logs: pytest.LogCaptureFixture, error: ProviderError
 ) -> None:
-    local, cloud = Fake("ollama", "local", error=error), Fake("claude", "cloud")
+    local, cloud = FakeProvider("ollama", "local", error=error), FakeProvider("claude", "cloud")
 
     with pytest.raises(RouteFailed) as info:
         run(identity, [local, cloud])  # allow_cloud defaults to false
@@ -166,8 +105,10 @@ def test_local_only_never_reaches_claude_even_when_ollama_fails(
 def test_local_failure_fails_over_to_cloud_with_reason_logged(
     identity: Identity, logs: pytest.LogCaptureFixture
 ) -> None:
-    local = Fake("ollama", "local", error=ProviderTimeout("ollama", "Ollama did not respond"))
-    cloud = Fake("claude", "cloud")
+    local = FakeProvider(
+        "ollama", "local", error=ProviderTimeout("ollama", "Ollama did not respond")
+    )
+    cloud = FakeProvider("claude", "cloud")
 
     result = run(identity, [local, cloud], allow_cloud=True)
 
@@ -192,8 +133,10 @@ def test_local_failure_fails_over_to_cloud_with_reason_logged(
 def test_all_providers_fail_gives_explicit_error(
     identity: Identity, logs: pytest.LogCaptureFixture
 ) -> None:
-    local = Fake("ollama", "local", error=ProviderUnavailable("ollama", "cannot connect"))
-    cloud = Fake("claude", "cloud", error=ProviderUnavailable("claude", "rate limited (HTTP 429)"))
+    local = FakeProvider("ollama", "local", error=ProviderUnavailable("ollama", "cannot connect"))
+    cloud = FakeProvider(
+        "claude", "cloud", error=ProviderUnavailable("claude", "rate limited (HTTP 429)")
+    )
 
     with pytest.raises(RouteFailed) as info:
         run(identity, [local, cloud], allow_cloud=True)
@@ -210,8 +153,8 @@ def test_all_providers_fail_gives_explicit_error(
 def test_cloud_refusal_is_final_and_local_not_called(
     identity: Identity, logs: pytest.LogCaptureFixture
 ) -> None:
-    local = Fake("ollama", "local")
-    cloud = Fake("claude", "cloud", finish_reason="refusal")
+    local = FakeProvider("ollama", "local")
+    cloud = FakeProvider("claude", "cloud", finish_reason="refusal")
 
     # No VRAM headroom, so cloud is chosen first.
     result = run(identity, [local, cloud], allow_cloud=True, free_gib=NO_ROOM)
@@ -226,8 +169,8 @@ def test_cloud_refusal_is_final_and_local_not_called(
 def test_local_refusal_is_final_and_cloud_not_called(
     identity: Identity, logs: pytest.LogCaptureFixture
 ) -> None:
-    local = Fake("ollama", "local", finish_reason="refusal")
-    cloud = Fake("claude", "cloud")
+    local = FakeProvider("ollama", "local", finish_reason="refusal")
+    cloud = FakeProvider("claude", "cloud")
 
     result = run(identity, [local, cloud], allow_cloud=True)
 
@@ -244,7 +187,7 @@ def test_local_refusal_is_final_and_cloud_not_called(
 def test_non_retryable_error_does_not_fail_over(
     identity: Identity, logs: pytest.LogCaptureFixture, error: ProviderError
 ) -> None:
-    local, cloud = Fake("ollama", "local", error=error), Fake("claude", "cloud")
+    local, cloud = FakeProvider("ollama", "local", error=error), FakeProvider("claude", "cloud")
 
     with pytest.raises(RouteFailed) as info:
         run(identity, [local, cloud], allow_cloud=True)
@@ -258,7 +201,7 @@ def test_non_retryable_error_does_not_fail_over(
 
 def test_real_timeout_from_contract_fails_over(identity: Identity) -> None:
     # Provider.generate turns the deadline into ProviderTimeout (retryable).
-    local, cloud = Fake("ollama", "local", delay_s=1.0), Fake("claude", "cloud")
+    local, cloud = FakeProvider("ollama", "local", delay_s=1.0), FakeProvider("claude", "cloud")
 
     result = run(identity, [local, cloud], allow_cloud=True, timeout_s=0.05)
 
@@ -272,8 +215,8 @@ def test_adapter_bug_is_scrubbed_and_not_retried(
 ) -> None:
     # A raw exception carrying sensitive text: the contract turns it into a
     # non-retryable ProviderBadResponse with the type name only.
-    local = Fake("ollama", "local", error=RuntimeError(f"boom {LEAKY_TEXT} {PROMPT_TEXT}"))
-    cloud = Fake("claude", "cloud")
+    local = FakeProvider("ollama", "local", error=RuntimeError(f"boom {LEAKY_TEXT} {PROMPT_TEXT}"))
+    cloud = FakeProvider("claude", "cloud")
 
     with pytest.raises(RouteFailed) as info:
         run(identity, [local, cloud], allow_cloud=True)
@@ -295,8 +238,8 @@ def test_adapter_bug_is_scrubbed_and_not_retried(
 )
 def test_override_never_fails_over(identity: Identity, override: str, failing: str) -> None:
     error = ProviderUnavailable(failing, "cannot connect")  # retryable
-    local = Fake("ollama", "local", error=error if failing == "ollama" else None)
-    cloud = Fake("claude", "cloud", error=error if failing == "claude" else None)
+    local = FakeProvider("ollama", "local", error=error if failing == "ollama" else None)
+    cloud = FakeProvider("claude", "cloud", error=error if failing == "claude" else None)
 
     with pytest.raises(RouteFailed) as info:
         run(identity, [local, cloud], allow_cloud=True, override=override)
@@ -310,7 +253,7 @@ def test_override_never_fails_over(identity: Identity, override: str, failing: s
 
 @pytest.mark.parametrize("error", RETRYABLE, ids=lambda e: e.message)
 def test_sensitive_never_fails_over_to_cloud(identity: Identity, error: ProviderError) -> None:
-    local, cloud = Fake("ollama", "local", error=error), Fake("claude", "cloud")
+    local, cloud = FakeProvider("ollama", "local", error=error), FakeProvider("claude", "cloud")
 
     with pytest.raises(RouteFailed) as info:
         run(identity, [local, cloud], privacy="sensitive", allow_cloud=True)
@@ -320,7 +263,7 @@ def test_sensitive_never_fails_over_to_cloud(identity: Identity, error: Provider
 
 
 def test_secret_never_routed(identity: Identity) -> None:
-    local, cloud = Fake("ollama", "local"), Fake("claude", "cloud")
+    local, cloud = FakeProvider("ollama", "local"), FakeProvider("claude", "cloud")
 
     with pytest.raises(NoRoute, match="secret data is never sent"):
         run(identity, [local, cloud], privacy="secret", allow_cloud=True)
@@ -336,9 +279,9 @@ def test_at_most_one_fallback_even_with_more_providers(
     identity: Identity, logs: pytest.LogCaptureFixture
 ) -> None:
     providers = [
-        Fake("ollama", "local", error=ProviderUnavailable("ollama", "down")),
-        Fake("ollama2", "local", error=ProviderUnavailable("ollama2", "down")),
-        Fake("claude", "cloud", error=ProviderUnavailable("claude", "down")),
+        FakeProvider("ollama", "local", error=ProviderUnavailable("ollama", "down")),
+        FakeProvider("ollama2", "local", error=ProviderUnavailable("ollama2", "down")),
+        FakeProvider("claude", "cloud", error=ProviderUnavailable("claude", "down")),
     ]
 
     with pytest.raises(RouteFailed) as info:
@@ -351,8 +294,8 @@ def test_at_most_one_fallback_even_with_more_providers(
 
 def test_fallback_is_rechecked_by_routing_rules(identity: Identity) -> None:
     # Cloud is allowed but not available at failover time: no blind retry.
-    local = Fake("ollama", "local", error=ProviderTimeout("ollama", "slow"))
-    cloud = Fake("claude", "cloud", available=False)
+    local = FakeProvider("ollama", "local", error=ProviderTimeout("ollama", "slow"))
+    cloud = FakeProvider("claude", "cloud", available=False)
 
     with pytest.raises(RouteFailed) as info:
         run(identity, [local, cloud], allow_cloud=True)
@@ -363,8 +306,10 @@ def test_fallback_is_rechecked_by_routing_rules(identity: Identity) -> None:
 
 def test_cloud_error_can_fail_over_to_local(identity: Identity) -> None:
     # Errors (not refusals) may fail over cloud -> local; local may take personal data.
-    local = Fake("ollama", "local")
-    cloud = Fake("claude", "cloud", error=ProviderUnavailable("claude", "overloaded (HTTP 529)"))
+    local = FakeProvider("ollama", "local")
+    cloud = FakeProvider(
+        "claude", "cloud", error=ProviderUnavailable("claude", "overloaded (HTTP 529)")
+    )
 
     result = run(identity, [local, cloud], allow_cloud=True, free_gib=NO_ROOM)
 
@@ -374,10 +319,10 @@ def test_cloud_error_can_fail_over_to_local(identity: Identity) -> None:
 
 
 def test_on_decision_reports_first_and_fallback(identity: Identity) -> None:
-    local = Fake("ollama", "local", error=ProviderTimeout("ollama", "slow"))
-    cloud = Fake("claude", "cloud")
+    local = FakeProvider("ollama", "local", error=ProviderTimeout("ollama", "slow"))
+    cloud = FakeProvider("claude", "cloud")
     seen: list[str] = []
-    router = Router([local, cloud], identity, probe=lambda: probe(ROOM))
+    router = Router([local, cloud], identity, probe=lambda: snapshot(ROOM))
     request = ModelRequest(messages=(Message(role="user", content=PROMPT_TEXT),))
 
     asyncio.run(
@@ -391,7 +336,7 @@ def test_on_decision_reports_first_and_fallback(identity: Identity) -> None:
 
 def test_on_decision_not_called_for_no_route(identity: Identity) -> None:
     seen: list[str] = []
-    router = Router([Fake("ollama", "local")], identity, probe=lambda: probe(ROOM))
+    router = Router([FakeProvider("ollama", "local")], identity, probe=lambda: snapshot(ROOM))
     request = ModelRequest(messages=(Message(role="user", content="x"),), privacy="secret")
 
     with pytest.raises(NoRoute):
@@ -418,9 +363,9 @@ NO_FALLBACK = [
 def test_no_fallback_chains_the_provider_error_and_reports_one_decision(
     identity: Identity, error: ProviderError, options: dict[str, object]
 ) -> None:
-    local, cloud = Fake("ollama", "local", error=error), Fake("claude", "cloud")
+    local, cloud = FakeProvider("ollama", "local", error=error), FakeProvider("claude", "cloud")
     seen: list[str] = []
-    router = Router([local, cloud], identity, probe=lambda: probe(ROOM))
+    router = Router([local, cloud], identity, probe=lambda: snapshot(ROOM))
     request = ModelRequest(messages=(Message(role="user", content=PROMPT_TEXT),))
 
     with pytest.raises(RouteFailed) as info:
@@ -443,8 +388,8 @@ def test_no_fallback_chains_the_provider_error_and_reports_one_decision(
 
 def test_failed_fallback_chains_the_second_provider_error(identity: Identity) -> None:
     second = ProviderUnavailable("claude", "down")
-    local = Fake("ollama", "local", error=ProviderUnavailable("ollama", "down"))
-    cloud = Fake("claude", "cloud", error=second)
+    local = FakeProvider("ollama", "local", error=ProviderUnavailable("ollama", "down"))
+    cloud = FakeProvider("claude", "cloud", error=second)
 
     with pytest.raises(RouteFailed) as info:
         run(identity, [local, cloud], allow_cloud=True)
@@ -477,9 +422,9 @@ def handle_with(
     on_attempt_failed: Callable[[Attempt], None],
     seen: list[tuple[str, str]],
 ) -> tuple[object, list[int]]:
-    local = Fake("ollama", "local", error=local_error)
-    cloud = Fake("claude", "cloud", error=cloud_error)
-    router = Router([local, cloud], identity, probe=lambda: probe(ROOM))
+    local = FakeProvider("ollama", "local", error=local_error)
+    cloud = FakeProvider("claude", "cloud", error=cloud_error)
+    router = Router([local, cloud], identity, probe=lambda: snapshot(ROOM))
     request = ModelRequest(messages=(Message(role="user", content=PROMPT_TEXT),))
     try:
         result = asyncio.run(

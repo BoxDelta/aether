@@ -1,7 +1,6 @@
 """POST /chat end to end (#22) with fake providers and an in-memory event store."""
 
 import asyncio
-import io
 import json
 from collections.abc import Sequence
 from typing import Any
@@ -13,89 +12,29 @@ from pydantic import SecretStr
 from core.app import create_app
 from core.chat import MAX_BODY_BYTES, MAX_MESSAGE_CHARS, MAX_MESSAGES, MAX_TOTAL_CHARS
 from core.config import Settings
-from core.events import Event, EventRecorder, EventWriter, request_texts, to_row
+from core.events import Event, EventWriter
 from core.identity import load_identity
-from core.log import Redactor, secrets_from
 from core.request_context import REQUEST_ID_HEADER
 from router.contract import (
-    FinishReason,
     ModelRequest,
-    ModelResponse,
-    Provider,
     ProviderError,
-    ProviderInfo,
-    ProviderKind,
     ProviderTimeout,
     ProviderUnavailable,
-    Usage,
 )
-from router.hardware import GpuState, HardwareSnapshot
 from router.routing import Router
-
-GIB = 1024**3
-FAKE_KEY = "sk-ant-api03-FAKE-chat-test-0123456789"  # gitleaks:allow
-PROMPT = "PRIVATE-PROMPT-MARKER what is my bank PIN"
-ANSWER = "PRIVATE-ANSWER-MARKER it is 4711"
-LOCAL = ("127.0.0.1", 50000)
-TOKEN = "fake-api-token-chat-tests-0123456789abcdef"  # noqa: S105  # gitleaks:allow
-AUTH = {"authorization": f"Bearer {TOKEN}"}
-
-
-class Fake(Provider):
-    def __init__(
-        self,
-        name: str,
-        kind: ProviderKind,
-        *,
-        error: Exception | None = None,
-        finish_reason: FinishReason = "stop",
-        text: str | None = None,
-    ) -> None:
-        super().__init__(
-            ProviderInfo(
-                name=name,
-                kind=kind,
-                default_model=f"{name}-model",
-                max_privacy="sensitive" if kind == "local" else "personal",
-            )
-        )
-        self.error = error
-        self.finish_reason = finish_reason
-        self.text = text
-        self.requests: list[ModelRequest] = []
-
-    async def _generate(self, request: ModelRequest) -> ModelResponse:
-        self.requests.append(request)
-        if self.error is not None:
-            raise self.error
-        return ModelResponse(
-            text=self.text
-            if self.text is not None
-            else ("" if self.finish_reason == "refusal" else ANSWER),
-            provider=self.name,
-            model=self.info.default_model,
-            kind=self.info.kind,
-            finish_reason=self.finish_reason,
-            usage=Usage(input_tokens=11, output_tokens=7),
-        )
-
-    async def check_available(self) -> bool:
-        return True
-
-
-class MemoryWriter(EventWriter):
-    """Stores exactly the row values the database writer would insert."""
-
-    def __init__(self, redactor: Redactor) -> None:  # no engine: never touches a DB
-        self._redact = redactor
-        self.rows: list[dict[str, Any]] = []
-
-    async def write_all(
-        self, events: Sequence[Event], *, request: ModelRequest | None = None
-    ) -> list[int]:
-        forbidden = request_texts(request) if request is not None else []
-        self.rows.extend(to_row(e, self._redact, forbidden) for e in events)
-        return list(range(len(self.rows)))
+from tests.chat_helpers import (
+    ANSWER,
+    AUTH,
+    FAKE_KEY,
+    LOCAL,
+    PROMPT,
+    TOKEN,
+    USAGE,
+    Setup,
+    assert_no_content,
+    error_with_key_cause,
+)
+from tests.fakes import FakeProvider, snapshot
 
 
 class FailingWriter(EventWriter):
@@ -111,84 +50,6 @@ class FailingWriter(EventWriter):
         if self.error is not None:
             raise self.error
         return []
-
-
-def snapshot(free_gib: float) -> HardwareSnapshot:
-    return HardwareSnapshot(GpuState("nvml", 8 * GIB, int(free_gib * GIB), 5), 16 * GIB)
-
-
-class Setup:
-    def __init__(
-        self,
-        *,
-        local_error: Exception | None = None,
-        cloud_error: Exception | None = None,
-        free_gib: float = 4.0,
-        finish_reason: FinishReason = "stop",
-        text: str | None = None,
-        cloud_cap: str | None = None,
-        writer: EventWriter | None = None,
-        recorder_timeout_s: float = 3.0,
-        client: tuple[str, int] = LOCAL,
-    ) -> None:
-        self.log = io.StringIO()
-        self.local = Fake(
-            "ollama", "local", error=local_error, finish_reason=finish_reason, text=text
-        )
-        self.cloud = Fake(
-            "claude", "cloud", error=cloud_error, finish_reason=finish_reason, text=text
-        )
-        identity = load_identity()
-        router = Router([self.local, self.cloud], identity, probe=lambda: snapshot(free_gib))
-        settings = Settings(
-            _env_file=None,
-            anthropic_api_key=SecretStr(FAKE_KEY),
-            aether_api_token=SecretStr(TOKEN),
-            aether_cloud_max_output_tokens=cloud_cap,
-        )
-        # The same redactor Core builds, so the token is covered too.
-        self.writer = (
-            writer if writer is not None else MemoryWriter(Redactor(secrets_from(settings)))
-        )
-        app = create_app(
-            settings,
-            identity,
-            router=router,
-            events=EventRecorder(self.writer, timeout_s=recorder_timeout_s),
-        )
-        # create_app configured logging to stdout; capture it instead.
-        from core.log import configure_logging
-
-        configure_logging(settings, stream=self.log)
-        self.client = TestClient(app, client=client, headers=AUTH, raise_server_exceptions=False)
-
-    @property
-    def rows(self) -> list[dict[str, Any]]:
-        assert isinstance(self.writer, MemoryWriter)
-        return self.writer.rows
-
-    def post(self, **body: Any) -> Any:
-        payload = {"messages": [{"role": "user", "content": PROMPT}], **body}
-        return self.client.post("/chat", json=payload)
-
-    def log_records(self) -> list[dict[str, Any]]:
-        return [json.loads(line) for line in self.log.getvalue().splitlines() if line]
-
-
-def error_with_key_cause(name: str = "ollama") -> ProviderUnavailable:
-    """Retryable provider error whose __cause__ carries a key, a traceback and the prompt."""
-    try:
-        try:
-            raise RuntimeError(f"upstream {FAKE_KEY} Traceback (most recent call last) {PROMPT}")
-        except RuntimeError as inner:
-            raise ProviderUnavailable(name, f"cannot connect to {name}") from inner
-    except ProviderUnavailable as exc:
-        return exc
-
-
-def assert_no_content(text: str) -> None:
-    for forbidden in (PROMPT, ANSWER, FAKE_KEY, "Traceback", "upstream"):
-        assert forbidden not in text, forbidden
 
 
 # --- success paths -------------------------------------------------------------------
@@ -561,7 +422,7 @@ def test_real_writer_with_unreachable_database_still_answers(
     # Valid URL, nothing listening on port 1: the real asyncpg writer fails to connect.
     url = "postgresql+asyncpg://aether:not-a-real-pw-456@127.0.0.1:1/aether"
     identity = load_identity()
-    local = Fake("ollama", "local")
+    local = FakeProvider("ollama", "local", answer=ANSWER, usage=USAGE)
     router = Router([local], identity, probe=lambda: snapshot(4.0))
     app = create_app(
         Settings(_env_file=None, database_url=SecretStr(url), aether_api_token=SecretStr(TOKEN)),

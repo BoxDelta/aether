@@ -22,7 +22,8 @@ from core.log import REDACTED, Redactor, configure_logging, secrets_from
 from core.request_context import REQUEST_ID_HEADER
 from router.contract import ProviderUnavailable
 from router.routing import Router
-from tests.test_chat import ANSWER, PROMPT, Fake, MemoryWriter, snapshot
+from tests.chat_helpers import ANSWER, PROMPT, USAGE
+from tests.fakes import FakeProvider, MemoryWriter, snapshot
 
 TOKEN = "fake-api-token-auth-tests-0123456789abcdef"  # noqa: S105  # gitleaks:allow
 WRONG = "fake-api-token-auth-WRONG-0123456789abcdef"  # gitleaks:allow
@@ -38,7 +39,7 @@ class App:
         # Capture logging before create_app so startup warnings are seen.
         configure_logging(self.settings, stream=self.log)
         identity = load_identity()
-        self.local = Fake("ollama", "local", error=local_error)
+        self.local = FakeProvider("ollama", "local", error=local_error, answer=ANSWER, usage=USAGE)
         self.writer = MemoryWriter(Redactor(secrets_from(self.settings)))
         self.app = create_app(
             self.settings,
@@ -298,6 +299,47 @@ def test_unconfigured_bearer_value_redacted_by_pattern() -> None:
     assert redact(f"Authorization: Bearer {WRONG}") == f"Authorization: Bearer {REDACTED}"
     assert redact("bearer abcdefgh12345") == f"bearer {REDACTED}"
     assert redact("Bearer short") == "Bearer short"  # under 8 chars: not a credential
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    ["BEARER ", "bearer ", "Bearer\t", "Bearer  ", "bEaReR \t "],
+    ids=["upper", "lower", "tab", "two-spaces", "mixed"],
+)
+def test_bearer_pattern_any_casing_and_whitespace(prefix: str) -> None:
+    # The word and the whitespace are kept exactly; only the credential is replaced.
+    redact = Redactor()
+    assert redact(f"Authorization: {prefix}{WRONG}") == f"Authorization: {prefix}{REDACTED}"
+    assert WRONG not in redact(f"{prefix}{WRONG}")
+    assert redact(f"{prefix}short") == f"{prefix}short"  # still 8+ characters only
+
+
+def test_ordinary_text_with_the_word_bearer_is_not_corrupted() -> None:
+    redact = Redactor()
+    sentence = "The bearer of this note may collect the parcel; bearers of bad news too."
+    assert redact(sentence) == sentence
+    assert redact("Bearer") == "Bearer"
+    assert redact("BEARER\n") == "BEARER\n"
+    # Known trade-off (unchanged from before): a long word right after "bearer" is
+    # indistinguishable from a credential, so it is redacted. That is the safe side.
+    assert redact("a bearer instrument") == f"a bearer {REDACTED}"
+
+
+def test_credential_ending_in_bearer_does_not_hide_the_next_one() -> None:
+    # Review of #42: matches must not overlap, as with the old lookbehind.
+    redact = Redactor()
+    assert redact("Bearer abc.def.bearer SECRET12345") == f"Bearer {REDACTED} {REDACTED}"
+    assert redact("Bearer abcdefgBEARER\tsecret999") == f"Bearer {REDACTED}\t{REDACTED}"
+
+
+@pytest.mark.parametrize("prefix", ["bearer ", "BEARER ", "Bearer\t"])
+def test_url_password_after_bearer_is_redacted(prefix: str) -> None:
+    # Review of #42: URL passwords are redacted before the key patterns, so the
+    # Bearer pattern can't eat the scheme and hide the URL.
+    redact = Redactor()
+    out = redact(f"{prefix}postgresql://user:longpassword99@host/db")
+    assert "longpassword99" not in out
+    assert f":{REDACTED}@host/db" in out
 
 
 def test_token_in_provider_error_never_reaches_body_or_events() -> None:
