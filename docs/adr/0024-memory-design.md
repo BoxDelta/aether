@@ -73,8 +73,11 @@ by a new Alembic migration. No pgvector, no embeddings. Columns (docs/03
     memory; it stays in events.
 -   `privacy`: `public`, `personal` or `sensitive`. NOT NULL, with a
     CHECK that excludes `secret`. The list comes from `PrivacyLevel` in
-    `router/contract.py`, and the existing single-definition test is
-    extended so the CHECK can't drift from it.
+    `router/contract.py`. The existing single-definition test
+    (`tests/test_privacy_levels.py`) is extended in two ways: it checks
+    the new CHECK against that order, and its scan for repeated level
+    names covers the new `memory/` package as well as `core/`, `router/`
+    and `identity/`.
 -   `status`: `pending` or `approved` (section 2).
 -   Provenance: `source` (`owner`, `model` or `tool`), `source_provider`
     (the provider that handled the request the fact came from, if any),
@@ -92,9 +95,11 @@ by a new Alembic migration. No pgvector, no embeddings. Columns (docs/03
 **A record with no level.** The database can't hold one: `privacy` is
 NOT NULL. At the API, a proposal that arrives without a level gets the
 suggested level `personal`, as docs/05 §7.1 says for unclassified
-content, or the privacy level of the request it came from, whichever is
-higher. A fact proposed during a Sensitive conversation is suggested as
-Sensitive. The suggestion is marked `privacy_source="suggested"`, and
+content, or the effective privacy level of the call it came from,
+whichever is higher. The effective level is the request's own level
+raised to the highest level of any memory record included in that call
+(section 3). A fact proposed during a Sensitive conversation, or from a
+call that carried Sensitive memory, is suggested as Sensitive. The suggestion is marked `privacy_source="suggested"`, and
 approval always requires the owner to state the level explicitly
 (section 2), so no record becomes `approved` with a level nobody chose.
 
@@ -107,9 +112,11 @@ would still spread the secret. So:
     database CHECK.
 -   Content that matches a secret format is refused whatever its label:
     the log redactor's patterns (Anthropic keys, `Bearer` credentials,
-    URL passwords) plus the configured secret values. This reuses the
-    content tripwire from #8. The error says that the content looks like
-    a secret, never which part.
+    URL passwords) plus the configured secret values. The check uses the
+    existing patterns in `core/log.py` from the first PR that can store
+    a record (PR 6 in section 9), so no write path ever exists without
+    it. #8 later reuses the same check for cloud sends. The error says
+    that the content looks like a secret, never which part.
 -   Because Secret is never stored, it can never be retrieved.
 -   Limit: a secret in a format the patterns don't know (an account
     number, say) can still be stored if the owner approves it under a
@@ -191,11 +198,30 @@ call only if all of these hold:
     (`include_sensitive: true`, the per-request approval in docs/07 §6);
 -   its level is at or below the `max_privacy` of the provider that will
     receive this call;
--   for cloud: the request has `allow_cloud`, and the cloud memory
-    ceiling allows it. That ceiling is `public` until the content
-    tripwire (#8) lands, then `personal` (Decision D3);
--   for an untrusted Ollama host (ADR-023), only `public`, until #22 is
-    decided (Decision D4).
+-   its level is at or below the provider's **memory limit** for this
+    call (below).
+
+**The memory limit** is one privacy level, worked out by the router for
+each call from facts it already has, and passed to the selection
+function as an explicit input:
+
+-   cloud provider: `public` until the content tripwire (#8) lands, then
+    `personal` (Decision D3); and nothing at all if the request lacks
+    `allow_cloud`;
+-   Ollama on a trusted host (ADR-023: loopback or private literal):
+    `sensitive`;
+-   Ollama on a host the owner trusts with `AETHER_OLLAMA_TRUST_HOST=true`:
+    `sensitive` as well. The opt-in is the owner's explicit statement of
+    trust, and ADR-023 already treats it that way for requests;
+-   Ollama on any other host: `public`, until #22 is decided
+    (Decision D4).
+
+The trust category is not in `ProviderInfo` today (it lives on
+`OllamaProvider.host_category`). PR 11 adds it to `ProviderInfo`
+explicitly, as `memory_limit` set when the provider is built, so the
+selection never guesses trust from `kind` and `max_privacy`. The limit
+is never above `max_privacy`, and a test checks that for every provider
+configuration.
 
 `secret` is never selectable: it is never stored, and the selection code
 refuses it as well, so that a bug elsewhere can't change this.
@@ -215,15 +241,33 @@ per-request exception would need its own ADR (Decision D2).
     #19) the fallback provider gets its own selection. A failover from a
     trusted local host to the cloud therefore drops the Sensitive
     records, and drops Personal ones until #8.
--   The request sent to the provider carries a privacy level equal to
-    the highest of the request's own level and every included memory
-    record's level (#2). `Provider.generate()` already refuses a request
-    above the provider's `max_privacy`, so a selection bug fails closed
-    as an error instead of leaking. This check is the backstop, and it
-    is tested separately with a deliberately wrong selection.
+    This happens inside the per-call path (`Router._call` /
+    `call_with_identity`), not before `Router.handle()`, because today
+    both calls receive the same request object.
+-   The request sent to the provider carries the effective privacy
+    level: the highest of the request's own level and every included
+    memory record's level (#2).
+-   Two backstops after selection, each tested with a deliberately wrong
+    selection:
+    -   `call_with_identity` checks every included record against the
+        call's memory limit, `include_sensitive` and `allow_cloud`, and
+        refuses the call (an error, no text sent) if one doesn't fit.
+        This is the check that catches Personal memory to the cloud
+        before #8, Personal memory to an untrusted host, memory without
+        `allow_cloud`, and Sensitive memory without `include_sensitive`.
+    -   `Provider.generate()` already refuses a request whose effective
+        level is above the provider's `max_privacy`. On its own it covers
+        only that rule: the cloud and an untrusted host both have
+        `max_privacy="personal"`, so it would not catch the narrower
+        rules above.
 -   The selection is one pure function that takes the records, the
-    provider's info and the request options and returns the allowed
-    records. It is easy to test exhaustively (section 8).
+    call's memory limit and the request options (`include_sensitive`)
+    and returns the allowed records. It is easy to test exhaustively
+    (section 8).
+-   The existing `model.route.selected` and `model.call.completed` events
+    keep recording the request's own level. The effective level is
+    recorded in `memory.context.retrieved` (section 5), so the audit
+    trail shows both.
 
 **Size limits for `memory_context`:** at most 20 records and 4,000
 characters in total (Decision D9). Whole records are dropped, never cut
@@ -252,8 +296,12 @@ route (ADR-021). Request bodies are size-capped, validation errors never
 echo input (`core/errors.py`), and error bodies carry IDs and error
 types, never content.
 
--   `GET /memory`: list, filtered by `status`, `category`, `privacy`,
-    `key` and a text query. Paged.
+-   `GET /memory`: list, filtered only by `status`, `category` and
+    `privacy`, fixed values that are not content. Paged.
+-   `POST /memory/search`: search by `key` or a text query. These are in
+    the request body, not the URL, because the uvicorn access log goes
+    through AETHER's log handler and records the query string, and a key
+    such as `diagnosis.migraine` or a search phrase is content.
 -   `GET /memory/{id}`: one record.
 -   `POST /memory`: owner creates an approved record (section 2).
 -   `POST /memory/{id}/approve`, `POST /memory/{id}/reject`: section 2.
@@ -291,13 +339,28 @@ tombstone and no "deleted" flag holding content. After a delete:
     from before the delete has expired. The retention period is the
     owner's choice in #3 (Decision D5). The README and docs/05 §11 state
     this plainly.
--   **A restore brings deleted records back.** Restoring a backup
-    restores every record that existed when it was taken, including ones
-    deleted later. The restore runbook (#3) therefore first saves the
-    IDs from `memory.deleted` events in the current database, if it is
-    still readable, and deletes those records again after the restore.
-    If the current database is lost, deletions made after the last
-    backup are lost too, and the runbook says so.
+-   **A restore brings back the past, not just deleted records.**
+    Restoring a backup restores memory as it was when the backup was
+    taken: records deleted later come back, a level raised later (say
+    `personal` to `sensitive`) goes back to the old, lower level, and
+    content corrected later comes back with its old text. The events
+    table is restored too, so the `memory.*` events written after the
+    backup disappear. The restore runbook (#3) therefore, when the
+    current database is still readable:
+    1.  saves every `memory.*` event written after the backup (metadata
+        only);
+    2.  after the restore, deletes again every record with a saved
+        `memory.deleted`, `memory.rejected` or `memory.expired` event;
+    3.  sets every record with a saved `memory.updated` or
+        `memory.approved` event back to `pending`, at the higher of its
+        restored level and the newest saved level, so it is never sent
+        at a lower level and the owner re-checks its text (corrected
+        text can't be recovered from events, which hold no content);
+    4.  inserts the saved events again (the table allows inserts), so
+        the audit trail is complete.
+    If the current database is lost, everything after the last backup
+    is lost, including deletions, level raises and corrections, and the
+    runbook says so.
 -   **A cloud provider** that already received the record keeps whatever
     its own retention policy keeps. AETHER can't delete it there. This
     is a reason for the cloud ceiling in section 3.
@@ -317,18 +380,28 @@ migration, not a JSON field:
 -   the record's `id`, `category`, `source` and level (old and new level
     for `memory.updated`);
 -   for `memory.context.retrieved`: the request ID, the provider, the
-    count per level, the total characters, the IDs of the records sent
-    (at most 20 UUIDs), and how many were left out by the privacy rules
-    or the size limit;
+    count per level, the total characters, the effective privacy level
+    of the call, the IDs of the records sent (at most 20 UUIDs), and how
+    many were left out by the privacy rules or the size limit;
 -   for `memory.exported`: the record count.
 
 Never recorded: content, keys, corrected text, the search query, or the
 reason for a rejection. Keys stay out because a key such as
 `diagnosis.migraine` is content. The record IDs per call let the owner
 answer "did this fact ever go to Claude?" without any content in the
-events. Memory text is also added to the events echo check (docs/01 §7),
-so a provider error that quotes memory text is blanked like one that
-quotes the request.
+events.
+
+**Echo check.** Memory text sent in a call is added to the events echo
+check (docs/01 §7), so a provider error that quotes memory text is
+blanked in events like one that quotes the request. Today that check
+covers event fields only. The `/chat` error body and the `Model call
+failed`, `Failover` and `Failover failed` log records carry
+`ProviderError.message` without it, and texts shorter than 8 characters
+(`MIN_ECHO_LENGTH`) are skipped. That is the same exposure request text
+has now, and it relies on adapters building error messages from safe
+parts. PR 12 extends the echo check (request text and memory text) to
+the `/chat` error body and those log records; until then this is a
+stated gap, not a guarantee.
 
 ### 6. Threats
 
@@ -349,7 +422,7 @@ quotes the request.
     enforced in code (docs/05 §4).
 -   **A wrong privacy label** (Sensitive content labelled Personal, so it
     may reach the cloud). Mitigation: a proposal's suggested level is at
-    least the level of the request it came from; the owner must state
+    least the effective level of the call it came from; the owner must state
     the level when approving; the cloud ceiling stays `public` until #8;
     the #8 tripwire catches secret formats. Gap: nothing reliably
     detects that a fact is about health or money. A wrong label chosen
@@ -361,10 +434,14 @@ quotes the request.
     still approve a lot.
 -   **Leaking through logs, events and error messages.** Mitigation:
     memory content is never logged; the `Model call` record gains counts
-    only; events have no content columns; memory text joins the echo
-    check; API errors carry IDs and types only; validation errors don't
-    echo input. Tests use canary strings and scan logs, events and error
-    bodies for them (section 8). Gap: a provider's own logs (cloud, or a
+    only; events have no content columns; keys and search text go in
+    request bodies, never URLs, so the access log can't record them;
+    memory text joins the echo check (with the scope stated in
+    section 5); API errors carry IDs and types only; validation errors
+    don't echo input. Tests use canary strings and scan logs, events and
+    error bodies for them (section 8). Gaps: until PR 12, a provider
+    error message that quotes memory reaches the `/chat` error body and
+    the failover logs unchecked; a provider's own logs (cloud, or a
     remote Ollama) are outside AETHER.
 -   **Secret stored by mistake.** Mitigation: section 1 (level refused,
     content patterns refused). Gap: unknown secret formats.
@@ -394,7 +471,9 @@ quotes the request.
         a stolen credential can drop the append-only triggers and
         rewrite that trail. The memory migration should also grant Core
         exactly what it needs from the start, which is simpler than
-        changing grants on a table that already holds data.
+        changing grants on a table that already holds data. (docs/05 §5
+        still points to "#102", the old private-repo number for #12;
+        #55 fixes that reference.)
 -   **Before any memory reaches the cloud:**
     -   **#8 (content tripwire).** Memory adds text the owner didn't type
         into that request, automatically. A wrongly approved secret
@@ -428,23 +507,34 @@ tests run on Postgres with `AETHER_DB_TESTS=1` and in Sentinel.
 
 -   The selection function is tested over every combination: levels
     (`public`, `personal`, `sensitive`) × providers (cloud, trusted
-    local, untrusted local) × `allow_cloud` × `include_sensitive` × cloud
-    ceiling (before and after #8) × pending/approved/expired. Each case
-    asserts exactly which records are allowed.
+    local, untrusted local, untrusted local with
+    `AETHER_OLLAMA_TRUST_HOST=true`) × `allow_cloud` ×
+    `include_sensitive` × cloud limit (before and after #8) ×
+    pending/approved/expired. Each case asserts exactly which records
+    are allowed.
+-   For every provider configuration, the memory limit is never above
+    `max_privacy`.
 -   End to end through `/chat`: each stored record contains a unique
     canary string. After each request, the canaries of disallowed
     records must not appear in anything a fake provider received.
 -   Failover: local (trusted, Sensitive memory included) fails with a
     retryable error, and the cloud fallback is asserted not to receive
     the Sensitive canaries, and not the Personal ones before #8.
--   Backstop: a deliberately wrong selection that includes a Sensitive
-    record for the cloud fake makes `Provider.generate()` refuse the
-    call; no text reaches the fake.
+-   Backstops, each with a deliberately wrong selection, and no text
+    reaching the fake in any case:
+    -   Sensitive memory for the cloud fake: refused by
+        `call_with_identity`, and refused by `Provider.generate()` when
+        the first check is bypassed;
+    -   Personal memory for the cloud before #8, Personal memory for an
+        untrusted host, any memory without `allow_cloud` for the cloud,
+        and Sensitive memory without `include_sensitive`: refused by
+        `call_with_identity`.
 -   Secret: `privacy="secret"` → 422; a secret-shaped content → refused;
     a direct `INSERT` with `secret` → refused by the CHECK (live).
 -   Pending proposals are never selected.
--   Canaries never appear in log records, events (every column, live)
-    or error bodies.
+-   Canaries never appear in log records (including the access log of
+    `GET /memory` and `POST /memory/search` calls), events (every
+    column, live) or error bodies.
 -   The prompt-structure test: a record containing `Task instructions:`
     and newlines renders as one line inside the memory section.
 
@@ -454,10 +544,13 @@ tests run on Postgres with `AETHER_DB_TESTS=1` and in Sentinel.
     selected, not in the export, and a `memory.deleted` event exists with
     its ID and no content; no events column contains its canary.
 -   Reject: the same as delete for a pending proposal.
--   Restore (live, with #3's tooling): back up, add and delete records,
-    restore into a throwaway database, compare row counts. Then run the
-    runbook step that re-applies deletions and check that the records
-    deleted after the backup are gone again.
+-   Restore (live, with #3's tooling): back up; then add records, delete
+    some, raise one from `personal` to `sensitive` and correct another;
+    restore into a throwaway database and compare row counts. Then run
+    the runbook steps and check that the deleted records are gone again,
+    the raised record is `sensitive` and `pending`, the corrected record
+    is `pending`, and the saved `memory.*` events are back in the events
+    table.
 -   Expiry: an expired record is not selected and is removed by the
     clean-up with a `memory.expired` event.
 
@@ -471,24 +564,30 @@ after this ADR is accepted.
 2.  #3: backups and tested restore (existing issue; it needs the
     retention decision D5).
 3.  Migration: `memory_records` table, CHECKs, grants for the app role;
-    the single-definition test covers the new level CHECK. Live tests.
+    the single-definition test covers the new level CHECK and scans
+    `memory/`. Live tests.
 4.  `memory/` package: the store (create, get, list, update, delete),
     with no API yet. Live tests.
 5.  Memory events: new event types and typed columns (migration), with
     the content-free tests.
-6.  API: `GET /memory`, `GET /memory/{id}`, `POST /memory` (owner
-    create, level required, Secret refused).
-7.  #8: content tripwire (existing issue), used both for cloud sends and
-    at memory write time.
+6.  API: `GET /memory`, `GET /memory/{id}`, `POST /memory/search`,
+    `POST /memory` (owner create, level required, Secret refused by
+    label and by the `core/log.py` secret patterns).
+7.  #8: content tripwire (existing issue) for cloud sends, sharing the
+    write-time check from PR 6.
 8.  Approval flow: pending, approve with level, reject, limits, expiry.
 9.  Correct and delete: `PATCH`, `DELETE`, events.
 10. Export.
-11. Retrieval: the selection function, full-text search, size limits and
-    the rendering into `memory_context` (#2, part 1). Unit tests.
-12. Wiring into `/chat`: per-call selection, privacy raise, failover
+11. Retrieval: `memory_limit` on `ProviderInfo`, the selection
+    function, full-text search, size limits and the rendering into
+    `memory_context` (#2, part 1). Unit tests.
+12. Wiring into `/chat`: per-call selection inside the call path,
+    effective privacy level, the `call_with_identity` backstop, failover
     re-selection, `include_sensitive`, `memory.context.retrieved`
-    events, echo check (#2, part 2). Memory reaches local providers
-    only; cloud and untrusted hosts get `public` only.
+    events, and the echo check extended to memory text, the `/chat`
+    error body and the failover logs (#2, part 2). Trusted local hosts
+    get memory up to their limit; cloud and untrusted hosts get
+    `public` only.
 13. #22: the untrusted Ollama host decision (existing issue; amends
     ADR-023).
 14. Cloud ceiling to `personal` (after #8), and the cross-provider
@@ -573,8 +672,10 @@ Each has a recommended default, the main alternative and the trade-off.
 -   Risks: prompt injection through approved content can't be fully
     prevented; a wrong label chosen by the owner isn't caught; deleted
     content stays in backups for the retention period and in any
-    provider that already received it; one token means anything holding
-    it acts as the owner.
+    provider that already received it; a restore brings back old text
+    and old levels unless the runbook steps are run, and loses
+    everything after the backup if the current database is gone; one
+    token means anything holding it acts as the owner.
 
 ## Revisit when
 
