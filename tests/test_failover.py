@@ -518,9 +518,9 @@ def outcome_with_on_decision(
     options: dict[str, object],
     on_decision: Callable[[RouteDecision], None],
 ) -> tuple[object, list[int]]:
-    local = Fake("ollama", "local", error=local_error)
-    cloud = Fake("claude", "cloud", error=cloud_error)
-    router = Router([local, cloud], identity, probe=lambda: probe(ROOM))
+    local = FakeProvider("ollama", "local", error=local_error)
+    cloud = FakeProvider("claude", "cloud", error=cloud_error)
+    router = Router([local, cloud], identity, probe=lambda: snapshot(ROOM))
     request = ModelRequest(messages=(Message(role="user", content=PROMPT_TEXT),))
     try:
         result = asyncio.run(
@@ -563,8 +563,8 @@ def test_on_decision_cancellation_still_propagates(identity: Identity) -> None:
     def cancelled(_: RouteDecision) -> None:
         raise asyncio.CancelledError
 
-    local, cloud = Fake("ollama", "local"), Fake("claude", "cloud")
-    router = Router([local, cloud], identity, probe=lambda: probe(ROOM))
+    local, cloud = FakeProvider("ollama", "local"), FakeProvider("claude", "cloud")
+    router = Router([local, cloud], identity, probe=lambda: snapshot(ROOM))
     request = ModelRequest(messages=(Message(role="user", content=PROMPT_TEXT),))
 
     with pytest.raises(asyncio.CancelledError):
