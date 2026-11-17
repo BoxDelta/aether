@@ -244,8 +244,8 @@ Consequences and risks. - Date and owners. - Revisit conditions.
                           a loopback or private   
                           host                    
 
-  ADR-024                 Memory design for Phase Proposed
-                          2                       
+  ADR-024                 Memory design for Phase Accepted (owner,
+                          2                       2026-11-15)
   -----------------------------------------------------------------------
 
 ## 8. Validation checklist before adopting a dependency

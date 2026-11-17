@@ -1,6 +1,6 @@
 # ADR-024: Memory design for Phase 2
 
-**Status:** Proposed\
+**Status:** Accepted (owner, 2026-11-15)\
 **Date:** 2026-11-15\
 **Owner:** BoxDelta
 
@@ -237,8 +237,8 @@ per-request exception would need its own ADR (Decision D2).
 **Enforced in code, not by convention:**
 
 -   Selection runs **per call, after the route is chosen**, for the
-    provider that will receive that call. On failover (`Router.handle`,
-    #19) the fallback provider gets its own selection. A failover from a
+    provider that will receive that call. On failover (the failover rules in `Router.handle`) the fallback
+    provider gets its own selection. A failover from a
     trusted local host to the cloud therefore drops the Sensitive
     records, and drops Personal ones until #8.
     This happens inside the per-call path (`Router._call` /
@@ -458,11 +458,16 @@ stated gap, not a guarantee.
 -   **Stolen database credentials.** Memory content is readable by the
     role Core uses, whatever happens with roles. #1/#12 protect the
     audit trail (events), not the content. Gap: memory is not encrypted
-    at the column level; disk encryption on the PC is the protection
-    (Decision D11).
--   **Backups as a leak.** Backups contain Sensitive memory. Encryption
-    at rest and keeping backups out of any cloud location without the
-    owner's approval are decided in #3.
+    at the column level, and the PC's disk is not encrypted (the owner
+    checked). Column encryption wouldn't help, because the key would sit
+    in `.env` on the same disk (Decision D11). Protection: the Postgres
+    data volume must be on an encrypted volume (LUKS) before real memory
+    data is stored (#57), plus Postgres bound to `127.0.0.1` (ADR-020).
+-   **Backups as a leak.** Backups contain Sensitive memory. The
+    backups must be on an encrypted volume (LUKS) before real memory
+    data is stored (#57); until then the disk gives no protection at
+    rest. Keeping backups out of any cloud location without the owner's
+    approval, retention and the restore method are decided in #3.
 
 ### 7. Prerequisites and ordering
 
@@ -475,6 +480,13 @@ stated gap, not a guarantee.
         The deletion semantics (section 4) and the restore exit
         criterion depend on the backup method, its retention and the
         restore runbook.
+    -   **#57 (encrypted volume for the Postgres data and the
+        backups).** The host disk is not encrypted (root filesystem
+        directly on the NVMe, no LUKS), and column encryption was
+        rejected (D11). Until the data volume and the backups are on a
+        LUKS volume, memory stays on fake data. The volume is not
+        converted in place; the options are in #57. #3's backup location
+        must be on the same encrypted storage.
     -   **#1 and #12 (database roles; the two overlap and can land as
         one PR).** The `memory.*` events are the audit trail of every
         approval and deletion. With Core as the database owner, a bug or
@@ -568,8 +580,9 @@ tests run on Postgres with `AETHER_DB_TESTS=1` and in Sentinel.
 
 ### 9. Breakdown into small PRs
 
-In order. Each is one issue, one branch, one PR. The issues are created
-after this ADR is accepted.
+In order. Each is one issue, one branch, one PR. The build order is
+tracked in one issue ("Phase 2 Memory: build order (ADR-024)"); the
+per-step issues are created as each step starts.
 
 1.  #1 + #12: least-privilege app role and minimum password length
     (existing issues).
@@ -607,7 +620,11 @@ after this ADR is accepted.
     recall tests.
 15. Model proposals (`propose_memory`), if D7 is yes.
 16. Deletion and restore test and the restore runbook step (after #3).
-17. Docs: docs/02 Memory, docs/05 §7.1 and §11, docs/07 §6,
+17. Encrypted volume for the Postgres data and the backups (#57). This
+    is infrastructure, not a code PR, and must be done **before real
+    memory data is stored**, with #1/#12 and #3. It can happen at any
+    point before that; fake data doesn't need it.
+18. Docs: docs/02 Memory, docs/05 §7.1 and §11, docs/07 §6,
     `CODE_TOUR.md`, README.
 
 ## Decisions for the owner
@@ -666,12 +683,42 @@ Each has a recommended default, the main alternative and the trade-off.
     Sensitive only with an explicit `include_sensitive=true`. Trade-off:
     a full export is what "export my data" means; the flag guards against
     a careless export to a shared folder.
--   **D11. Column encryption.** Recommended: none in Phase 2; rely on
-    disk encryption and Postgres bound to `127.0.0.1` (ADR-020).
-    Alternative: encrypt `content` with a key in `.env`. Trade-off:
-    column encryption protects a stolen database file, but Core holds
-    the key anyway, and full-text search stops working on encrypted
-    content.
+-   **D11. Column encryption.** Original recommendation: none in Phase
+    2, relying on disk encryption. The owner checked and the PC's disk
+    is **not** encrypted, so that premise failed. Decided: no column
+    encryption, because the key would sit in `.env` on the same
+    unencrypted disk and would protect almost nothing (and full-text
+    search stops working on encrypted content). Instead, before any real
+    memory data is stored, the Postgres data volume and the backups must
+    be on an encrypted volume (LUKS), tracked in #57.
+
+### Owner decisions (2026-11-15)
+
+D1 to D10 are accepted exactly as recommended above. D11 differs.
+
+-   **D1.** Accepted as recommended: owner-created records are approved
+    immediately, with the level required.
+-   **D2.** Accepted as recommended: no Sensitive memory in the cloud in
+    Phase 2.
+-   **D3.** Accepted as recommended: cloud ceiling `public` until #8
+    lands, then `personal` for requests with `allow_cloud`.
+-   **D4.** Accepted as recommended: an untrusted Ollama host gets
+    `public` memory only until #22 is decided.
+-   **D5.** Accepted as recommended: daily backups kept 7 days plus
+    weekly backups kept 4 weeks (decided in detail in #3).
+-   **D6.** Accepted as recommended: corrections overwrite, with no
+    history of old content.
+-   **D7.** Accepted as recommended: model proposals only when a request
+    opts in, as the last feature PR.
+-   **D8.** Accepted as recommended: at most 50 pending, expiring after
+    30 days.
+-   **D9.** Accepted as recommended: 20 records and 4,000 characters per
+    call, lower for small local models.
+-   **D10.** Accepted as recommended: export includes everything,
+    including Sensitive and pending, on the authenticated route.
+-   **D11.** Changed: no column encryption; the Postgres data volume and
+    the backups must be on an encrypted volume (LUKS) before real memory
+    data is stored (#57).
 
 ## Consequences
 
