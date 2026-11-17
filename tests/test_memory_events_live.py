@@ -173,6 +173,10 @@ BAD_ROWS: dict[str, dict[str, Any]] = {
     "null id in list": {**RETRIEVED, "memory_record_ids": [ID_A, None]},
     "ids do not match counts": {**RETRIEVED, "memory_record_ids": [ID_A]},
     "effective below a level sent": {**RETRIEVED, "memory_effective_level": "public"},
+    # free text from 0002 on a memory event (any insert path, not just the writer)
+    "route reason on a record event": {**RECORD, "route_reason": "x"},
+    "error message on retrieved": {**RETRIEVED, "error_message": "x"},
+    "error message on exported": {**EXPORTED, "error_message": "x"},
     # wrong actor
     "memory event as core": {**RECORD, "actor": "core"},
     "memory event as router": {**RETRIEVED, "actor": "router"},

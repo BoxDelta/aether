@@ -181,6 +181,7 @@ BAD_EVENTS: dict[str, dict[str, Any]] = {
         "memory_level": None,
     },
     "content smuggled": {"event_type": "memory.deleted", "content": "x"},
+    "free text": {"event_type": "memory.deleted", "route_reason": "x"},
 }
 
 
@@ -205,6 +206,7 @@ BAD_RETRIEVED: dict[str, dict[str, Any]] = {
         "memory_count_personal": 0,
     },
     "ids do not match counts": {"memory_count_public": 3},
+    "repeated id": {"memory_record_ids": (ID := uuid4(), ID, uuid4())},
     "effective below sent": {"memory_effective_level": "public"},
     "secret effective": {"memory_effective_level": "secret"},
     "no request id": {"request_id": None},

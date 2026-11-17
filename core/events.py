@@ -188,6 +188,21 @@ def _set(event: Event, names: Sequence[str]) -> int:
     return sum(getattr(event, n) is not None for n in names)
 
 
+def _check_retrieved(event: Event) -> None:
+    counts = [getattr(event, n) for n in MEMORY_COUNT_FIELDS]
+    if event.request_id is None or event.provider is None:
+        raise ValueError("memory.context.retrieved needs a request id and a provider")
+    ids = event.memory_record_ids or ()
+    if len(ids) != sum(counts) or len(set(ids)) != len(ids):
+        raise ValueError("one distinct record id per record sent")
+    effective = privacy_rank(event.memory_effective_level)  # type: ignore[arg-type]
+    if any(
+        c and privacy_rank(level) > effective
+        for level, c in zip(NON_SECRET_LEVELS, counts, strict=True)
+    ):
+        raise ValueError("effective level below a level that was sent")
+
+
 def _check_memory_shape(event: Event) -> None:
     kind = event.event_type
     is_memory = kind in MEMORY_EVENT_TYPES
@@ -204,19 +219,11 @@ def _check_memory_shape(event: Event) -> None:
     if _set(event, MEMORY_RETRIEVED_FIELDS) != (len(MEMORY_RETRIEVED_FIELDS) if retrieved else 0):
         raise ValueError("context fields: all on memory.context.retrieved, else none")
     if retrieved:
-        counts = [getattr(event, n) for n in MEMORY_COUNT_FIELDS]
-        if event.request_id is None or event.provider is None:
-            raise ValueError("memory.context.retrieved needs a request id and a provider")
-        if len(event.memory_record_ids or ()) != sum(counts):
-            raise ValueError("one record id per record sent")
-        effective = privacy_rank(event.memory_effective_level)  # type: ignore[arg-type]
-        if any(
-            c and privacy_rank(level) > effective
-            for level, c in zip(NON_SECRET_LEVELS, counts, strict=True)
-        ):
-            raise ValueError("effective level below a level that was sent")
+        _check_retrieved(event)
     if (event.memory_export_count is not None) != (kind == "memory.exported"):
         raise ValueError("export count on memory.exported only")
+    if is_memory and (event.route_reason, event.error_message, event.attempts) != (None,) * 3:
+        raise ValueError("memory events carry no free text")
 
 
 # SQLAlchemy Core view of the table created by migration 0002 (used for inserts).

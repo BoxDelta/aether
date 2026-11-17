@@ -23,7 +23,8 @@ What changes:
   - ``memory.exported``: ``memory_export_count``, required.
 
   Every new column is NULL on every event type it doesn't belong to, so the rows
-  written before this migration stay valid.
+  written before this migration stay valid. A ``memory.*`` event also never has the
+  free-text columns from 0002 (``route_reason``, ``error_message``, ``attempts``).
 - Level columns take ``LEVELS``, which is ``router.contract.NON_SECRET_LEVELS``
   written out: ``secret`` is never stored in memory, and a call that carries memory
   never has an effective level of ``secret`` (a Secret request is never sent to any
@@ -145,6 +146,12 @@ CHECKS: dict[str, str] = {
         f" AND cardinality(memory_record_ids) = {' + '.join(COUNT_COLUMNS)}"
         f" AND {_effective_covers_counts()}"
         f" ELSE {_nonnulls(RETRIEVED_COLUMNS)} = 0 END"
+    ),
+    # The free-text columns from 0002 are never set on a memory event, whatever path
+    # inserts it (security review on #72).
+    "events_memory_no_free_text": (
+        f"NOT ({_in('event_type', MEMORY_EVENT_TYPES)})"
+        " OR num_nonnulls(route_reason, error_message, attempts) = 0"
     ),
     "events_memory_exported_shape": (
         f"(memory_export_count IS NOT NULL) = (event_type = '{EXPORTED}')"

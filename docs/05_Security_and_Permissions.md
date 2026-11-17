@@ -116,7 +116,12 @@ confidence is not a substitute for authorization.
     rejection reasons, and are written in the same transaction as the
     memory change, so neither exists without the other. The migration
     changes no grants, and its downgrade refuses while memory events
-    exist rather than delete audit rows.
+    exist rather than delete audit rows. A memory event can't carry the
+    free-text columns (route reason, error message, attempts), by CHECK.
+    **Known limitation:** `actor="restore"` is a label, not proof: the
+    app role can also write it. Enforcing it (for example by the
+    connecting role) belongs to the restore runbook step (ADR-024 §9
+    step 16).
 -   Database roles (#1, #12, ADR-020 addition 2026-11-16): Core connects
     as `aether_app` (`DATABASE_URL`), which has only CONNECT, schema
     USAGE, INSERT and SELECT on `events`, SELECT on `alembic_version`,
