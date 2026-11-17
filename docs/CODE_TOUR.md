@@ -12,7 +12,8 @@ the design, follow the ADR numbers into `docs/adr/`.
     the shared error format and 422 handler (`errors.py`), the `/chat`
     endpoint (`chat.py`), `/ready` (`ready.py`), the Postgres
     engine and its privileged-role check (`db.py`), the owner-only step
-    that sets the app role's password (`db_admin.py`), the append-only
+    that sets the app role's password (`db_admin.py`), verified backups
+    with D5 retention (`backup.py`), the append-only
     event log (`events.py`) and the
     identity loader and system-prompt builder (`identity.py`).
 -   `router/`: "Nexus", which picks a model and calls it. The provider
@@ -27,8 +28,11 @@ the design, follow the ADR numbers into `docs/adr/`.
     and the triggers that make it append-only. `0003_app_role.py` creates
     `aether_app`, the role Core connects as (`DATABASE_URL`): insert and
     read on `events`, nothing else.
--   `scripts/`: the identity continuity run (`identity_continuity.py`) and a
-    backup copy of the owner's `safemerge` fish function (never sourced).
+-   `scripts/`: the identity continuity run (`identity_continuity.py`), a
+    backup copy of the owner's `safemerge` fish function (never sourced),
+    the systemd user timer templates for backups (`systemd/`, installed by
+    hand) and the restore check (`restore_check.sql`). The backup command
+    itself is `core/backup.py` (`uv run python -m core.backup`, ADR-025).
 -   `tests/`: pytest, one file per module or behaviour (`test_routing.py`,
     `test_chat.py`, …). `conftest.py` clears AETHER's environment variables
     for every test. Live Postgres tests run only with `AETHER_DB_TESTS=1`.

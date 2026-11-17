@@ -1,0 +1,13 @@
+# Template (ADR-025, #3): runs aether-backup.service once a day.
+# Not installed by the repo. Install steps: docs/runbooks/db-backup-restore.md.
+[Unit]
+Description=Daily AETHER database backup
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+# Missed while the PC was off or you were logged out: run at the next chance.
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

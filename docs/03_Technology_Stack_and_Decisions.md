@@ -246,6 +246,9 @@ Consequences and risks. - Date and owners. - Revisit conditions.
 
   ADR-024                 Memory design for Phase Accepted (owner,
                           2                       2026-11-15)
+
+  ADR-025                 Database backups and    Proposed
+                          restore                 
   -----------------------------------------------------------------------
 
 ## 8. Validation checklist before adopting a dependency

@@ -1,0 +1,20 @@
+# Template (ADR-025, #3): daily AETHER database backup as a systemd *user* service.
+# Not installed by the repo. Install steps: docs/runbooks/db-backup-restore.md.
+# Edit WorkingDirectory if the repository is not at ~/Projects/aether.
+[Unit]
+Description=AETHER database backup (pg_dump in the Postgres container)
+Documentation=https://github.com/BoxDelta/aether/blob/main/docs/runbooks/db-backup-restore.md
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Projects/aether
+# uv is usually in ~/.local/bin; /usr/bin/env looks it up in this PATH.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin
+# --no-sync: a backup never changes the virtual environment.
+ExecStart=/usr/bin/env uv run --no-sync python -m core.backup
+# Files and folders it creates are private (it also sets 600/700 itself).
+UMask=0077
+NoNewPrivileges=yes
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=45min
