@@ -4,6 +4,14 @@ One Postgres holds memory, runtime tasks and events. This module only builds the
 engine and checks the connection; tables come with their features, through
 Alembic migrations (``migrations/``).
 
+Two roles (#1, #12, ADR-020 addition 2026-11-16). Core connects with
+``DATABASE_URL``, the least-privilege app role (``aether_app``, created by
+migration 0003). Alembic connects with ``DATABASE_MIGRATION_URL``, the owner, and
+falls back to ``DATABASE_URL`` when it is unset. Every new connection of Core's
+engine is checked: a role that is a superuser, owns the database or ``events``,
+or can create objects is refused (``PrivilegedRoleError``), so Core can't run
+as the owner by mistake.
+
 Failures are reported as a ``DbStatus`` whose message is built from safe parts
 only: host, port, database and user names, and exception type names. Never the
 password, and never driver exception text, which can echo the connection string
@@ -19,17 +27,46 @@ import sys
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Literal
-from urllib.parse import urlsplit
+from typing import Any, Literal
+from urllib.parse import unquote, urlsplit
 
-from sqlalchemy import text
+from pydantic import SecretStr
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from core.config import DATABASE_SCHEME, Settings, get_settings
-from core.log import Redactor, secrets_from
+from core.log import MIN_SECRET_LENGTH, Redactor, secrets_from
 
 CONNECT_TIMEOUT_S = 5.0
 NOT_SET_MESSAGE = "DATABASE_URL is not set (see .env.example)"
+# Shorter passwords aren't redacted by value in logs (core.log), so they're refused.
+MIN_PASSWORD_LENGTH = MIN_SECRET_LENGTH
+RUNBOOK = "docs/runbooks/db-app-role.md"
+PRIVILEGED_MESSAGE = (
+    "DATABASE_URL connects as a privileged role (superuser, owner, or able to create "
+    "objects). Core must use the least-privilege app role; the owner role belongs in "
+    f"DATABASE_MIGRATION_URL. See {RUNBOOK}"
+)
+SAME_ROLE_MESSAGE = (
+    "DATABASE_URL and DATABASE_MIGRATION_URL use the same role. Core must use the "
+    f"least-privilege app role. See {RUNBOOK}"
+)
+
+# True when the connected role could change or drop what it should only append to.
+# Each part is COALESCEd: a NULL (e.g. no events table yet) must not hide the rest.
+PRIVILEGE_QUERY = """
+SELECT r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication
+    OR r.rolbypassrls
+    OR pg_has_role(current_user, d.datdba, 'MEMBER')
+    OR has_database_privilege(current_user, d.oid, 'CREATE')
+    OR COALESCE(has_schema_privilege(current_user, current_schema(), 'CREATE'), false)
+    OR COALESCE(
+        (SELECT pg_has_role(current_user, c.relowner, 'MEMBER')
+           FROM pg_class c WHERE c.oid = to_regclass('events')),
+        false)
+FROM pg_roles r, pg_database d
+WHERE r.rolname = current_user AND d.datname = current_database()
+"""
 
 Problem = Literal[
     "ok",
@@ -55,19 +92,37 @@ class DatabaseNotConfigured(DatabaseConfigError):
     pass
 
 
-def url_problem(url: str) -> str | None:
-    """Why ``url`` can't be used, or None. Never includes any part of the URL."""
+class PrivilegedRoleError(DatabaseConfigError):
+    """Core's ``DATABASE_URL`` is the owner or another privileged role. Core refuses
+    to start (core.app). The message never contains any part of a URL."""
+
+
+def url_problem(url: str, name: str = "DATABASE_URL") -> str | None:
+    """Why ``url`` can't be used, or None. Never includes any part of the URL;
+    ``name`` is the setting's name, for the message."""
     try:
         parts = urlsplit(url)
         host = parts.hostname
         parts.port  # noqa: B018 - raises ValueError on a bad port
+        password = parts.password
     except ValueError:
-        return "DATABASE_URL is not a valid URL"
+        return f"{name} is not a valid URL"
     if parts.scheme != DATABASE_SCHEME:
-        return f"DATABASE_URL must start with {DATABASE_SCHEME}://"
+        return f"{name} must start with {DATABASE_SCHEME}://"
     if not host or not parts.path.strip("/"):
-        return "DATABASE_URL needs a host and a database name"
+        return f"{name} needs a host and a database name"
+    if not parts.username:
+        return f"{name} needs a user name"
+    if len(unquote(password or "")) < MIN_PASSWORD_LENGTH:
+        return f"{name} needs a password of at least {MIN_PASSWORD_LENGTH} characters"
     return None
+
+
+def _username(url: SecretStr) -> str | None:
+    try:
+        return urlsplit(url.get_secret_value()).username
+    except ValueError:
+        return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,23 +140,65 @@ def url_status(settings: Settings) -> DbStatus | None:
     problem = url_problem(settings.database_url.get_secret_value())
     if problem is not None:
         return DbStatus(False, "misconfigured", problem)
+    migration = settings.database_migration_url
+    if migration is not None:
+        problem = url_problem(migration.get_secret_value(), "DATABASE_MIGRATION_URL")
+        if problem is not None:
+            return DbStatus(False, "misconfigured", problem)
+        if _username(migration) == _username(settings.database_url):
+            return DbStatus(False, "misconfigured", SAME_ROLE_MESSAGE)
     return None
 
 
-def create_engine(settings: Settings) -> AsyncEngine:
-    """Async engine for ``DATABASE_URL``. Does not connect yet."""
-    if settings.database_url is None:
-        raise DatabaseNotConfigured(NOT_SET_MESSAGE)
-    status = url_status(settings)
-    if status is not None:
-        raise DatabaseConfigError(status.message)
+def _engine(url: str) -> AsyncEngine:
     return create_async_engine(
-        settings.database_url.get_secret_value(),
+        url,
         pool_pre_ping=True,
         # Keep bound parameters (memory content, later) out of exception text.
         hide_parameters=True,
         connect_args={"timeout": CONNECT_TIMEOUT_S},
     )
+
+
+def _refuse_privileged_role(dbapi_connection: Any, _record: Any) -> None:
+    """Pool ``connect`` hook: refuse any new connection made as a privileged role."""
+    privileged = dbapi_connection.run_async(lambda conn: conn.fetchval(PRIVILEGE_QUERY))
+    if privileged is not False:  # True, or None if the role row wasn't found
+        raise PrivilegedRoleError(PRIVILEGED_MESSAGE)
+
+
+def create_engine(settings: Settings) -> AsyncEngine:
+    """Core's async engine for ``DATABASE_URL`` (the app role). Does not connect
+    yet; each new connection is checked with ``PRIVILEGE_QUERY``."""
+    if settings.database_url is None:
+        raise DatabaseNotConfigured(NOT_SET_MESSAGE)
+    status = url_status(settings)
+    if status is not None:
+        if status.message == SAME_ROLE_MESSAGE:
+            raise PrivilegedRoleError(status.message)
+        raise DatabaseConfigError(status.message)
+    engine = _engine(settings.database_url.get_secret_value())
+    event.listen(engine.sync_engine, "connect", _refuse_privileged_role)
+    return engine
+
+
+def migration_url(settings: Settings) -> tuple[str, SecretStr | None]:
+    """The owner URL for Alembic and its setting name: ``DATABASE_MIGRATION_URL``,
+    else ``DATABASE_URL`` (a throwaway CI database has only that one)."""
+    if settings.database_migration_url is not None:
+        return "DATABASE_MIGRATION_URL", settings.database_migration_url
+    return "DATABASE_URL", settings.database_url
+
+
+def create_migration_engine(settings: Settings) -> AsyncEngine:
+    """Engine for migrations and owner-only admin steps. No privilege check."""
+    name, url = migration_url(settings)
+    if url is None:
+        raise DatabaseNotConfigured(NOT_SET_MESSAGE)
+    problem = url_problem(url.get_secret_value(), name)
+    if problem is not None:
+        raise DatabaseConfigError(problem)
+    return _engine(url.get_secret_value())
 
 
 @asynccontextmanager
@@ -151,13 +248,17 @@ def _chain(exc: BaseException) -> Iterator[BaseException]:
 def classify(exc: BaseException, target: str) -> DbStatus:
     chain = list(_chain(exc))
     names = {type(e).__name__ for e in chain}
+    if any(isinstance(e, PrivilegedRoleError) for e in chain):
+        return DbStatus(False, "misconfigured", PRIVILEGED_MESSAGE)
     if names & _AUTH_ERRORS:
         return DbStatus(
             False,
             "auth_failed",
-            f"Postgres rejected the login for {target}. Check that the password in "
-            "DATABASE_URL matches POSTGRES_PASSWORD in .env. The container sets the "
-            "password only when its data volume is first created.",
+            f"Postgres rejected the login for {target}. For the app role, set its "
+            "password from DATABASE_URL with `uv run python -m core.db_admin "
+            "set-app-password`. For the owner, the password must match "
+            "POSTGRES_PASSWORD in .env; the container sets it only when its data "
+            "volume is first created.",
         )
     if names & _MISSING_DB_ERRORS:
         return DbStatus(False, "database_missing", f"database does not exist: {target}")

@@ -2,7 +2,9 @@
 
 Opt-in: these read DATABASE_URL from .env and connect to the real container.
 They only read (SELECT 1, the alembic_version row) and try one login with a
-wrong password; they never create, change or drop anything.
+wrong password. Reads run as Core does, through a throwaway member of the app
+role (``live_app`` in conftest.py, created and dropped around each test); they
+never change or drop any data.
 
 Run (fish):  env AETHER_DB_TESTS=1 uv run pytest -m db
 """
@@ -40,8 +42,8 @@ def with_wrong_password(s: Settings) -> Settings:
     )
 
 
-def test_live_database_reachable(live: Settings) -> None:
-    status = asyncio.run(check_database(live))
+def test_live_database_reachable(live_app: Settings) -> None:
+    status = asyncio.run(check_database(live_app))
     assert status.ok, status.message
     assert status.problem == "ok"
 
@@ -77,9 +79,9 @@ def test_live_driver_error_redacted_in_logs(live: Settings) -> None:
     assert real_password(live) not in logged
 
 
-def test_live_migrations_at_head(live: Settings) -> None:
+def test_live_migrations_at_head(live_app: Settings) -> None:
     async def version() -> str | None:
-        engine = create_engine(live)
+        engine = create_engine(live_app)
         try:
             async with engine.connect() as conn:
                 result = await conn.execute(text("SELECT version_num FROM alembic_version"))

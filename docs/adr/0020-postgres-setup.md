@@ -55,6 +55,47 @@ any error text.
     secret. Dependabot (`docker-compose` ecosystem) proposes digest and
     18.x updates; major versions are ignored.
 
+## Addition (2026-11-16): least-privilege app role (#1, #12)
+
+The deferred role above is now in place. The single-role text above is
+kept as the original decision.
+
+-   **Two roles.** The owner `aether` (created by the image, a
+    superuser) runs migrations only, through `DATABASE_MIGRATION_URL`.
+    Core connects as `aether_app` through `DATABASE_URL`. Alembic falls
+    back to `DATABASE_URL` when `DATABASE_MIGRATION_URL` is unset, so a
+    throwaway database with one URL (Sentinel) still migrates; on the PC
+    that fallback would connect as the app role and fail safely.
+-   **Created by a migration.** `0003` creates `aether_app` (LOGIN, no
+    password, no special attributes) and grants exactly: CONNECT on the
+    database, USAGE on the schema, SELECT and INSERT on `events`, SELECT
+    on `alembic_version`. It revokes the default PUBLIC rights on the
+    database, the schema and `events_append_only()`. Future tables
+    (Memory, ADR-024) grant the app role what they need in their own
+    migration. No default privileges are set, so nothing new is granted
+    by accident.
+-   **Password.** Never in a migration. The owner sets it once with
+    `uv run python -m core.db_admin set-app-password`, which takes it
+    from `DATABASE_URL` and sends only a SCRAM-SHA-256 verifier (as
+    `psql`'s `\password` does). Alternatives considered: `\password`
+    by hand (interactive, easy to mistype) and `ALTER ROLE ... PASSWORD
+    '<plain>'` (the plain password could reach the server log).
+-   **Guard.** Every new connection of Core's engine runs one query and
+    refuses a superuser, the database or `events` owner, or a role that
+    can create objects. Core then refuses to start and `/ready` reports
+    `misconfigured`. Detecting by privilege, not by name, also catches
+    a renamed or wrongly granted role.
+-   **Minimum password length** of 8 characters for both URLs, the same
+    threshold as redaction by value.
+-   **Existing installs** move with `docs/runbooks/db-app-role.md`: no
+    table or volume is dropped or rewritten.
+
+Consequences: one more secret in `.env`, and one more setup step. Both
+passwords still sit in the same `.env`, so this protects the events
+against Core's own bugs and a leaked app-role password, not against
+someone who can read `.env` or the disk (#57). Live tests create and
+drop a temporary member role of `aether_app` for each test.
+
 ## Revisit when
 
 Backups are designed (Phase 2), pgvector is needed (ADR-011), a
