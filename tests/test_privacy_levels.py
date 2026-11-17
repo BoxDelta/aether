@@ -122,3 +122,21 @@ def test_memory_records_check_matches_privacy_order_without_secret() -> None:
     # The only literal list of level names in that migration is PRIVACY_LEVELS.
     lists = _string_tuples_of_level_names(ast.parse(source))
     assert [names for _, names in lists] == [list(NON_SECRET_LEVELS)]
+
+
+def test_memory_events_checks_match_privacy_order_without_secret() -> None:
+    # ADR-024 §5 (#72): every level column on events added by 0005 (record level, old
+    # level, the call's effective level, the per-level counts) uses one frozen copy of
+    # NON_SECRET_LEVELS, in order. Secret is never stored, and a call that carries
+    # memory is never Secret.
+    migration = _migration("0005_memory_events.py")
+    assert migration.LEVELS == NON_SECRET_LEVELS
+    assert SECRET not in migration.LEVELS
+    for column in ("memory_level", "memory_old_level", "memory_effective_level"):
+        assert migration.CHECKS[f"events_{column}"] == migration._in(column, NON_SECRET_LEVELS)
+    assert tuple(f"memory_count_{lvl}" for lvl in NON_SECRET_LEVELS) == migration.COUNT_COLUMNS
+    source = (REPO / "migrations/versions/0005_memory_events.py").read_text()
+    for column in ("memory_level", "memory_old_level", "memory_effective_level"):
+        assert f'_in("{column}", LEVELS)' in source, column
+    lists = _string_tuples_of_level_names(ast.parse(source))
+    assert [names for _, names in lists] == [list(NON_SECRET_LEVELS)]

@@ -15,7 +15,8 @@ the design, follow the ADR numbers into `docs/adr/`.
     and delete only in `memory_records`), the owner-only step
     that sets the app role's password (`db_admin.py`), verified backups
     with D5 retention (`backup.py`), the append-only
-    event log (`events.py`) and the
+    event log (`events.py`; memory events go through `write_memory_event`
+    on the caller's connection, in the same transaction) and the
     identity loader and system-prompt builder (`identity.py`).
 -   `router/`: "Nexus", which picks a model and calls it. The provider
     contract and privacy levels (`contract.py`), the routing rules and
@@ -32,8 +33,12 @@ the design, follow the ADR numbers into `docs/adr/`.
     `memory_records` table (ADR-024 §1: content, key, category, privacy
     never `secret`, status, provenance, timestamps, each checked by the
     database) and gives the app role read, insert, update and delete on
-    it, nothing more.
--   `memory/`: the memory store (`store.py`, ADR-024 step 4).
+    it, nothing more. `0005_memory_events.py` adds the `memory.*` event
+    types and their typed, content-free columns to `events` (ADR-024
+    §5), widens `actor` to `memory` and `restore`, and changes no grants;
+    its downgrade refuses while memory events exist.
+-   `memory/`: the memory store (`store.py`, ADR-024 step 4) and its
+    fixed value sets (`types.py`: categories, statuses, sources).
     `MemoryStore` creates, gets, lists, corrects, approves and
     hard-deletes `memory_records` through Core's app engine. Its checks
     run before the database: never `secret`; owner records approved at
@@ -42,7 +47,9 @@ the design, follow the ADR numbers into `docs/adr/`.
     `source` and `actor` its caller passes; `source` has no default);
     content, key and
     one-approved-record-per-key give store errors that never quote
-    content or keys. Nothing calls it yet: no API, retrieval or events.
+    content or keys. Every change writes one `memory.*` event in the same
+    transaction (ADR-024 step 5). Nothing calls it yet: no API or
+    retrieval.
 -   `scripts/`: the identity continuity run (`identity_continuity.py`), a
     backup copy of the owner's `safemerge` fish function (never sourced),
     the systemd user timer templates for backups (`systemd/`, installed by

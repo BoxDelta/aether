@@ -204,7 +204,7 @@ def test_database_not_migrated_without_alembic_table(db_ok: list[Any]) -> None:
 
 
 def test_migration_head_read_from_files() -> None:
-    assert migration_head() == "0004"
+    assert migration_head() == "0005"
 
 
 def test_unreachable_database_shows_category_only(capsys: pytest.CaptureFixture[str]) -> None:

@@ -1,7 +1,7 @@
 """The memory store (ADR-024 §1, §2, §4; step 4 of #58): ``public.memory_records``.
 
-A Python API only: no HTTP route, no retrieval for model calls and no events yet
-(ADR-024 §9, steps 5, 6 and 11). It uses Core's app engine (``core.db.create_engine``,
+A Python API only: no HTTP route and no retrieval for model calls yet (ADR-024 §9,
+steps 6 and 11). It uses Core's app engine (``core.db.create_engine``,
 the ``aether_app`` role) and changes nothing about its privileges.
 
 Rules, checked here before anything reaches the database; the CHECK constraints of
@@ -38,6 +38,19 @@ block, so the driver's exception (whose detail can quote the row) is not even
 chained. Logs carry the record ID and status only.
 
 Every operation runs in one transaction: if it fails, nothing is changed.
+
+**Events** (ADR-024 §5, step 5): every change writes exactly one metadata-only event
+in the *same* transaction, with actor ``memory``, so the change and its event commit
+or roll back together. A failed operation writes no event, and a failed event write
+undoes the change:
+
+- create by a model or a tool (``pending``): ``memory.proposed``;
+- create by the owner (approved at once, D1) and ``approve``: ``memory.approved``;
+- ``update``: ``memory.updated``, with the old level as well when the level changed;
+- ``delete``: ``memory.deleted``.
+
+An event holds the record's ID, category, source and level (``MemoryRecordMeta``),
+never content, a key or corrected text. Reads (``get``, ``list``) write no event.
 """
 
 import enum
@@ -46,7 +59,7 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Literal, TypeVar, get_args
+from typing import Any, TypeVar, cast
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -54,7 +67,22 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, StatementError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from core.events import (
+    MemoryRecordEventType,
+    MemoryRecordMeta,
+    memory_record_event,
+    write_memory_event,
+)
 from core.request_context import SAFE_ID_PATTERN
+from memory.types import (
+    CATEGORIES,
+    SOURCES,
+    STATUSES,
+    Category,
+    PrivacySource,
+    Source,
+    Status,
+)
 from router.contract import (
     NON_SECRET_LEVELS,
     PROVIDER_NAME_PATTERN,
@@ -65,18 +93,12 @@ from router.contract import (
 
 logger = logging.getLogger("aether.memory.store")
 
-# Frozen copies of these live in migrations/versions/0004_memory_records.py;
-# tests/test_memory_store.py fails if they drift apart.
+# Frozen copies of these (and of memory/types.py) live in
+# migrations/versions/0004_memory_records.py; tests/test_memory_store.py fails if
+# they drift apart.
 TABLE = "public.memory_records"  # schema-qualified, like Core's privilege check (#67)
 CONTENT_MAX = 1000
 KEY_PATTERN = r"[a-z0-9_.]{1,64}"
-Category = Literal["profile", "preference", "project", "decision", "task", "reference"]
-Status = Literal["pending", "approved"]
-Source = Literal["owner", "model", "tool"]
-PrivacySource = Literal["owner", "suggested"]
-CATEGORIES: tuple[Category, ...] = get_args(Category)
-STATUSES: tuple[Status, ...] = get_args(Status)
-SOURCES: tuple[Source, ...] = get_args(Source)
 OWNER: Source = "owner"
 LIST_LIMIT_MAX = 200
 LIST_LIMIT_DEFAULT = 50
@@ -355,6 +377,12 @@ def _record(row: Any) -> MemoryRecord:
     return MemoryRecord.model_validate(dict(row._mapping))
 
 
+def _meta(record: MemoryRecord) -> MemoryRecordMeta:
+    return MemoryRecordMeta(
+        record_id=record.id, category=record.category, source=record.source, level=record.privacy
+    )
+
+
 def _failure(exc: DBAPIError) -> MemoryStoreError:
     """A store error for a database error, from its SQLSTATE and constraint name
     only. Never the driver's message or detail, which can quote the row."""
@@ -421,7 +449,12 @@ class MemoryStore:
         )
 
         async def insert(conn: AsyncConnection) -> MemoryRecord:
-            return _record((await conn.execute(text(sql), values)).one())
+            record = _record((await conn.execute(text(sql), values)).one())
+            kind: MemoryRecordEventType = (
+                "memory.approved" if record.status == "approved" else "memory.proposed"
+            )
+            await write_memory_event(conn, memory_record_event(kind, _meta(record)))
+            return record
 
         record = await self._run(insert)
         logger.info(
@@ -479,8 +512,12 @@ class MemoryStore:
         extra = ", privacy_source = 'owner'" if "privacy" in columns else ""
 
         async def change(conn: AsyncConnection) -> MemoryRecord:
-            await self._lock(conn, record_id)
-            return await self._set(conn, record_id, columns, extra)
+            _, old_level = await self._lock(conn, record_id)
+            record = await self._set(conn, record_id, columns, extra)
+            changed = old_level if old_level != record.privacy else None
+            event = memory_record_event("memory.updated", _meta(record), old_level=changed)
+            await write_memory_event(conn, event)
+            return record
 
         record = await self._run(change)
         logger.info(
@@ -503,9 +540,12 @@ class MemoryStore:
         extra = ", status = 'approved', privacy_source = 'owner', approved_at = now()"
 
         async def change(conn: AsyncConnection) -> MemoryRecord:
-            if await self._lock(conn, record_id) != "pending":
+            status, _ = await self._lock(conn, record_id)
+            if status != "pending":
                 raise NotPending(record_id)
-            return await self._set(conn, record_id, columns, extra)
+            record = await self._set(conn, record_id, columns, extra)
+            await write_memory_event(conn, memory_record_event("memory.approved", _meta(record)))
+            return record
 
         record = await self._run(change)
         logger.info(
@@ -517,23 +557,29 @@ class MemoryStore:
         """Hard delete (owner only), expired or not. No tombstone (ADR-024 §4)."""
         _require_owner(actor, "delete")
         _check_id(record_id)
-        sql = f"DELETE FROM {TABLE} WHERE id = :id RETURNING id"  # noqa: S608
+        # Metadata columns only: the deleted content is never read back.
+        sql = f"DELETE FROM {TABLE} WHERE id = :id RETURNING id, category, source, privacy"  # noqa: S608
 
         async def remove(conn: AsyncConnection) -> None:
-            if (await conn.execute(text(sql), {"id": record_id})).one_or_none() is None:
+            row = (await conn.execute(text(sql), {"id": record_id})).one_or_none()
+            if row is None:
                 raise RecordNotFound(record_id)
+            meta = MemoryRecordMeta(
+                record_id=row.id, category=row.category, source=row.source, level=row.privacy
+            )
+            await write_memory_event(conn, memory_record_event("memory.deleted", meta))
 
         await self._run(remove)
         logger.info("Memory record deleted", extra={"record_id": str(record_id)})
 
     @staticmethod
-    async def _lock(conn: AsyncConnection, record_id: UUID) -> str:
-        """Lock an unexpired record for this transaction; its status."""
-        sql = f"SELECT status FROM {TABLE} WHERE id = :id AND {_NOT_EXPIRED} FOR UPDATE"  # noqa: S608
-        status = (await conn.execute(text(sql), {"id": record_id})).scalar_one_or_none()
-        if status is None:
+    async def _lock(conn: AsyncConnection, record_id: UUID) -> tuple[str, PrivacyLevel]:
+        """Lock an unexpired record for this transaction; its status and level."""
+        sql = f"SELECT status, privacy FROM {TABLE} WHERE id = :id AND {_NOT_EXPIRED} FOR UPDATE"  # noqa: S608
+        row = (await conn.execute(text(sql), {"id": record_id})).one_or_none()
+        if row is None:
             raise RecordNotFound(record_id)
-        return str(status)
+        return str(row.status), cast(PrivacyLevel, row.privacy)
 
     @staticmethod
     async def _set(

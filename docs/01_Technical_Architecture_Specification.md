@@ -274,6 +274,31 @@ Columns: `id`, `occurred_at`, `recorded_at`, `event_type`,
 `output_tokens`, `error_type`, `error_message`, `attempts` (array of at
 most two `{provider, error_type, message, retryable}`).
 
+**Memory events (migration 0005, ADR-024 §5, #72):** event types
+`memory.proposed`, `memory.approved`, `memory.rejected`,
+`memory.updated`, `memory.deleted`, `memory.expired`, `memory.exported`
+and `memory.context.retrieved`, with actor `memory` (or `restore`, for
+the restore runbook, ADR-024 §4); every other event keeps `core` or
+`router`. Typed columns, each with a CHECK, and no JSON:
+
+- record events (proposed, approved, rejected, updated, deleted,
+  expired): `memory_record_id`, `memory_category`, `memory_source` and
+  `memory_level`, all required; `memory_old_level` on `memory.updated`
+  only, when the level changed;
+- `memory.context.retrieved`: `request_id`, `provider`,
+  `memory_count_public`, `memory_count_personal`,
+  `memory_count_sensitive`, `memory_chars`, `memory_effective_level`,
+  `memory_record_ids` (at most 20 UUIDs, one per record sent) and
+  `memory_left_out`, all required;
+- `memory.exported`: `memory_export_count`.
+
+Each column is NULL on every other event type. Level columns never
+allow `secret`. Never recorded: memory content, keys, corrected text,
+search queries or rejection reasons. A memory event is written in the
+same transaction as the change it records (`core.events.write_memory_event`).
+The memory store writes proposed, approved, updated and deleted today;
+the other four come with later ADR-024 steps.
+
 ## 8. Data ownership
 
   -----------------------------------------------------------------------
