@@ -56,6 +56,7 @@ Copies today's `DATABASE_URL` (the owner) into a new
 `DATABASE_MIGRATION_URL` line. Prints no URL.
 
 ```fish
+umask 077                            # new files readable by you only
 if grep -q '^DATABASE_MIGRATION_URL=.' .env
     echo "DATABASE_MIGRATION_URL is already set; not changed"
 else
@@ -86,6 +87,7 @@ password is sent as a SCRAM verifier, never in plain text
 (`core/db_admin.py`).
 
 ```fish
+umask 077
 set -l pw (openssl rand -hex 24)
 string replace -r '^DATABASE_URL=postgresql\+asyncpg://[^@]*@' "DATABASE_URL=postgresql+asyncpg://aether_app:$pw@" < .env > .env.new
 and chmod 600 .env.new
@@ -95,6 +97,9 @@ uv run python -m core.db_admin set-app-password
 ```
 
 Expect: `ok: password set; Core can log in as aether_app@127.0.0.1:5432/aether`.
+It changes only `aether_app`; if `DATABASE_URL` names any other role it
+stops without changing anything. Use a generated password as above
+(`openssl rand -hex 24`), not a short memorable one.
 
 ## 5. Check it worked
 
@@ -144,6 +149,7 @@ events are lost.
 3.  Point `DATABASE_URL` back at the owner and remove the migration line:
 
     ```fish
+    umask 077
     set -l owner (string replace -rf '^DATABASE_MIGRATION_URL=' '' < .env)
     string match -rv '^DATABASE_(MIGRATION_)?URL=' < .env > .env.new
     and printf 'DATABASE_URL=%s\n' $owner >> .env.new

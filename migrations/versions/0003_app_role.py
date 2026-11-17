@@ -12,7 +12,8 @@ Nothing else: no UPDATE, DELETE or TRUNCATE on ``events``, and it owns nothing,
 so it can't drop or disable the append-only triggers or alter or drop tables. It
 can't create objects either: the default PUBLIC rights on the database (CONNECT,
 TEMPORARY), on the schema (USAGE) and on ``events_append_only()`` (EXECUTE) are
-revoked, so every right is granted to a named role. Triggers fire without
+revoked, so every right is granted to a named role, and functions created
+later by the owner get no PUBLIC EXECUTE by default. Triggers fire without
 EXECUTE on their function. The owner (a superuser in the Docker image) keeps
 running migrations.
 
@@ -74,9 +75,13 @@ def upgrade() -> None:
     op.execute("REVOKE ALL ON alembic_version FROM PUBLIC")
     op.execute(f"GRANT SELECT ON alembic_version TO {APP_ROLE}")
     op.execute("REVOKE ALL ON FUNCTION events_append_only() FROM PUBLIC")
+    # Functions that later migrations create (as this same owner role) aren't
+    # executable by PUBLIC either; each grants what the app role needs.
+    op.execute("ALTER DEFAULT PRIVILEGES REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC")
 
 
 def downgrade() -> None:
+    op.execute("ALTER DEFAULT PRIVILEGES GRANT EXECUTE ON FUNCTIONS TO PUBLIC")
     op.execute("GRANT EXECUTE ON FUNCTION events_append_only() TO PUBLIC")
     op.execute(f"REVOKE ALL ON alembic_version FROM {APP_ROLE}")
     op.execute(f"REVOKE ALL ON events FROM {APP_ROLE}")

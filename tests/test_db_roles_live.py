@@ -289,3 +289,73 @@ def test_migration_engine_is_the_owner(live_owner: Settings) -> None:
             await engine.dispose()
 
     assert asyncio.run(user()) != APP_ROLE
+
+
+# --- the privilege check catches more than ownership (security review) ---------------
+
+
+@pytest.mark.parametrize(
+    "grant",
+    [
+        "GRANT pg_write_all_data TO {role}",
+        "GRANT pg_write_server_files TO {role}",
+        "GRANT pg_execute_server_program TO {role}",
+        "GRANT UPDATE ON events TO {role}",
+        "GRANT TRIGGER ON events TO {role}",
+        "GRANT CREATE ON SCHEMA public TO {role}",
+    ],
+)
+def test_a_wrongly_granted_app_role_is_refused(
+    live_app: Settings, live_owner: Settings, grant: str
+) -> None:
+    assert live_app.database_url is not None
+    role = urlsplit(live_app.database_url.get_secret_value()).username
+    statement = grant.format(role=role)
+    revoke = statement.replace("GRANT", "REVOKE", 1).replace(" TO ", " FROM ")
+
+    async def run(sql: str) -> None:
+        engine = create_migration_engine(live_owner)
+        try:
+            async with engine.begin() as conn:
+                await conn.exec_driver_sql(sql)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run(statement))
+    try:
+        status = asyncio.run(check_database(live_app))
+    finally:
+        asyncio.run(run(revoke))  # the fixture drops the role afterwards anyway
+    assert (status.problem, status.message) == ("misconfigured", PRIVILEGED_MESSAGE)
+
+
+def test_set_app_password_refuses_a_role_outside_the_app_role(
+    live_app: Settings, live_owner: Settings
+) -> None:
+    # The owner's own role named in DATABASE_URL (with a different migration user
+    # impossible here, so use a fresh unrelated role instead).
+    other = "aether_unrelated_probe"
+
+    async def run(sql: str) -> None:
+        engine = create_migration_engine(live_owner)
+        try:
+            async with engine.begin() as conn:
+                await conn.exec_driver_sql(sql)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run(f"CREATE ROLE {other} LOGIN"))
+    try:
+        assert live_app.database_url is not None
+        parts = urlsplit(live_app.database_url.get_secret_value())
+        netloc = f"{other}:{parts.password}@{parts.hostname}:{parts.port or 5432}"
+        settings = live_app.model_copy(
+            update={"database_url": SecretStr(urlunsplit(parts._replace(netloc=netloc)))}
+        )
+        status = asyncio.run(set_app_password(settings))
+        can_login = asyncio.run(check_database(settings)).problem
+    finally:
+        asyncio.run(run(f"DROP ROLE IF EXISTS {other}"))
+    assert status.problem == "misconfigured"
+    assert "was not changed" in status.message
+    assert can_login == "auth_failed"  # no password was set on it

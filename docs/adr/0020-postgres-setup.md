@@ -72,17 +72,23 @@ kept as the original decision.
     on `alembic_version`. It revokes the default PUBLIC rights on the
     database, the schema and `events_append_only()`. Future tables
     (Memory, ADR-024) grant the app role what they need in their own
-    migration. No default privileges are set, so nothing new is granted
-    by accident.
+    migration. Default privileges only revoke PUBLIC EXECUTE on
+    functions the owner creates later; nothing is granted by default, so
+    nothing new reaches the app role by accident.
 -   **Password.** Never in a migration. The owner sets it once with
     `uv run python -m core.db_admin set-app-password`, which takes it
     from `DATABASE_URL` and sends only a SCRAM-SHA-256 verifier (as
-    `psql`'s `\password` does). Alternatives considered: `\password`
+    `psql`'s `\password` does), with `log_statement` off for that
+    statement. It only changes `aether_app` (or a member of it) without
+    special attributes, never another role named by mistake. Alternatives considered: `\password`
     by hand (interactive, easy to mistype) and `ALTER ROLE ... PASSWORD
     '<plain>'` (the plain password could reach the server log).
 -   **Guard.** Every new connection of Core's engine runs one query and
-    refuses a superuser, the database or `events` owner, or a role that
-    can create objects. Core then refuses to start and `/ready` reports
+    refuses a role with special attributes, the owner of the database or
+    of any non-system table or function, a role that can create in the
+    database or any schema, a member of `pg_write_all_data` or the
+    server-files/program roles, or one with UPDATE, DELETE, TRUNCATE or
+    TRIGGER on any table. Core then refuses to start and `/ready` reports
     `misconfigured`. Detecting by privilege, not by name, also catches
     a renamed or wrongly granted role.
 -   **Minimum password length** of 8 characters for both URLs, the same

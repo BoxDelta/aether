@@ -41,6 +41,17 @@ from core.log import Redactor, secrets_from
 
 SCRAM_ITERATIONS = 4096  # Postgres's default (scram_iterations)
 _ROLE_NAME = re.compile(r"[a-z_][a-z0-9_]{0,62}")
+APP_ROLE = "aether_app"  # migrations/versions/0003_app_role.py
+# The target must be the app role (or a member of it, as the live tests use) and
+# hold no special attributes: never reset another service's or a superuser's
+# password by mistake.
+TARGET_QUERY = """
+SELECT (r.rolname = :app OR pg_has_role(r.oid, :app, 'MEMBER'))
+   AND NOT (r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication
+            OR r.rolbypassrls OR pg_has_role(r.oid, d.datdba, 'MEMBER'))
+FROM pg_roles r, pg_database d
+WHERE r.rolname = :r AND d.datname = current_database()
+"""
 USAGE = "usage: python -m core.db_admin set-app-password"
 
 
@@ -98,15 +109,23 @@ async def set_app_password(settings: Settings) -> DbStatus:
     engine = create_migration_engine(settings)
     try:
         async with engine.begin() as conn:
-            exists = await conn.scalar(
+            if not await conn.scalar(
                 text("SELECT count(*) FROM pg_roles WHERE rolname = :r"), {"r": role}
-            )
-            if not exists:
+            ):
                 return DbStatus(
                     False,
                     "misconfigured",
                     f"role {role} does not exist: run `uv run alembic upgrade head` first",
                 )
+            if not await conn.scalar(text(TARGET_QUERY), {"r": role, "app": APP_ROLE}):
+                return DbStatus(
+                    False,
+                    "misconfigured",
+                    f"DATABASE_URL must use the app role {APP_ROLE}; role {role} is "
+                    "not it (or is privileged), so its password was not changed",
+                )
+            # Keep even the verifier out of the server log (the owner is a superuser).
+            await conn.exec_driver_sql("SET LOCAL log_statement = 'none'")
             # Not text(): it would read ":<base64>" in the verifier as a bind parameter.
             await conn.exec_driver_sql(statement)
     except Exception as exc:

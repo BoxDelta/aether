@@ -52,18 +52,36 @@ SAME_ROLE_MESSAGE = (
     f"least-privilege app role. See {RUNBOOK}"
 )
 
-# True when the connected role could change or drop what it should only append to.
-# Each part is COALESCEd: a NULL (e.g. no events table yet) must not hide the rest.
+# True when the connected role could change or drop what it should only append to:
+# special attributes; owning the database or any non-system table or function;
+# CREATE on the database or any non-system schema; predefined roles that write
+# any table or reach the server's files or programs; or UPDATE, DELETE, TRUNCATE
+# or TRIGGER on any non-system table. Independent of search_path. Each part is
+# COALESCEd: a NULL must not hide the rest.
 PRIVILEGE_QUERY = """
 SELECT r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication
     OR r.rolbypassrls
     OR pg_has_role(current_user, d.datdba, 'MEMBER')
     OR has_database_privilege(current_user, d.oid, 'CREATE')
-    OR COALESCE(has_schema_privilege(current_user, current_schema(), 'CREATE'), false)
-    OR COALESCE(
-        (SELECT pg_has_role(current_user, c.relowner, 'MEMBER')
-           FROM pg_class c WHERE c.oid = to_regclass('events')),
-        false)
+    OR pg_has_role(current_user, 'pg_write_all_data', 'MEMBER')
+    OR pg_has_role(current_user, 'pg_write_server_files', 'MEMBER')
+    OR pg_has_role(current_user, 'pg_execute_server_program', 'MEMBER')
+    OR pg_has_role(current_user, 'pg_read_server_files', 'MEMBER')
+    OR EXISTS (
+        SELECT 1 FROM pg_namespace n
+        WHERE n.nspname NOT LIKE 'pg\\_%' AND n.nspname <> 'information_schema'
+          AND has_schema_privilege(current_user, n.oid, 'CREATE'))
+    OR EXISTS (
+        SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname NOT LIKE 'pg\\_%' AND n.nspname <> 'information_schema'
+          AND (pg_has_role(current_user, c.relowner, 'MEMBER')
+               OR (c.relkind IN ('r', 'p')
+                   AND has_table_privilege(current_user, c.oid,
+                                           'UPDATE, DELETE, TRUNCATE, TRIGGER'))))
+    OR EXISTS (
+        SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname NOT LIKE 'pg\\_%' AND n.nspname <> 'information_schema'
+          AND pg_has_role(current_user, p.proowner, 'MEMBER'))
 FROM pg_roles r, pg_database d
 WHERE r.rolname = current_user AND d.datname = current_database()
 """
