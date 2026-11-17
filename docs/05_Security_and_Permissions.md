@@ -530,9 +530,40 @@ early; it is **not** a security boundary and does not replace Sentinel.
     checked out and has no `.env`, and refuses to start otherwise, so
     the timer never runs an unreviewed branch with the owner's Docker
     access (ADR-025 D8).
--   **Known limitation:** backups are **not encrypted at rest** until #57
-    and sit on the same disk as the database, so they don't protect
-    against losing the disk. Today they hold events only (metadata).
+-   **Encryption at rest (#57, ADR-026).** The Postgres data and the
+    backups move into one LUKS2 container file (20 GB, ext4 inside),
+    unlocked only by a passphrase the owner types. It is never in `.env`,
+    a keyfile on this disk, compose, a script or a unit. The owner carries
+    the move out by hand (`docs/runbooks/encrypted-volume.md`); until then,
+    the database and the backups are **not encrypted at rest**. The move
+    must happen before real memory data is stored.
+    -   **Fails closed.** With the volume locked or not mounted, Docker
+        refuses to start Postgres: the bind source exists only inside the
+        volume, `create_host_path: false`, and the bare mount point is
+        empty and immutable. The entrypoint also refuses without the
+        volume's marker, so no fresh database is ever initialised on the
+        bare disk. The nightly backup refuses to run (exit 1, one `err`
+        journal line). Core still starts with events skipped, and `/ready`
+        reports `degraded` with database `unreachable`.
+    -   **Encrypted:** the Postgres data and the backups, while the volume
+        is locked or the PC is off.
+    -   **Not encrypted:**
+        -   anything while the volume is open;
+        -   swap on disk and hibernation images;
+        -   core dumps;
+        -   memory text typed into shell commands (shell history);
+        -   data written before the move (old volume, old backups,
+            snapshots). Deleting it is not wiping it on btrfs or an SSD,
+            which is acceptable only because it holds event metadata.
+    -   Postgres's error log, which lives in Docker's log on the
+        unencrypted disk, no longer quotes rows, keys or statements
+        (`log_error_verbosity=terse`, `log_min_error_statement=panic`).
+        That only holds with the volume's override.
+-   **Known limitation:** backups sit on the **same physical disk** as the
+    database, so they don't protect against losing the disk. An encrypted
+    off-machine copy is a separate follow-up. A forgotten passphrase loses
+    the database and its backups together; the LUKS header backup is kept
+    off the machine (ADR-026 §3).
 -   **Deletion and backups:** a deleted memory record stays in every
     backup taken before the delete, until retention prunes the last of
     them, about 5 weeks with daily backups (ADR-024 §4). A restore brings

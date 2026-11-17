@@ -9,4 +9,5 @@ have their own files here. ADR-022 (go public via a new repo) is
 Accepted (2026-11-14). ADR-023 (Ollama host trust) is
 Accepted (2026-11-15). ADR-024 (memory design for Phase 2) is
 Accepted (owner, 2026-11-15). ADR-025 (database backups and restore) is
-Accepted (owner, 2026-11-16).
+Accepted (owner, 2026-11-16). ADR-026 (encrypted volume for the database
+and backups) is Proposed (2026-11-17).

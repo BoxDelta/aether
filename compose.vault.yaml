@@ -1,0 +1,53 @@
+# Opt-in override (ADR-026, #57): Postgres data on the encrypted volume.
+#
+# Use it together with docker-compose.yml, never alone:
+#   docker compose -f docker-compose.yml -f compose.vault.yaml up -d
+# or, after the switch in docs/runbooks/encrypted-volume.md, through
+# COMPOSE_FILE=docker-compose.yml:compose.vault.yaml in .env (compose reads it).
+# Day to day, start and stop it with scripts/vault.fish, which unlocks and checks
+# the volume first.
+#
+# Fails closed. If the volume is locked or not mounted:
+# - the bind source ~/.local/share/aether/vault/data does not exist (it only
+#   exists inside the volume; the bare mount point is empty and immutable), and
+#   create_host_path: false makes Docker refuse to start the container instead
+#   of creating an empty folder on the unencrypted disk;
+# - if a data folder exists but is not the volume's (no marker), the entrypoint
+#   below refuses to start Postgres, so it never initialises a fresh database.
+# No password, key or passphrase is in this file.
+services:
+  postgres:
+    # Not started by Docker at boot: the volume is locked then. scripts/vault.fish
+    # starts it after unlocking and checking the marker. A crash is not restarted
+    # automatically either (start it again with the script).
+    restart: "no"
+    # The marker is written once, when the volume is created (runbook stage 2).
+    # Checked as root before the image's own entrypoint runs; $$ is a literal $.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        if [ ! -f /var/lib/postgresql/.aether-vault ]; then
+        echo "aether: encrypted volume marker missing; refusing to start Postgres" >&2;
+        exit 1; fi;
+        exec docker-entrypoint.sh "$$@"
+      - docker-entrypoint.sh
+    # Postgres logs go to Docker's container log, on the unencrypted disk. By
+    # default an error adds DETAIL lines that quote the row ("Failing row
+    # contains (...)", "Key (key)=(...) already exists"), i.e. memory content,
+    # and the failing statement. terse drops DETAIL, HINT, QUERY and CONTEXT;
+    # panic stops logging statements. Errors are still logged, without values.
+    command:
+      - postgres
+      - -c
+      - log_error_verbosity=terse
+      - -c
+      - log_min_error_statement=panic
+    volumes:
+      # Replaces the named volume (same target). Long syntax, so Docker never
+      # creates the source folder.
+      - type: bind
+        source: ${HOME:?HOME must be set}/.local/share/aether/vault/data
+        target: /var/lib/postgresql
+        bind:
+          create_host_path: false

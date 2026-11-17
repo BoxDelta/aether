@@ -132,6 +132,33 @@ narrow exception.
     any future table by default), and per-table row-level security
     (more machinery than one table needs).
 
+## Addition (2026-11-17): data on the encrypted volume (#57, ADR-026)
+
+The runtime above (the named volume `aether_pgdata`) is kept as the
+default, and as the original decision. ADR-026 adds an opt-in override,
+`compose.vault.yaml`. The owner turns it on with
+`COMPOSE_FILE=docker-compose.yml:compose.vault.yaml` in `.env` after
+running `docs/runbooks/encrypted-volume.md`. With it:
+
+-   **Data.** The data lives on a LUKS2 container file, bind-mounted from
+    `~/.local/share/aether/vault/data`, with `create_host_path: false`. A
+    locked volume means Docker refuses to start the container; nothing is
+    created on the bare disk.
+-   **Marker.** The entrypoint refuses to start Postgres unless the
+    volume's marker `/var/lib/postgresql/.aether-vault` is present, so a
+    fresh database is never initialised outside the volume.
+-   **Restart policy.** `restart: "no"`: Postgres is started by
+    `aether-vault open` after the unlock, not by Docker at boot. This
+    replaces `unless-stopped` for this setup.
+-   **Logs.** Postgres runs with `log_error_verbosity=terse` and
+    `log_min_error_statement=panic`, so errors in Docker's log (on the
+    unencrypted disk) don't quote rows, keys or statements.
+-   **Unchanged.** The image, user, database, port binding and healthcheck.
+    Sentinel keeps the default.
+
+A later small PR makes the bind mount the default and gives Sentinel its
+own named-volume override (ADR-026 §9).
+
 ## Revisit when
 
 Backups are designed (Phase 2), pgvector is needed (ADR-011), a

@@ -327,8 +327,12 @@ Install steps, the restore drill into a throwaway database, replacing the
 real database and going back are in
 [`docs/runbooks/db-backup-restore.md`](docs/runbooks/db-backup-restore.md).
 
--   Backups are **not encrypted at rest** until #57, and sit on the same
-    disk as the database. Today they hold events only (metadata).
+-   Backups and the database are **not encrypted at rest** until you move
+    them onto the encrypted volume (#57, ADR-026):
+    [`docs/runbooks/encrypted-volume.md`](docs/runbooks/encrypted-volume.md).
+    Do that before real memory data is stored. Afterwards both are in one
+    LUKS2 container file, unlocked with `aether-vault open` after each
+    boot, and still on the same disk as each other.
 -   A deleted record stays in backups until the last backup taken before
     the delete is pruned: about 5 weeks with daily backups.
 -   Roles aren't in a backup; a restore onto a new cluster recreates

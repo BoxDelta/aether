@@ -13,12 +13,23 @@ privacy level, route, error type, latency, token counts; never prompts or
 answers) and `alembic_version`. Once Memory exists (Phase 2), backups also
 hold memory records, including `personal` and `sensitive` ones.
 
-**Not encrypted at rest yet.** Backups are plain files in a private
-folder (mode 700, files 600) on the PC's disk, which is not encrypted. The
-folder moves to the encrypted volume in #57 before any real memory data is
-stored. Backups never go to a cloud location. They are on the **same
-disk** as the database, so they protect against mistakes (a bad migration,
-`down -v`, a corrupted volume), not against losing the disk (ADR-025 D4).
+**Encrypted at rest only after the move (#57, ADR-026).** Until you've run
+[`encrypted-volume.md`](encrypted-volume.md), backups are plain files in a
+private folder (mode 700, files 600) on the PC's disk, which is not
+encrypted. The move must be done before any real memory data is stored.
+
+After the move:
+
+-   Backups go to `~/.local/share/aether/vault/backups`, inside the same
+    LUKS2 volume as the database.
+-   The timer's drop-in refuses to run while that volume is locked: exit 1,
+    one `err` journal line, the unit failed, and nothing written.
+-   **Use that folder wherever this runbook says
+    `~/.local/share/aether/backups`.**
+
+Backups never go to a cloud location. They are on the **same disk** as the
+database, so they protect against mistakes (a bad migration, `down -v`, a
+corrupted volume), not against losing the disk (ADR-025 D4).
 
 ## 1. How a backup works
 
@@ -114,9 +125,14 @@ journalctl --user -u aether-backup.service -n 3 --no-pager
 If the merge changed the service or timer template, copy them again (the
 `cp` line in 2b), then run `systemctl --user daemon-reload`.
 
-If a run fails at `ExecStartPre` (the journal shows the `/bin/sh` step
-failed), the second clone is not on a clean `main`. Check it with
-`git -C ~/Projects/aether-backup status`.
+If a run fails at `ExecStartPre`, the journal shows which check failed:
+
+-   The git check: the second clone is not on a clean `main`. Check it with
+    `git -C ~/Projects/aether-backup status`.
+-   After the move to the encrypted volume, the line `aether-backup:
+    encrypted volume not mounted (or no AETHER marker); no backup written`:
+    run `aether-vault open`, then
+    `systemctl --user start aether-backup.service`.
 
 User timers run only while your user session exists. With
 `Persistent=true`, a run missed while the PC was off or you were logged
