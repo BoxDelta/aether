@@ -113,14 +113,19 @@ confidence is not a substitute for authorization.
     and tests (`core/events.py`, docs/01 §7).
 -   Database roles (#1, #12, ADR-020 addition 2026-11-16): Core connects
     as `aether_app` (`DATABASE_URL`), which has only CONNECT, schema
-    USAGE, INSERT and SELECT on `events`, and SELECT on
-    `alembic_version`. It owns nothing, so it can't update, delete or
-    truncate events, drop or disable the append-only triggers, or create,
-    alter or drop tables. The owner `aether` (`DATABASE_MIGRATION_URL`)
-    runs migrations only. Nothing is granted to PUBLIC. Core refuses to
-    start, and `/ready` reports `misconfigured`, if its role is a
-    superuser, owns the database or `events`, can create objects, or is
-    the same as the migration role (tested live). Database passwords
+    USAGE, INSERT and SELECT on `events`, SELECT on `alembic_version`,
+    and SELECT, INSERT, UPDATE and DELETE on `memory_records` (migration
+    0004, #66: Core corrects and hard-deletes memory records, ADR-024
+    §4). It owns nothing, so it can't update, delete or truncate events,
+    drop or disable the append-only triggers, truncate `memory_records`
+    or add triggers to it, or create, alter or drop tables. The owner
+    `aether` (`DATABASE_MIGRATION_URL`) runs migrations only. Nothing is
+    granted to PUBLIC. Core refuses to start, and `/ready` reports
+    `misconfigured`, if its role is a superuser, owns the database or any
+    table or function, can create objects, holds TRUNCATE or TRIGGER on
+    any table, holds UPDATE or DELETE on any table other than
+    `public.memory_records`, or is the same as the migration role (tested
+    live). Database passwords
     shorter than 8 characters are refused as `misconfigured`, without
     echoing them, because shorter values aren't redacted by value. The
     app role's password is set as a SCRAM verifier, never sent in plain

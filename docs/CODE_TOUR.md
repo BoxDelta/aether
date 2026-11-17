@@ -11,7 +11,8 @@ the design, follow the ADR numbers into `docs/adr/`.
     (`request_context.py`), JSON logging and secret redaction (`log.py`),
     the shared error format and 422 handler (`errors.py`), the `/chat`
     endpoint (`chat.py`), `/ready` (`ready.py`), the Postgres
-    engine and its privileged-role check (`db.py`), the owner-only step
+    engine and its privileged-role check (`db.py`; the app role may update
+    and delete only in `memory_records`), the owner-only step
     that sets the app role's password (`db_admin.py`), verified backups
     with D5 retention (`backup.py`), the append-only
     event log (`events.py`) and the
@@ -27,7 +28,11 @@ the design, follow the ADR numbers into `docs/adr/`.
     (`DATABASE_MIGRATION_URL`). `0002_events.py` creates the events table
     and the triggers that make it append-only. `0003_app_role.py` creates
     `aether_app`, the role Core connects as (`DATABASE_URL`): insert and
-    read on `events`, nothing else.
+    read on `events`. `0004_memory_records.py` creates the
+    `memory_records` table (ADR-024 §1: content, key, category, privacy
+    never `secret`, status, provenance, timestamps, each checked by the
+    database) and gives the app role read, insert, update and delete on
+    it, nothing more. There is no `memory/` package yet (ADR-024 step 4).
 -   `scripts/`: the identity continuity run (`identity_continuity.py`), a
     backup copy of the owner's `safemerge` fish function (never sourced),
     the systemd user timer templates for backups (`systemd/`, installed by

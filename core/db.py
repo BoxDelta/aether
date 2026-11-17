@@ -55,9 +55,15 @@ SAME_ROLE_MESSAGE = (
 # True when the connected role could change or drop what it should only append to:
 # special attributes; owning the database or any non-system table or function;
 # CREATE on the database or any non-system schema; predefined roles that write
-# any table or reach the server's files or programs; or UPDATE, DELETE, TRUNCATE
-# or TRIGGER on any non-system table. Independent of search_path. Each part is
-# COALESCEd: a NULL must not hide the rest.
+# any table or reach the server's files or programs; TRUNCATE or TRIGGER on any
+# non-system table; or UPDATE (on the table or any column) or DELETE on any
+# non-system table except ``public.memory_records`` (MUTABLE_TABLE: Core corrects and
+# hard-deletes memory records, ADR-024 §4; migration 0004). The exception is that
+# one table in the public schema and those two rights only (a memory_records in any
+# other schema is not exempt): ``events`` and ``alembic_version``
+# stay insert/read-only, and owning or creating anything is refused everywhere.
+# Independent of search_path. Each part is COALESCEd: a NULL must not hide the rest.
+MUTABLE_TABLE = "memory_records"
 PRIVILEGE_QUERY = """
 SELECT r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication
     OR r.rolbypassrls
@@ -76,8 +82,11 @@ SELECT r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication
         WHERE n.nspname NOT LIKE 'pg\\_%' AND n.nspname <> 'information_schema'
           AND (pg_has_role(current_user, c.relowner, 'MEMBER')
                OR (c.relkind IN ('r', 'p')
-                   AND has_table_privilege(current_user, c.oid,
-                                           'UPDATE, DELETE, TRUNCATE, TRIGGER'))))
+                   AND (has_table_privilege(current_user, c.oid, 'TRUNCATE, TRIGGER')
+                        OR (NOT (n.nspname = 'public' AND c.relname = 'memory_records')
+                            AND (has_table_privilege(current_user, c.oid, 'UPDATE, DELETE')
+                                 OR has_any_column_privilege(current_user, c.oid,
+                                                             'UPDATE')))))))
     OR EXISTS (
         SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname NOT LIKE 'pg\\_%' AND n.nspname <> 'information_schema'

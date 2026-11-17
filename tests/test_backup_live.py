@@ -38,6 +38,12 @@ pytestmark = LIVE_DB
 REPO = Path(__file__).resolve().parent.parent
 INSUFFICIENT_PRIVILEGE = "42501"
 EVENT = "INSERT INTO events (occurred_at, event_type, schema_version, actor) VALUES (now(), 'request.received', 1, 'core')"  # noqa: E501
+# Invented canary text only (migration 0004).
+MEMORY = (
+    "INSERT INTO memory_records (content, category, privacy, status, source, privacy_source,"
+    " approved_at) VALUES ('canary-backup-3c9a: invented test fact', 'preference', 'personal',"
+    " 'approved', 'owner', 'owner', now())"
+)
 
 
 def with_database(settings: Settings, database: str) -> Settings:
@@ -133,10 +139,10 @@ def migrate(owner: Settings) -> None:
     asyncio.run(owner_run(owner, body))
 
 
-def add_events(owner: Settings, n: int) -> None:
+def add_events(owner: Settings, n: int, statement: str = EVENT) -> None:
     async def body(conn: AsyncConnection) -> None:
         for _ in range(n):
-            await conn.execute(text(EVENT))
+            await conn.execute(text(statement))
 
     asyncio.run(owner_run(owner, body))
 
@@ -153,7 +159,8 @@ def counts(owner: Settings, upto: int | None = None) -> dict[str, Any]:
             )
         ).one()
         version = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-        return {"events": row[0], "max_id": row[1], "alembic": version}
+        memory = await conn.scalar(text("SELECT count(*) FROM memory_records"))
+        return {"events": row[0], "max_id": row[1], "alembic": version, "memory": memory}
 
     result: dict[str, Any] = asyncio.run(owner_run(owner, body))
     return result
@@ -294,6 +301,7 @@ def test_backup_restore_round_trip_keeps_rows_triggers_and_grants(
     src_owner, dst_owner = with_database(live_owner, src), with_database(live_owner, dst)
     migrate(src_owner)
     add_events(src_owner, 5)
+    add_events(src_owner, 3, MEMORY)
 
     folder = tmp_path / "backups"
     dump, shown = back_up(
@@ -307,10 +315,12 @@ def test_backup_restore_round_trip_keeps_rows_triggers_and_grants(
         assert secret not in shown
 
     add_events(src_owner, 5)  # written after the backup: must not come back
+    add_events(src_owner, 2, MEMORY)
     restore(container, user, dst, dump)
 
     after = counts(dst_owner)
-    assert after["events"] == 5 and after == counts(src_owner, upto=after["max_id"])
+    assert after["events"] == 5 and after["memory"] == 3
+    assert {**after, "memory": 5} == counts(src_owner, upto=after["max_id"])
     assert counts(src_owner)["events"] == 10
 
     # Database-level rights are not in a dump: the runbook sets them (step R3).
@@ -326,3 +336,32 @@ def test_backup_restore_round_trip_keeps_rows_triggers_and_grants(
     assert asyncio.run(as_app(app_dst, EVENT)) == "allowed"  # rolled back
     for statement in ("UPDATE events SET outcome = 'ok'", "DELETE FROM events", "TRUNCATE events"):
         assert asyncio.run(as_app(app_dst, statement)) == INSUFFICIENT_PRIVILEGE, statement
+    # memory_records (0004): the grants came back with the table, and no more.
+    for statement in (
+        MEMORY,
+        "SELECT count(*) FROM memory_records",
+        "UPDATE memory_records SET privacy = 'sensitive'",
+        "DELETE FROM memory_records",
+    ):
+        assert asyncio.run(as_app(app_dst, statement)) == "allowed", statement  # rolled back
+    assert asyncio.run(as_app(app_dst, "TRUNCATE memory_records")) == INSUFFICIENT_PRIVILEGE
+
+
+def test_restore_check_flags_a_database_from_before_0004(
+    live_owner: Settings, container: str, databases: tuple[str, str]
+) -> None:
+    # A backup from before migration 0004 restores without memory_records: the check
+    # names only that (runbook R4), instead of failing with an SQL error.
+    src, _ = databases
+    owner = with_database(live_owner, src)
+    config = Config(str(REPO / "alembic.ini"))
+
+    def upgrade(sync: Connection) -> None:
+        config.attributes["connection"] = sync
+        command.upgrade(config, "0003")
+
+    async def body(conn: AsyncConnection) -> None:
+        await conn.run_sync(upgrade)
+
+    asyncio.run(owner_run(owner, body))
+    assert restore_check(container, owner_user(live_owner), src) == "NOT OK: memory_table"

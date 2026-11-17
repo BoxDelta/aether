@@ -182,12 +182,22 @@ echo "SELECT count(*) FROM events WHERE id <= $max" | docker compose exec -T pos
 
 Triggers and rights: this prints exactly `ok` (else `NOT OK:` and the
 failing checks). It checks both append-only triggers, the app role's
-insert and read rights, that it can't update, delete, truncate or add
-triggers, and that PUBLIC has no rights (`scripts/restore_check.sql`):
+insert and read rights on `events`, that it can't update, delete,
+truncate or add triggers there, its read, insert, update and delete
+rights on `memory_records` (and no truncate, triggers or references),
+and that PUBLIC has no rights (`scripts/restore_check.sql`):
 
 ```fish
 docker compose exec -T postgres psql -U aether -d aether_restore_check -At < scripts/restore_check.sql
 ```
+
+A backup taken before migration `0004` (the `version_num` above is
+`0003`) has no `memory_records` table, so the check prints
+`NOT OK: memory_table` and nothing else. That is expected for such a
+backup. If you replace the database with it (section 4), run
+`uv run alembic upgrade head` right after the swap (step 4), before the
+checks in step 5; the check then says `ok`. Any other failing name is a
+real problem: don't swap.
 
 **R5. End of a drill.** Drop the throwaway database. This only removes
 `aether_restore_check`; check the name before you press Enter.
@@ -210,7 +220,8 @@ docker compose exec -T postgres dropdb -U aether aether_restore_check
 > Until then this section is for events only.
 
 1.  Do the drill (section 3, R1 to R4) and keep `aether_restore_check`;
-    `restore_check.sql` must say `ok`.
+    `restore_check.sql` must say `ok` (or only `NOT OK: memory_table` for
+    a backup from before migration `0004`; see R4).
 2.  Stop Core (Ctrl+C) and the timer:
     `systemctl --user stop aether-backup.timer`.
 3.  If the live database is still readable, back it up first, with a

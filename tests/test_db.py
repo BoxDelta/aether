@@ -4,6 +4,7 @@ import asyncio
 import io
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -279,7 +280,7 @@ def test_alembic_has_one_head() -> None:
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config(str(REPO / "alembic.ini")))
-    assert script.get_heads() == ["0003"]
+    assert script.get_heads() == ["0004"]
 
 
 def test_alembic_ini_has_no_url() -> None:
@@ -502,7 +503,12 @@ def test_alembic_offline_uses_migration_url_and_hides_both_passwords(
     out = capsys.readouterr().out
     assert "GRANT SELECT, INSERT ON events TO aether_app" in out
     assert "REVOKE ALL ON FUNCTION events_append_only() FROM PUBLIC" in out
-    assert "UPDATE" not in out.split("0002 -> 0003")[-1].replace("UPDATE alembic_version", "")
+    # 0003 grants no UPDATE on anything (0004 grants it on memory_records only).
+    in_0003 = out.split("0002 -> 0003")[-1].split("0003 -> 0004")[0]
+    assert "UPDATE" not in in_0003.replace("UPDATE alembic_version", "")
+    in_0004 = out.split("0003 -> 0004")[-1]
+    assert "GRANT SELECT, INSERT, UPDATE, DELETE ON memory_records TO aether_app" in in_0004
+    assert "TRUNCATE" not in in_0004 and "REFERENCES" not in in_0004
     assert APP_PASSWORD not in out and OWNER_PASSWORD not in out
     assert "PASSWORD" not in out  # the migration never sets a password
 
@@ -515,3 +521,30 @@ def test_alembic_offline_refuses_a_short_owner_password(monkeypatch: pytest.Monk
     with pytest.raises(core.db.DatabaseConfigError) as info:
         command.upgrade(Config(str(REPO / "alembic.ini")), "head", sql=True)
     assert SHORT_PASSWORD not in str(info.value)
+
+
+# --- the privilege check's one exception: memory_records (#66, ADR-024 §1) ------------
+
+
+def _query() -> str:
+    return " ".join(core.db.PRIVILEGE_QUERY.split())
+
+
+def test_privilege_query_exempts_only_memory_records_from_update_and_delete() -> None:
+    q = _query()
+    migration = (REPO / "migrations/versions/0004_memory_records.py").read_text()
+    assert f'TABLE = "{core.db.MUTABLE_TABLE}"' in migration
+    # One table name, compared exactly, in exactly one place.
+    exempt = f"NOT (n.nspname = 'public' AND c.relname = '{core.db.MUTABLE_TABLE}')"
+    assert q.count(exempt) == 1
+    assert len(re.findall(r"\bc\.relname\b", q)) == 1
+    # TRUNCATE and TRIGGER are refused on every table, outside the exception.
+    assert f"has_table_privilege(current_user, c.oid, 'TRUNCATE, TRIGGER') OR ({exempt}" in q
+    # UPDATE (also on a single column) and DELETE are refused on every other table.
+    assert (
+        f"({exempt} AND (has_table_privilege(current_user,"
+        " c.oid, 'UPDATE, DELETE') OR has_any_column_privilege(current_user, c.oid, 'UPDATE')))"
+    ) in q
+    # Ownership and CREATE are still checked without any exception.
+    assert "pg_has_role(current_user, c.relowner, 'MEMBER') OR" in q
+    assert "has_schema_privilege(current_user, n.oid, 'CREATE')" in q

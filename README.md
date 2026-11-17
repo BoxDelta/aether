@@ -232,7 +232,9 @@ volume `aether_pgdata`, not in this repository.
 Two roles (ADR-020, #1, #12). The owner `aether` runs migrations only
 (`DATABASE_MIGRATION_URL`). Core connects as `aether_app`
 (`DATABASE_URL`), which can insert and read events but can't change or
-delete them, and Core refuses to start as the owner. An install from
+delete them, and Core refuses to start as the owner. On the
+`memory_records` table (ADR-024, no API yet) it can also update and
+delete, but never truncate, add triggers, alter or drop. An install from
 before this change moves over with
 [`docs/runbooks/db-app-role.md`](docs/runbooks/db-app-role.md).
 
