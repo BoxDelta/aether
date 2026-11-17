@@ -535,13 +535,14 @@ def test_privilege_query_exempts_only_memory_records_from_update_and_delete() ->
     migration = (REPO / "migrations/versions/0004_memory_records.py").read_text()
     assert f'TABLE = "{core.db.MUTABLE_TABLE}"' in migration
     # One table name, compared exactly, in exactly one place.
-    assert q.count(f"c.relname <> '{core.db.MUTABLE_TABLE}'") == 1
+    exempt = f"NOT (n.nspname = 'public' AND c.relname = '{core.db.MUTABLE_TABLE}')"
+    assert q.count(exempt) == 1
     assert len(re.findall(r"\bc\.relname\b", q)) == 1
     # TRUNCATE and TRIGGER are refused on every table, outside the exception.
-    assert "has_table_privilege(current_user, c.oid, 'TRUNCATE, TRIGGER') OR (c.relname" in q
+    assert f"has_table_privilege(current_user, c.oid, 'TRUNCATE, TRIGGER') OR ({exempt}" in q
     # UPDATE (also on a single column) and DELETE are refused on every other table.
     assert (
-        f"(c.relname <> '{core.db.MUTABLE_TABLE}' AND (has_table_privilege(current_user,"
+        f"({exempt} AND (has_table_privilege(current_user,"
         " c.oid, 'UPDATE, DELETE') OR has_any_column_privilege(current_user, c.oid, 'UPDATE')))"
     ) in q
     # Ownership and CREATE are still checked without any exception.

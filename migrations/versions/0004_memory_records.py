@@ -104,9 +104,11 @@ def upgrade() -> None:
             _in("privacy_source", PRIVACY_SOURCES), name="memory_records_privacy_source"
         ),
         sa.CheckConstraint(
-            "(status = 'approved' AND approved_at IS NOT NULL AND privacy_source = 'owner')"
-            " OR (status = 'pending' AND approved_at IS NULL)",
-            name="memory_records_approval",
+            "status <> 'approved' OR (approved_at IS NOT NULL AND privacy_source = 'owner')",
+            name="memory_records_approved",
+        ),
+        sa.CheckConstraint(
+            "status <> 'pending' OR approved_at IS NULL", name="memory_records_pending"
         ),
     )
     op.create_index(

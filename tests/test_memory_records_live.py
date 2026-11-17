@@ -77,42 +77,54 @@ async def require_memory_table(conn: AsyncConnection) -> None:
 
 
 async def try_insert(conn: AsyncConnection, *rows: dict[str, Any]) -> str:
-    """Insert ``rows`` in a savepoint; the SQLSTATE of the first refusal, or "ok"."""
+    """Insert ``rows`` in a savepoint. "ok", or the first refusal as its SQLSTATE plus
+    the name of the constraint that refused it (so each case proves its own CHECK)."""
     savepoint = await conn.begin_nested()
     try:
         for values in rows:
             await conn.execute(text(INSERT), values)
     except DBAPIError as exc:
         await savepoint.rollback()
-        return sqlstate(exc) or type(exc.orig).__name__
+        # SQLAlchemy wraps asyncpg's error; the asyncpg one carries the name.
+        cause = getattr(exc.orig, "__cause__", None)
+        name = getattr(cause, "constraint_name", None) or getattr(exc.orig, "constraint_name", None)
+        code = sqlstate(exc) or type(exc.orig).__name__
+        return f"{code}:{name}" if name else code
     await savepoint.rollback()
     return "ok"
 
 
 # --- every CHECK refuses a bad row ---------------------------------------------------
 
+
+def check(name: str) -> str:
+    return f"{CHECK_VIOLATION}:memory_records_{name}"
+
+
+# Each case breaks exactly one constraint, which the expected value names.
+PENDING: dict[str, Any] = {"status": "pending", "approved_at": None, "privacy_source": "suggested"}
 BAD_ROWS: list[tuple[str, dict[str, Any], str]] = [
-    ("secret level", {"privacy": "secret"}, CHECK_VIOLATION),
-    ("unknown level", {"privacy": "Secret"}, CHECK_VIOLATION),
+    ("secret level", {"privacy": "secret"}, check("privacy")),
+    ("unknown level", {"privacy": "Secret"}, check("privacy")),
     ("no level", {"privacy": None}, NOT_NULL_VIOLATION),
-    ("content too long", {"content": "x" * 1001}, CHECK_VIOLATION),
-    ("empty content", {"content": ""}, CHECK_VIOLATION),
+    ("content too long", {"content": "x" * 1001}, check("content")),
+    ("empty content", {"content": ""}, check("content")),
     ("no content", {"content": None}, NOT_NULL_VIOLATION),
-    ("key with uppercase", {"key": "Favourite"}, CHECK_VIOLATION),
-    ("key with a space", {"key": "favourite colour"}, CHECK_VIOLATION),
-    ("key with a dash", {"key": "favourite-colour"}, CHECK_VIOLATION),
-    ("empty key", {"key": ""}, CHECK_VIOLATION),
-    ("key too long", {"key": "k" * 65}, CHECK_VIOLATION),
-    ("bad category", {"category": "operational"}, CHECK_VIOLATION),
+    ("key with uppercase", {"key": "Favourite"}, check("key")),
+    ("key with a space", {"key": "favourite colour"}, check("key")),
+    ("key with a dash", {"key": "favourite-colour"}, check("key")),
+    ("empty key", {"key": ""}, check("key")),
+    ("key too long", {"key": "k" * 65}, check("key")),
+    ("bad category", {"category": "operational"}, check("category")),
     ("no category", {"category": None}, NOT_NULL_VIOLATION),
-    ("bad status", {"status": "rejected"}, CHECK_VIOLATION),
-    ("bad source", {"source": "web"}, CHECK_VIOLATION),
-    ("bad privacy_source", {"privacy_source": "model"}, CHECK_VIOLATION),
-    ("bad provider", {"source_provider": "Claude API"}, CHECK_VIOLATION),
-    ("bad request id", {"source_request_id": "a b"}, CHECK_VIOLATION),
-    ("approved, level not chosen by the owner", {"privacy_source": "suggested"}, CHECK_VIOLATION),
-    ("approved without approved_at", {"approved_at": None}, CHECK_VIOLATION),
-    ("pending with approved_at", {"status": "pending"}, CHECK_VIOLATION),
+    ("bad status", {"status": "rejected"}, check("status")),
+    ("bad source", {"source": "web"}, check("source")),
+    ("bad privacy_source", {**PENDING, "privacy_source": "model"}, check("privacy_source")),
+    ("bad provider", {"source_provider": "Claude API"}, check("source_provider")),
+    ("bad request id", {"source_request_id": "a b"}, check("source_request_id")),
+    ("approved, level not chosen by the owner", {"privacy_source": "suggested"}, check("approved")),
+    ("approved without approved_at", {"approved_at": None}, check("approved")),
+    ("pending with approved_at", {**PENDING, "approved_at": "now"}, check("pending")),
 ]
 
 
@@ -149,7 +161,7 @@ def test_boundary_rows_are_accepted(live_app: Settings) -> None:
 
 
 def test_at_most_one_approved_record_per_key(live_app: Settings) -> None:
-    pending = row(status="pending", approved_at=None, privacy_source="suggested")
+    pending = row(**PENDING)
 
     async def body(conn: AsyncConnection) -> dict[str, str]:
         await require_memory_table(conn)
@@ -162,7 +174,7 @@ def test_at_most_one_approved_record_per_key(live_app: Settings) -> None:
         }
 
     assert in_rolled_back_tx(live_app, body) == {
-        "two approved, one key": UNIQUE_VIOLATION,
+        "two approved, one key": f"{UNIQUE_VIOLATION}:memory_records_approved_key",
         "approved + pending": "ok",
         "two pending": "ok",
         "two approved, no key": "ok",
@@ -327,6 +339,37 @@ def test_update_on_another_table_named_like_memory_is_refused(
     finally:
         asyncio.run(run(f"DROP TABLE {table}"))
     assert (status.problem, status.message) == ("misconfigured", PRIVILEGED_MESSAGE)
+
+
+def test_memory_records_in_another_schema_is_not_exempt(
+    live_app: Settings, live_owner: Settings
+) -> None:
+    # Only public.memory_records is exempt: a same-named table elsewhere (which only
+    # the owner could create) with UPDATE or DELETE for the app role is refused.
+    assert live_app.database_url is not None
+    role = urlsplit(live_app.database_url.get_secret_value()).username
+    schema = f"aether_probe_{uuid.uuid4().hex[:8]}"
+
+    async def run(sql: str) -> None:
+        engine = create_migration_engine(live_owner)
+        try:
+            async with engine.begin() as conn:
+                await conn.exec_driver_sql(sql)
+        finally:
+            await engine.dispose()
+
+    results = {}
+    asyncio.run(run(f"CREATE SCHEMA {schema}"))
+    try:
+        asyncio.run(run(f"CREATE TABLE {schema}.memory_records (x int)"))
+        for right in ("UPDATE", "DELETE"):
+            asyncio.run(run(f"GRANT {right} ON {schema}.memory_records TO {role}"))
+            results[right] = asyncio.run(check_database(live_app)).problem
+            asyncio.run(run(f"REVOKE {right} ON {schema}.memory_records FROM {role}"))
+        results["none"] = asyncio.run(check_database(live_app)).problem
+    finally:
+        asyncio.run(run(f"DROP SCHEMA {schema} CASCADE"))
+    assert results == {"UPDATE": "misconfigured", "DELETE": "misconfigured", "none": "ok"}
 
 
 # --- migration round trip: 0003 -> 0004 -> 0003 leaves events untouched -------------

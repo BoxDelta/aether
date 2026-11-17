@@ -124,7 +124,7 @@ confidence is not a substitute for authorization.
     `misconfigured`, if its role is a superuser, owns the database or any
     table or function, can create objects, holds TRUNCATE or TRIGGER on
     any table, holds UPDATE or DELETE on any table other than
-    `memory_records`, or is the same as the migration role (tested
+    `public.memory_records`, or is the same as the migration role (tested
     live). Database passwords
     shorter than 8 characters are refused as `misconfigured`, without
     echoing them, because shorter values aren't redacted by value. The

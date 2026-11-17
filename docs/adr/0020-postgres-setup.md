@@ -115,15 +115,19 @@ narrow exception.
 -   **Guard.** The privilege check still refuses TRUNCATE and TRIGGER on
     every table, and owning or creating anything anywhere. It now refuses
     UPDATE (on the table or on any single column) and DELETE on every
-    table **except** the one named exactly `memory_records`. So `events`
+    table **except** `public.memory_records`. So `events`
     and `alembic_version` stay insert/read-only for Core, and a role with
     UPDATE or DELETE on them is still refused (tested live, as is the
     real app role with the `0004` grants being accepted). The check for
     column-level UPDATE is new; before, only table-level UPDATE was seen.
--   **Why by name.** The exception is one fixed table, not a pattern or
-    a list read from the database: the app role can't create tables, so
-    it can't make another `memory_records`, and a table called
-    `memory_records_x` is not exempt. Alternatives considered: a second
+-   **Why by name and schema.** The exception is one fixed table,
+    `memory_records` in the `public` schema (where the migrations create
+    it; `/ready` already assumes `public`), not a pattern or a list read
+    from the database. The app role can't create tables, so it can't
+    make another one. A same-named table in another schema (which only
+    the owner could create) is not exempt, and neither is
+    `memory_records_x` (both tested live). The memory store (step 4)
+    names the table with its schema. Alternatives considered: a second
     check only for `events` and `alembic_version` (would allow UPDATE on
     any future table by default), and per-table row-level security
     (more machinery than one table needs).
