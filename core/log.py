@@ -117,9 +117,10 @@ class SecretCheck:
     """Does this text match a secret format or contain a configured secret value?
 
     The same patterns (``SECRET_FORMATS``) and configured values (``secrets_from``,
-    at least ``MIN_SECRET_LENGTH`` characters) as the Redactor: text is refused here
-    exactly when the Redactor would change it. Answers only yes or no, never which
-    value or pattern matched, so a caller can't echo it.
+    at least ``MIN_SECRET_LENGTH`` characters) as the Redactor: it finds everything
+    the Redactor would mask (and also a URL whose password is literally
+    ``[REDACTED]``, which the Redactor leaves as it is). Answers only yes or no,
+    never which value or pattern matched, so a caller can't echo it.
     """
 
     def __init__(self, secrets: Iterable[str] = ()) -> None:

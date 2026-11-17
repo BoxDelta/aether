@@ -340,6 +340,21 @@ def test_a_configured_value_in_the_key_is_refused(caplog: pytest.LogCaptureFixtu
             assert value not in text and key not in text
 
 
+def test_a_configured_value_in_the_request_id_is_refused(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A request ID can come from a client header; a configured value must not be
+    # stored through it.
+    caplog.set_level("DEBUG")
+    value = configured_value()
+    store = no_db_store(SecretCheck([value]))
+    with pytest.raises(SecretContent) as info:
+        asyncio.run(store.create(new(source="model", source_request_id=f"req-{value}")))
+    assert info.value.field == "source_request_id"
+    leaked = any(value in t for t in (str(info.value), repr(info.value), caplog.text))
+    assert not leaked
+
+
 def test_reads_are_not_checked() -> None:
     # get and list never run the check (a key filter is not stored content).
     calls: list[str] = []

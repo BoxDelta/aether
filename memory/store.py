@@ -26,9 +26,11 @@ migration 0004 are the backstop:
 - **No secret-shaped content** (ADR-024 §1, #70): content that matches a secret
   format or contains a configured secret value (``core.log.SecretCheck``, the log
   redactor's own patterns and values) is refused with ``SecretContent`` on create,
-  update and approve, before the database. The key is checked too: its format
-  rules out the patterns, but a configured value could still appear there. The
-  checker is a required constructor argument, so no store exists without it.
+  update and approve, before the database. The key, ``source_provider`` and
+  ``source_request_id`` are checked too: their formats rule out the patterns, but
+  a configured value could still appear there. The checker is a required
+  constructor argument (a ``SecretCheck``; callers build it with
+  ``SecretCheck.from_settings`` so the configured values are included).
   Limit: a secret in a format the patterns don't know (an account number, say) is
   not caught; the owner's approval review is the remaining check.
 - **Content** 1 to ``CONTENT_MAX`` characters of valid text; **key** matches
@@ -118,6 +120,9 @@ _REQUEST_ID = re.compile(SAFE_ID_PATTERN)
 _UNIQUE_VIOLATION = "23505"
 _CHECK_VIOLATION = "23514"
 _KEY_INDEX = "memory_records_approved_key"
+# Columns a caller fills with its own text, so the secret check runs on them. The
+# others hold a value from a fixed list (category, level, status, source).
+_FREE_TEXT = ("content", "key", "source_provider", "source_request_id")
 
 
 # --- errors: field and rule only, never the value -----------------------------------
@@ -425,16 +430,17 @@ class MemoryStore:
     """
 
     def __init__(self, engine: AsyncEngine, secret_check: SecretCheck) -> None:
-        # Required and type-checked: a store that skips the secret check can't exist.
+        # Required and type-checked: a store without a secret check can't exist.
+        # Callers build it with SecretCheck.from_settings (configured values too).
         if not isinstance(secret_check, SecretCheck):
             raise TypeError("secret_check must be a core.log.SecretCheck")
         self._engine = engine
         self._looks_secret = secret_check
 
     def _refuse_secrets(self, columns: Mapping[str, object], operation: str) -> None:
-        """Raise ``SecretContent`` if the content or key looks like a secret. Called
-        before the database; logs the operation name only."""
-        for name in ("content", "key"):
+        """Raise ``SecretContent`` if a free-text column looks like a secret. Called
+        before the database; logs the operation and field name only."""
+        for name in _FREE_TEXT:
             value = columns.get(name)
             if isinstance(value, str) and self._looks_secret(value):
                 logger.warning(

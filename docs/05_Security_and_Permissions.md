@@ -242,24 +242,31 @@ same things the log redactor masks, defined once (`SECRET_FORMATS` and
 `secrets_from()`):
 
 -   Anthropic-style API keys (`sk-ant-...`);
--   `Bearer <credential>` in any casing, with any whitespace;
+-   `Bearer <credential>` in any casing, with any whitespace, when the
+    credential is 8 or more token characters (`Bearer abc123` is not
+    refused). The word is also found inside a longer one, so
+    "standard-bearer organisation" is refused: the safe direction;
 -   a password in a `scheme://user:password@host` URL;
 -   the configured secret values (`ANTHROPIC_API_KEY`,
     `AETHER_API_TOKEN`, the database passwords), only when at least 8
     characters long, so a short value can't match ordinary text.
 
-The key is checked too: its format rules out the patterns, but a
-configured value could still be written there. The error (`SecretContent`,
-field `content`, or `key` for a key) says only that the value looks like
+The key, `source_provider` and `source_request_id` are checked too:
+their formats rule out the patterns, but a configured value could still
+be written there. The error (`SecretContent`, field `content`, or the
+other field's name) says only that the value looks like
 a secret: never which pattern, which part or the text, with nothing
 chained and nothing logged but the operation and field name. Reads are
-not checked. `MemoryStore` takes the check as a required constructor
-argument, built from Settings (`SecretCheck.from_settings`), so no store
-exists without it. #8 will reuse the same check for cloud sends.
+not checked. `MemoryStore` requires a `SecretCheck` as a constructor
+argument, so no store exists without one; the store checks only the
+type, so callers must build it with `SecretCheck.from_settings` to
+include the configured values. #8 will reuse the same check for cloud
+sends.
 
-Limit: the check knows only these formats and values. A secret in any
-other format (an account number, a password typed as plain words, a key
-from another provider) can still be stored if the owner approves it under
+Limit: the check knows only these formats and values, on the literal
+text. A secret in any other format (an account number, a password typed
+as plain words, a key from another provider) or split up (spaces, line
+breaks, zero-width characters) can still be stored if the owner approves it under
 a lower label; the owner's approval review is the remaining check.
 
 **Trust boundary: `OLLAMA_HOST` (ADR-023, #10).** "Local only" means

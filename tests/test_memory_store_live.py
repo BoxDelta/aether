@@ -19,6 +19,7 @@ import logging
 from collections.abc import Awaitable, Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any, TypeVar
+from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 import pytest
@@ -26,7 +27,7 @@ from sqlalchemy import text
 
 from core.config import Settings
 from core.db import create_engine, create_migration_engine
-from core.log import SecretCheck, secrets_from
+from core.log import SecretCheck
 from memory.store import (
     Approval,
     InvalidRecord,
@@ -480,9 +481,12 @@ def test_failed_updates_leave_the_table_unchanged(store: Run[Any], live_owner: S
 def test_refused_secrets_change_neither_table_nor_events(
     store: Run[Any], live_app: Settings, live_owner: Settings, caplog: pytest.LogCaptureFixture
 ) -> None:
-    # The configured value is this run's own app-role password (from live_app's
-    # DATABASE_URL), so the check really is the one built from Settings.
-    password = max(secrets_from(live_app), key=len)
+    # The configured value is this run's own throwaway app-role password (from
+    # live_app's DATABASE_URL), taken explicitly: live_app also carries the owner's
+    # migration URL, whose password must never be used as a test value.
+    assert live_app.database_url is not None
+    password = urlsplit(live_app.database_url.get_secret_value()).password
+    assert password, "live_app's DATABASE_URL has no password"
     made = store(lambda s: s.create(owner_record(1)))
     pending = store(lambda s: s.create(proposal(2)))
     start = last_event_id(live_owner)
@@ -501,12 +505,13 @@ def test_refused_secrets_change_neither_table_nor_events(
                 store(attempt)
             exc = info.value
             assert exc.__cause__ is None and exc.__context__ is None
-            for shown in (str(exc), repr(exc)):
-                assert fake.core not in shown
-            assert fake.core not in caplog.text
-    assert events_after(live_owner, start) == []
-    assert snapshot(live_owner) == before
-    assert password not in caplog.text
+            # Value-free assertions: a failure must never print the secret.
+            echoed = any(fake.core in shown for shown in (str(exc), repr(exc), caplog.text))
+            assert not echoed, f"{fake.family}: the error or the logs echo the secret"
+    unchanged_events = events_after(live_owner, start) == []
+    unchanged_table = snapshot(live_owner) == before
+    assert unchanged_events, "a refused write left an event"
+    assert unchanged_table, "a refused write changed memory_records"
 
 
 # --- no content or key in logs or events ---------------------------------------------
