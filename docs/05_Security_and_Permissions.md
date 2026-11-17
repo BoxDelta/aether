@@ -206,6 +206,14 @@ In code, the level names and their order are defined once, in
 a test fails if any other module lists the names again or if the events
 table's CHECK constraint drifts from that order (#58).
 
+The memory store (`memory/store.py`, ADR-024 step 4, #69) refuses
+`secret` before the database, whose CHECK on `memory_records` is the
+backstop, and its error never echoes the content. A record from a model
+or a tool is always `pending` with a suggested level; only the owner can
+approve (stating the final level), correct or delete. The store puts no
+memory content or key in log records, error messages or reprs. It has no
+caller yet: no API, no retrieval, no events.
+
 **Trust boundary: `OLLAMA_HOST` (ADR-023, #10).** "Local only" means
 the Ollama host is on this machine or the local network, not just that
 the Ollama adapter is used. Core decides this from the URL text, without

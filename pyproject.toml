@@ -45,7 +45,7 @@ markers = [
 
 [tool.coverage.run]
 # Report only for now (#43): no fail_under until the baseline settles.
-source = ["core", "router"]
+source = ["core", "router", "memory"]
 branch = true
 omit = ["tests/*"]
 

@@ -25,7 +25,7 @@ PATTERNS = {
 
 
 def _sources() -> list[Path]:
-    return sorted(p for d in ("core", "router") for p in (ROOT / d).rglob("*.py"))
+    return sorted(p for d in ("core", "router", "memory") for p in (ROOT / d).rglob("*.py"))
 
 
 def _assigned_names(tree: ast.AST) -> set[str]:
