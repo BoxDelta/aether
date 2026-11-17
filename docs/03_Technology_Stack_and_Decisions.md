@@ -243,6 +243,9 @@ Consequences and risks. - Date and owners. - Revisit conditions.
   ADR-023                 Ollama is local only on Accepted
                           a loopback or private   
                           host                    
+
+  ADR-024                 Memory design for Phase Accepted (owner,
+                          2                       2026-11-15)
   -----------------------------------------------------------------------
 
 ## 8. Validation checklist before adopting a dependency
