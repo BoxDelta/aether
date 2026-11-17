@@ -5,10 +5,16 @@ throwaway member of ``aether_app``, so the privilege check runs on each connecti
 The store commits, so the ``store`` fixture deletes (as the owner) every record a
 test created. All content and keys are invented canaries.
 
+Events (ADR-024 §5, #72): every change writes one ``memory.*`` event in the same
+transaction. Events are append-only, so the events these tests write stay in the
+test database (a throwaway container or Sentinel's service database); they hold
+IDs, categories, sources and levels only.
+
 Run (fish):  env AETHER_DB_TESTS=1 uv run pytest -m db
 """
 
 import asyncio
+import json
 import logging
 from collections.abc import Awaitable, Callable, Iterator
 from datetime import UTC, datetime, timedelta
@@ -70,8 +76,14 @@ def snapshot(owner: Settings) -> list[str]:
     return owner_sql(owner, SNAPSHOT_SQL)
 
 
-def event_count(owner: Settings) -> int:
-    return int(owner_sql(owner, "SELECT count(*) FROM events")[0])
+def last_event_id(owner: Settings) -> int:
+    return int(owner_sql(owner, "SELECT coalesce(max(id), 0) FROM events")[0])
+
+
+def events_after(owner: Settings, after: int) -> list[dict[str, Any]]:
+    """Every event written after ``after``, every column, as JSON (oldest first)."""
+    sql = f"SELECT row_to_json(e)::text FROM events e WHERE id > {int(after)} ORDER BY id"  # noqa: S608
+    return [json.loads(row) for row in owner_sql(owner, sql)]
 
 
 @pytest.fixture
@@ -464,7 +476,7 @@ def test_failed_updates_leave_the_table_unchanged(store: Run[Any], live_owner: S
 def test_no_content_or_key_in_logs_errors_or_events(
     store: Run[Any], live_owner: Settings, caplog: pytest.LogCaptureFixture
 ) -> None:
-    events_before = event_count(live_owner)
+    events_before = last_event_id(live_owner)
     errors: list[str] = []
 
     async def body(s: MemoryStore) -> None:
@@ -503,4 +515,200 @@ def test_no_content_or_key_in_logs_errors_or_events(
     rendered = errors + [f"{r.getMessage()} {vars(r)!r} {r.exc_text or ''}" for r in caplog.records]
     for line in rendered:
         assert PREFIX not in line and KEY not in line and OTHER_KEY not in line, line
-    assert event_count(live_owner) == events_before  # the store writes no events (step 5)
+    # One event per successful change (2 creates, update, approve, 2 deletes), none for
+    # the failures; no column of any of them holds content or a key.
+    written = events_after(live_owner, events_before)
+    assert [e["event_type"] for e in written] == [
+        "memory.approved",
+        "memory.proposed",
+        "memory.updated",
+        "memory.approved",
+        "memory.deleted",
+        "memory.deleted",
+    ]
+    dumped = json.dumps(written)
+    for canary in (PREFIX, KEY, OTHER_KEY):
+        assert canary not in dumped
+
+
+# --- events (ADR-024 §5, #72) -----------------------------------------------------------
+
+RECORD_EVENT_KEYS = {
+    "event_type",
+    "actor",
+    "memory_record_id",
+    "memory_category",
+    "memory_source",
+    "memory_level",
+    "memory_old_level",
+}
+
+
+def only_event(owner: Settings, after: int) -> dict[str, Any]:
+    written = events_after(owner, after)
+    assert len(written) == 1, [e["event_type"] for e in written]
+    event = written[0]
+    # Every other column is empty: no request text, no counts, no free text.
+    others = {k: v for k, v in event.items() if k not in RECORD_EVENT_KEYS}
+    assert {k for k, v in others.items() if v is not None} <= {
+        "id",
+        "occurred_at",
+        "recorded_at",
+        "schema_version",
+    }, others
+    return event
+
+
+def test_each_operation_writes_exactly_one_event(store: Run[Any], live_owner: Settings) -> None:
+    start = last_event_id(live_owner)
+    proposed = store(lambda s: s.create(proposal(1, key=KEY)))
+    e = only_event(live_owner, start)
+    assert e["event_type"] == "memory.proposed" and e["actor"] == "memory"
+    assert e["memory_record_id"] == str(proposed.id)
+    assert (e["memory_category"], e["memory_source"], e["memory_level"]) == (
+        "project",
+        "model",
+        "personal",
+    )
+    assert e["memory_old_level"] is None
+
+    start = last_event_id(live_owner)
+    owned = store(lambda s: s.create(owner_record(2)))
+    e = only_event(live_owner, start)
+    assert e["event_type"] == "memory.approved"  # owner create: approved at once (D1)
+    assert (e["memory_record_id"], e["memory_source"], e["memory_level"]) == (
+        str(owned.id),
+        "owner",
+        "public",
+    )
+
+    start = last_event_id(live_owner)
+    store(lambda s: s.approve(proposed.id, Approval("sensitive", category="task"), actor="owner"))
+    e = only_event(live_owner, start)
+    assert e["event_type"] == "memory.approved"
+    assert (e["memory_record_id"], e["memory_category"], e["memory_level"]) == (
+        str(proposed.id),
+        "task",
+        "sensitive",  # the owner's final level, not the suggestion
+    )
+    assert e["memory_source"] == "model" and e["memory_old_level"] is None
+
+    start = last_event_id(live_owner)
+    store(lambda s: s.update(owned.id, RecordChanges(privacy="personal"), actor="owner"))
+    e = only_event(live_owner, start)
+    assert e["event_type"] == "memory.updated"
+    assert (e["memory_old_level"], e["memory_level"]) == ("public", "personal")
+
+    start = last_event_id(live_owner)
+    store(lambda s: s.update(owned.id, RecordChanges(content=content(3)), actor="owner"))
+    e = only_event(live_owner, start)
+    assert e["event_type"] == "memory.updated"
+    assert (e["memory_old_level"], e["memory_level"]) == (None, "personal")  # level unchanged
+
+    start = last_event_id(live_owner)
+    store(lambda s: s.update(owned.id, RecordChanges(privacy="personal"), actor="owner"))
+    assert only_event(live_owner, start)["memory_old_level"] is None  # same level again
+
+    start = last_event_id(live_owner)
+    store(lambda s: s.delete(proposed.id, actor="owner"))
+    e = only_event(live_owner, start)
+    assert e["event_type"] == "memory.deleted"
+    assert (e["memory_record_id"], e["memory_category"], e["memory_source"]) == (
+        str(proposed.id),
+        "task",
+        "model",
+    )
+    assert e["memory_level"] == "sensitive"
+
+    start = last_event_id(live_owner)
+    store(lambda s: s.get(owned.id))
+    store(lambda s: s.list(ListFilter()))
+    assert events_after(live_owner, start) == []  # reads write no event
+
+
+def test_failed_operations_write_no_event(store: Run[Any], live_owner: Settings) -> None:
+    made = store(lambda s: s.create(owner_record(1, key=KEY)))
+    pending = store(lambda s: s.create(proposal(2, key=KEY)))
+    start = last_event_id(live_owner)
+    before = snapshot(live_owner)
+    for attempt, error in [
+        (lambda s: s.create(owner_record(3, key=KEY)), KeyConflict),
+        (lambda s: s.create(_bypass(owner_record(4), privacy="secret")), InvalidRecord),
+        (lambda s: s.update(made.id, RecordChanges(content="z"), actor="model"), NotAllowed),
+        (lambda s: s.update(uuid4(), RecordChanges(content="z"), actor="owner"), RecordNotFound),
+        (lambda s: s.approve(made.id, Approval("public"), actor="owner"), NotPending),
+        (lambda s: s.approve(pending.id, Approval("public"), actor="tool"), NotAllowed),
+        (lambda s: s.delete(uuid4(), actor="owner"), RecordNotFound),
+        (lambda s: s.delete(made.id, actor="model"), NotAllowed),
+    ]:
+        with pytest.raises(error):
+            store(attempt)
+    assert events_after(live_owner, start) == []
+    assert snapshot(live_owner) == before
+
+
+class _AfterEvent(Exception):
+    pass
+
+
+def test_a_failure_after_the_event_rolls_both_back(
+    store: Run[Any], live_owner: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The event is inserted, then the operation fails: the transaction rolls back,
+    # taking the event and the change with it.
+    import memory.store as store_module
+
+    made = store(lambda s: s.create(owner_record(1)))
+    from core.events import write_memory_event as real_write
+
+    async def write_then_fail(conn: Any, event: Any) -> int:
+        await real_write(conn, event)
+        raise _AfterEvent
+
+    monkeypatch.setattr(store_module, "write_memory_event", write_then_fail)
+    start = last_event_id(live_owner)
+    before = snapshot(live_owner)
+    for attempt in (
+        lambda s: s.create(owner_record(2)),
+        lambda s: s.update(made.id, RecordChanges(privacy="sensitive"), actor="owner"),
+        lambda s: s.delete(made.id, actor="owner"),
+    ):
+        with pytest.raises(_AfterEvent):
+            store(attempt)
+    assert events_after(live_owner, start) == []
+    assert snapshot(live_owner) == before
+
+
+def test_a_refused_event_rolls_the_memory_change_back(
+    store: Run[Any], live_owner: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The database refuses the event (CHECK), so the whole operation is undone.
+    import memory.store as store_module
+    from core.events import Event
+
+    made = store(lambda s: s.create(owner_record(1)))
+    pending = store(lambda s: s.create(proposal(2)))
+    from core.events import memory_record_event as real_build
+
+    def bad_event(*args: Any, **kwargs: Any) -> Event:
+        good = real_build(*args, **kwargs)
+        # Skips the model's validation, so only the database CHECK can refuse it.
+        return Event.model_construct(**{**dict(good), "memory_category": "operational"})
+
+    monkeypatch.setattr(store_module, "memory_record_event", bad_event)
+    start = last_event_id(live_owner)
+    before = snapshot(live_owner)
+    for attempt in (
+        lambda s: s.create(owner_record(3)),
+        lambda s: s.create(proposal(4)),
+        lambda s: s.update(made.id, RecordChanges(content=content(5)), actor="owner"),
+        lambda s: s.approve(pending.id, Approval("public"), actor="owner"),
+        lambda s: s.delete(made.id, actor="owner"),
+    ):
+        with pytest.raises(InvalidRecord) as info:
+            store(attempt)
+        assert "events_memory_category" in str(info.value)
+        assert info.value.__cause__ is None and info.value.__context__ is None
+    assert events_after(live_owner, start) == []
+    assert snapshot(live_owner) == before
+    assert store(lambda s: s.get(made.id)).content == content(1)

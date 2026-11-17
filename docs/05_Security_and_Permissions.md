@@ -110,7 +110,13 @@ confidence is not a substitute for authorization.
     reason, scrubbed error type/message, latency, token counts. They never
     hold prompts, answers, memory content, secrets or tracebacks. This is
     enforced by typed columns with CHECK constraints, redaction on write,
-    and tests (`core/events.py`, docs/01 §7).
+    and tests (`core/events.py`, docs/01 §7). Memory events (migration
+    0005, ADR-024 §5) add only IDs, category, source, levels and counts,
+    never memory content, keys, corrected text, search queries or
+    rejection reasons, and are written in the same transaction as the
+    memory change, so neither exists without the other. The migration
+    changes no grants, and its downgrade refuses while memory events
+    exist rather than delete audit rows.
 -   Database roles (#1, #12, ADR-020 addition 2026-11-16): Core connects
     as `aether_app` (`DATABASE_URL`), which has only CONNECT, schema
     USAGE, INSERT and SELECT on `events`, SELECT on `alembic_version`,
@@ -214,8 +220,14 @@ approve (stating the final level), correct or delete. The store can't
 tell who is calling: it trusts the `source` (no default) and `actor` its
 caller passes, so the API (step 6 on) must set them from authentication
 (ADR-021), never from a request body or model output. The store puts no
-memory content or key in log records, error messages or reprs. It has no
-caller yet: no API, no retrieval, no events.
+memory content or key in log records, error messages or reprs. Each
+change writes one metadata-only `memory.*` event (actor `memory`) in the
+same transaction: a proposal (`memory.proposed`), an owner create or an
+approval (`memory.approved`), a correction (`memory.updated`, with the
+old and new level when the level changed) and a delete
+(`memory.deleted`). If the change fails no event is written, and if the
+event can't be written the change is rolled back (ADR-024 §5, #72). It
+has no caller yet: no API, no retrieval.
 
 **Trust boundary: `OLLAMA_HOST` (ADR-023, #10).** "Local only" means
 the Ollama host is on this machine or the local network, not just that

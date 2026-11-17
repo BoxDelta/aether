@@ -10,6 +10,10 @@ memory content, secrets or tracebacks:
 - Builders take metadata objects (``RouteDecision``, ``ModelResponse``,
   ``Attempt``, ``RouteFailed``), never a request's messages, and copy only
   ``ProviderError.message`` for errors, never ``__cause__``/``__context__``.
+- Memory events (ADR-024 §5, migration 0005) carry the record's ID, category,
+  source and level, or counts and record IDs, and never content, keys, corrected
+  text, search queries or rejection reasons. ``write_memory_event`` writes one on
+  the caller's connection, so it commits or rolls back with the change it records.
 - On write, every free-text field (reason, error message, attempt messages)
   goes through the log ``Redactor`` (configured secrets, key and URL-credential
   patterns), and is blanked if it contains any of the request's own text
@@ -19,10 +23,12 @@ memory content, secrets or tracebacks:
 import asyncio
 import logging
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self, get_args
+from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -36,18 +42,23 @@ from sqlalchemy import (
     Text,
     insert,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from core.log import Redactor
 from core.request_context import SafeId, get_request_id, get_session_id
+from memory.types import Category, Source
 from router.contract import (
+    NON_SECRET_LEVELS,
     FinishReason,
     ModelRequest,
     ModelResponse,
+    NonSecretLevel,
     PrivacyLevel,
     ProviderKind,
     ProviderName,
+    privacy_rank,
 )
 from router.routing import Attempt, NoRoute, RouteDecision, RouteFailed, RouteOptions
 
@@ -63,14 +74,38 @@ MAX_TEXT = 500
 MIN_ECHO_LENGTH = 8
 REMOVED_ECHO = "[REMOVED: contained request text]"
 
+MemoryRecordEventType = Literal[
+    "memory.proposed",
+    "memory.approved",
+    "memory.rejected",
+    "memory.updated",
+    "memory.deleted",
+    "memory.expired",
+]
+MemoryEventType = Literal[
+    MemoryRecordEventType,
+    "memory.exported",
+    "memory.context.retrieved",
+]
 EventType = Literal[
     "request.received",
     "model.route.selected",
     "model.call.completed",
     "provider.unavailable",
     "request.failed",
+    MemoryEventType,
 ]
-Actor = Literal["core", "router"]
+Actor = Literal["core", "router", "memory", "restore"]
+MemoryActor = Literal["memory", "restore"]
+MEMORY_RECORD_EVENT_TYPES: tuple[MemoryRecordEventType, ...] = get_args(MemoryRecordEventType)
+MEMORY_EVENT_TYPES: tuple[str, ...] = (
+    *MEMORY_RECORD_EVENT_TYPES,
+    "memory.exported",
+    "memory.context.retrieved",
+)
+MEMORY_ACTORS: tuple[MemoryActor, ...] = get_args(MemoryActor)
+# At most this many record IDs per memory.context.retrieved event (ADR-024 §3, D9).
+MAX_MEMORY_RECORD_IDS = 20
 Outcome = Literal["ok", "refusal", "error"]
 
 ModelName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9._:/-]{1,200}$")]
@@ -112,6 +147,76 @@ class Event(_Frozen):
     error_type: TypeName | None = None
     error_message: SafeText | None = None
     attempts: Annotated[tuple[EventAttempt, ...], Field(max_length=2)] | None = None
+    # Memory events (ADR-024 §5, migration 0005). Never content, keys or queries.
+    memory_record_id: UUID | None = None
+    memory_category: Category | None = None
+    memory_source: Source | None = None
+    memory_level: NonSecretLevel | None = None
+    memory_old_level: NonSecretLevel | None = None
+    # One count per non-secret level, in router.contract order (tests check this).
+    memory_count_public: NonNegInt | None = None
+    memory_count_personal: NonNegInt | None = None
+    memory_count_sensitive: NonNegInt | None = None
+    memory_chars: NonNegInt | None = None
+    memory_effective_level: NonSecretLevel | None = None
+    memory_record_ids: (
+        Annotated[tuple[UUID, ...], Field(max_length=MAX_MEMORY_RECORD_IDS)] | None
+    ) = None
+    memory_left_out: NonNegInt | None = None
+    memory_export_count: NonNegInt | None = None
+
+    @model_validator(mode="after")
+    def _memory_shape(self) -> Self:
+        """The same rules as migration 0005's CHECKs, so a bad event fails before
+        it reaches the database."""
+        _check_memory_shape(self)
+        return self
+
+
+MEMORY_RECORD_FIELDS = ("memory_record_id", "memory_category", "memory_source", "memory_level")
+MEMORY_COUNT_FIELDS = tuple(f"memory_count_{level}" for level in NON_SECRET_LEVELS)
+MEMORY_RETRIEVED_FIELDS = (
+    *MEMORY_COUNT_FIELDS,
+    "memory_chars",
+    "memory_effective_level",
+    "memory_record_ids",
+    "memory_left_out",
+)
+
+
+def _set(event: Event, names: Sequence[str]) -> int:
+    return sum(getattr(event, n) is not None for n in names)
+
+
+def _check_memory_shape(event: Event) -> None:
+    kind = event.event_type
+    is_memory = kind in MEMORY_EVENT_TYPES
+    if is_memory != (event.actor in MEMORY_ACTORS):
+        raise ValueError("memory events have actor memory or restore, and only they do")
+    record = kind in MEMORY_RECORD_EVENT_TYPES
+    if _set(event, MEMORY_RECORD_FIELDS) != (len(MEMORY_RECORD_FIELDS) if record else 0):
+        raise ValueError("record id, category, source and level: all on record events, else none")
+    if event.memory_old_level is not None and (
+        kind != "memory.updated" or event.memory_old_level == event.memory_level
+    ):
+        raise ValueError("old level only on memory.updated, and only when the level changed")
+    retrieved = kind == "memory.context.retrieved"
+    if _set(event, MEMORY_RETRIEVED_FIELDS) != (len(MEMORY_RETRIEVED_FIELDS) if retrieved else 0):
+        raise ValueError("context fields: all on memory.context.retrieved, else none")
+    if retrieved:
+        counts = [getattr(event, n) for n in MEMORY_COUNT_FIELDS]
+        if event.request_id is None or event.provider is None:
+            raise ValueError("memory.context.retrieved needs a request id and a provider")
+        if len(event.memory_record_ids or ()) != sum(counts):
+            raise ValueError("one record id per record sent")
+        effective = privacy_rank(event.memory_effective_level)  # type: ignore[arg-type]
+        if any(
+            c and privacy_rank(level) > effective
+            for level, c in zip(NON_SECRET_LEVELS, counts, strict=True)
+        ):
+            raise ValueError("effective level below a level that was sent")
+    if (event.memory_export_count is not None) != (kind == "memory.exported"):
+        raise ValueError("export count on memory.exported only")
 
 
 # SQLAlchemy Core view of the table created by migration 0002 (used for inserts).
@@ -143,6 +248,20 @@ events_table = Table(
     Column("error_message", Text),
     # none_as_null: Python None must be SQL NULL, not JSON null (CHECK requires an array).
     Column("attempts", JSONB(none_as_null=True)),
+    # Migration 0005.
+    Column("memory_record_id", PgUUID(as_uuid=True)),
+    Column("memory_category", Text),
+    Column("memory_source", Text),
+    Column("memory_level", Text),
+    Column("memory_old_level", Text),
+    Column("memory_effective_level", Text),
+    Column("memory_count_public", Integer),
+    Column("memory_count_personal", Integer),
+    Column("memory_count_sensitive", Integer),
+    Column("memory_chars", Integer),
+    Column("memory_left_out", Integer),
+    Column("memory_export_count", Integer),
+    Column("memory_record_ids", ARRAY(PgUUID(as_uuid=True))),
 )
 
 
@@ -244,7 +363,56 @@ def request_failed(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class MemoryRecordMeta:
+    """What a record event may say about a record: its ID, category, source and
+    level. There is no field for content, a key or corrected text."""
+
+    record_id: UUID
+    category: Category
+    source: Source
+    level: NonSecretLevel
+
+
+def memory_record_event(
+    event_type: MemoryRecordEventType,
+    record: MemoryRecordMeta,
+    *,
+    old_level: NonSecretLevel | None = None,
+    actor: MemoryActor = "memory",
+) -> Event:
+    """One memory record changed (ADR-024 §5). ``old_level`` is for ``memory.updated``
+    when the level changed."""
+    return Event(
+        event_type=event_type,
+        actor=actor,
+        memory_record_id=record.record_id,
+        memory_category=record.category,
+        memory_source=record.source,
+        memory_level=record.level,
+        memory_old_level=old_level,
+        request_id=get_request_id(),
+        session_id=get_session_id(),
+    )
+
+
 # --- writing ----------------------------------------------------------------------
+
+
+async def write_memory_event(conn: AsyncConnection, event: Event) -> int:
+    """Insert one memory event on ``conn``, inside the caller's transaction, so it
+    commits or rolls back together with the change it records. Raises on any error.
+
+    Memory events have no free-text field, so there is nothing to redact or
+    echo-check; an event that has one, or isn't a memory event, is refused.
+    """
+    if event.event_type not in MEMORY_EVENT_TYPES:
+        raise ValueError("not a memory event")
+    if (event.route_reason, event.error_message, event.attempts) != (None, None, None):
+        raise ValueError("memory events carry no free text")
+    row = event.model_dump(mode="python")
+    result = await conn.execute(insert(events_table).values(**row).returning(events_table.c.id))
+    return int(result.scalar_one())
 
 
 def request_texts(request: ModelRequest) -> list[str]:

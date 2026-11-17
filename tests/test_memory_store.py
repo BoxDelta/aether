@@ -17,8 +17,8 @@ from uuid import UUID, uuid4
 import pytest
 
 from memory import store as store_module
+from memory import types as memory_types
 from memory.store import (
-    CATEGORIES,
     CONTENT_MAX,
     KEY_PATTERN,
     UNSET,
@@ -307,10 +307,10 @@ def test_store_matches_migration_0004() -> None:
     migration = _migration()
     assert f"public.{migration.TABLE}" == store_module.TABLE
     assert CONTENT_MAX == migration.CONTENT_MAX
-    assert CATEGORIES == migration.CATEGORIES
-    assert store_module.STATUSES == migration.STATUSES
-    assert store_module.SOURCES == migration.SOURCES
-    assert get_args(store_module.PrivacySource) == migration.PRIVACY_SOURCES
+    assert memory_types.CATEGORIES == migration.CATEGORIES
+    assert memory_types.STATUSES == migration.STATUSES
+    assert memory_types.SOURCES == migration.SOURCES
+    assert get_args(memory_types.PrivacySource) == migration.PRIVACY_SOURCES
     source = (REPO / "migrations/versions/0004_memory_records.py").read_text()
     assert f"key ~ '^{KEY_PATTERN}$'" in source
     assert set(MemoryRecord.model_fields) == set(re.findall(r'sa\.Column\(\s*"(\w+)"', source))
