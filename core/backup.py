@@ -16,11 +16,22 @@ What a run does, in order:
     needed or passed: none is on the command line, in the environment, in the
     process list or in any log. The dump streams into a temporary file
     (mode 600) in the backup folder.
-3.  Verifies it: non-empty, and ``pg_restore --list`` (again inside the
-    container) reads the whole archive and lists at least one table's data.
+3.  Verifies it, again inside the container: non-empty; ``pg_restore --list``
+    lists at least one table's data; and ``pg_restore --file=/dev/null`` reads
+    and decompresses every data block (``--list`` alone reads only the table
+    of contents and would pass a cut-off file).
 4.  Only then renames it to ``<database>-<UTC time>.dump`` and prunes old
-    backups by the retention rule (``keep``). A failed, empty or unreadable
-    dump is deleted and never replaces, or causes the pruning of, a good one.
+    backups by the retention rule (``keep``), never the one just written. A
+    failed, empty or unreadable dump is deleted and never replaces, or causes
+    the pruning of, a good one. A dump less than half the size of the previous
+    one is kept but logged as a warning (it may hold the wrong data).
+
+``--label <word>`` writes ``<database>-<UTC time>-<word>.dump`` instead, which
+retention never matches: never pruned and never counted. Used for the safety
+backup before a restore. Such files must be deleted by hand (ADR-024 D5).
+
+A verified backup proves the archive is complete and readable, not that it
+holds the right data: check the size and row counts in the restore drill.
 
 Failures exit non-zero with one log line: the stage, the exit code or error
 type. Never a path beyond the file name, a URL, a password or tool output
@@ -67,6 +78,8 @@ VERIFY_TIMEOUT_S = 10 * 60
 _NAME = r"[a-z_][a-z0-9_]{0,62}"
 _CONTAINER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 _BACKUP_FILE = re.compile(rf"(?P<db>{_NAME})-(?P<ts>\d{{8}}T\d{{6}}Z)\.dump")
+_LABEL = re.compile(r"[a-z0-9]{1,20}")
+SHRINK_WARNING_RATIO = 0.5
 _TIME_FORMAT = "%Y%m%dT%H%M%SZ"
 PARTIAL_SUFFIX = ".partial"
 LOCK_FILE = ".lock"
@@ -94,6 +107,8 @@ class Result:
     size_bytes: int
     kept: int
     pruned: int
+    table_data: int = 0  # TABLE DATA entries in the archive
+    shrunk: bool = False  # under half the size of the previous newest backup
 
 
 # --- retention --------------------------------------------------------------------
@@ -161,11 +176,15 @@ def keep(
     return kept
 
 
-def prune(folder: Path, database: str) -> tuple[int, int]:
+def prune(folder: Path, database: str, *, protect: Path | None = None) -> tuple[int, int]:
     """Delete backups of ``database`` that ``keep`` doesn't keep. Returns
-    (kept, pruned). Called only after a new backup was verified."""
+    (kept, pruned). Called only after a new backup was verified; ``protect`` (the
+    file just written) is kept whatever the dates say, e.g. after the clock was
+    once set ahead."""
     backups = list_backups(folder, database)
     kept = keep(backups)
+    if protect is not None:
+        kept.add(protect)
     pruned = 0
     for backup in backups:
         if backup.path not in kept:
@@ -202,11 +221,13 @@ def prepare_dir(folder: Path) -> None:
         raise BackupError("folder", "the backup folder is not a directory")
     if mode & 0o077:
         raise BackupError("folder", "the backup folder must be private to its owner (chmod 700)")
+    if folder.stat().st_uid != os.geteuid():
+        raise BackupError("folder", "the backup folder must belong to the user running the backup")
 
 
 @contextlib.contextmanager
 def locked(folder: Path) -> Iterator[None]:
-    fd = os.open(folder / LOCK_FILE, os.O_WRONLY | os.O_CREAT, 0o600)
+    fd = os.open(folder / LOCK_FILE, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -258,8 +279,15 @@ def dump_argv(container: str, database: str, user: str) -> list[str]:
 
 
 def list_argv(container: str) -> list[str]:
-    """``pg_restore --list`` inside the container, reading the archive from stdin."""
+    """``pg_restore --list`` inside the container, reading the archive from stdin:
+    the table of contents only."""
     return ["docker", "exec", "-i", container, "pg_restore", "--list"]
+
+
+def read_argv(container: str) -> list[str]:
+    """``pg_restore`` to /dev/null inside the container: reads and decompresses
+    every data block, so a cut-off or corrupt archive fails. Connects to nothing."""
+    return ["docker", "exec", "-i", container, "pg_restore", "--file=/dev/null"]
 
 
 def _check_name(kind: str, value: str, pattern: re.Pattern[str]) -> None:
@@ -284,15 +312,19 @@ def run_backup(  # noqa: PLR0913 - keyword-only options, all defaulted
     now: datetime | None = None,
     runner: Runner = _run,
     prune_old: bool = True,
+    label: str | None = None,
 ) -> Result:
     """One verified backup, then pruning. Raises ``BackupError`` on any failure,
     after removing its own partial file; existing backups are left untouched."""
     _check_name("container", container, _CONTAINER)
     _check_name("database", database, re.compile(_NAME))
     _check_name("user", user, re.compile(_NAME))
+    if label is not None:
+        _check_name("label", label, _LABEL)
     prepare_dir(folder)
     taken = (now or datetime.now(UTC)).astimezone(UTC)
-    name = f"{database}-{taken.strftime(_TIME_FORMAT)}.dump"
+    suffix = f"-{label}" if label is not None else ""
+    name = f"{database}-{taken.strftime(_TIME_FORMAT)}{suffix}.dump"
     final = folder / name
     partial = folder / f".{name}{PARTIAL_SUFFIX}"
 
@@ -318,27 +350,38 @@ def run_backup(  # noqa: PLR0913 - keyword-only options, all defaulted
             size = partial.stat().st_size
             if size == 0:
                 raise BackupError("verify", "the dump is empty")
-            with partial.open("rb") as archive:
-                try:
-                    listed = runner(list_argv(container), stdin=archive, timeout=VERIFY_TIMEOUT_S)
-                except subprocess.TimeoutExpired:
-                    raise BackupError("verify", "pg_restore --list timed out") from None
-            if listed.returncode != 0:
-                raise BackupError(
-                    "verify", "pg_restore cannot read the dump", exit_code=listed.returncode
-                )
-            if b" TABLE DATA " not in (listed.stdout or b""):
+            listed = _verify(runner, list_argv(container), partial, "pg_restore --list")
+            table_data = (listed.stdout or b"").count(b" TABLE DATA ")
+            if table_data == 0:
                 raise BackupError("verify", "the dump holds no table data")
+            _verify(runner, read_argv(container), partial, "pg_restore (full read)")
+            previous = list_backups(folder, database)
+            shrunk = (
+                bool(previous) and size < SHRINK_WARNING_RATIO * previous[-1].path.stat().st_size
+            )
             os.replace(partial, final)
             _fsync_dir(folder)
         finally:
             with contextlib.suppress(FileNotFoundError):
                 partial.unlink()
-        if prune_old:
-            kept, pruned = prune(folder, database)
-        else:  # e.g. a safety backup before a restore: never prune the one being restored
+        if prune_old and label is None:
+            kept, pruned = prune(folder, database, protect=final)
+        else:  # labelled or --no-prune: never prune (e.g. before a restore)
             kept, pruned = len(list_backups(folder, database)), 0
-    return Result(name, size, kept, pruned)
+    return Result(name, size, kept, pruned, table_data, shrunk)
+
+
+def _verify(
+    runner: Runner, argv: list[str], archive_path: Path, what: str
+) -> "subprocess.CompletedProcess[bytes]":
+    with archive_path.open("rb") as archive:
+        try:
+            done = runner(argv, stdin=archive, timeout=VERIFY_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            raise BackupError("verify", f"{what} timed out") from None
+    if done.returncode != 0:
+        raise BackupError("verify", f"{what} cannot read the dump", exit_code=done.returncode)
+    return done
 
 
 def main(argv: list[str] | None = None, *, settings: Settings | None = None) -> int:
@@ -349,11 +392,21 @@ def main(argv: list[str] | None = None, *, settings: Settings | None = None) -> 
     parser.add_argument(
         "--no-prune",
         action="store_true",
-        help="keep every existing backup (use before a restore)",
+        help="keep every existing backup",
+    )
+    parser.add_argument(
+        "--label",
+        help="write <database>-<time>-<label>.dump, outside retention (delete by hand)",
     )
     args = parser.parse_args(argv)
-    settings = settings if settings is not None else get_settings()
+    try:
+        settings = settings if settings is not None else get_settings()
+    except Exception as exc:  # a bad setting: one safe line, no traceback
+        configure_logging(Settings(_env_file=None))
+        logger.error("Backup failed", extra={"stage": "config", "error_type": type(exc).__name__})
+        return 1
     configure_logging(settings)
+    database = args.database if re.fullmatch(_NAME, args.database) else None
     try:
         folder = backup_dir(settings)
         result = run_backup(
@@ -362,12 +415,13 @@ def main(argv: list[str] | None = None, *, settings: Settings | None = None) -> 
             database=args.database,
             user=args.user,
             prune_old=not args.no_prune,
+            label=args.label,
         )
     except BackupError as exc:
         logger.error(
             "Backup failed: %s",
             exc,
-            extra={"stage": exc.stage, "exit_code": exc.exit_code, "database": args.database},
+            extra={"stage": exc.stage, "exit_code": exc.exit_code, "database": database},
         )
         return 1
     except Exception as exc:  # one safe line, never a traceback with paths
@@ -383,8 +437,14 @@ def main(argv: list[str] | None = None, *, settings: Settings | None = None) -> 
             "size_bytes": result.size_bytes,
             "kept": result.kept,
             "pruned": result.pruned,
+            "table_data": result.table_data,
         },
     )
+    if result.shrunk:
+        logger.warning(
+            "Backup is under half the size of the previous one; check it holds the right data",
+            extra={"backup_file": result.file_name, "size_bytes": result.size_bytes},
+        )
     return 0
 
 

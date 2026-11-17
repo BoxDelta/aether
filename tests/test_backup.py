@@ -134,9 +134,11 @@ class FakeDocker:
         dump_rc: int = 0,
         toc: bytes = TOC,
         list_rc: int = 0,
+        read_rc: int = 0,
         stderr: bytes = f"error near {CANARY_URL}".encode(),
     ) -> None:
         self.dump, self.dump_rc, self.toc, self.list_rc = dump, dump_rc, toc, list_rc
+        self.read_rc = read_rc
         self.stderr = stderr
         self.calls: list[list[str]] = []
 
@@ -155,7 +157,10 @@ class FakeDocker:
             return subprocess.CompletedProcess(argv, self.dump_rc, None, self.stderr)
         assert stdin is not None
         assert stdin.read() == self.dump  # verification reads the file just written
-        return subprocess.CompletedProcess(argv, self.list_rc, self.toc, self.stderr)
+        if "--list" in argv:
+            return subprocess.CompletedProcess(argv, self.list_rc, self.toc, self.stderr)
+        assert "--file=/dev/null" in argv  # the full read
+        return subprocess.CompletedProcess(argv, self.read_rc, b"", self.stderr)
 
 
 @pytest.fixture
@@ -179,7 +184,11 @@ def test_successful_run_writes_a_private_verified_file(folder: Path) -> None:
     assert result.file_name == path.name and result.size_bytes == len(docker.dump)
     assert path.read_bytes() == docker.dump
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
-    assert [c[4] for c in docker.calls] == ["pg_dump", "pg_restore"]
+    assert [c[4:] for c in docker.calls][1:] == [
+        ["pg_restore", "--list"],
+        ["pg_restore", "--file=/dev/null"],
+    ]
+    assert result.table_data == 1
     assert not [p for p in folder.iterdir() if p.name.endswith(".partial")]
 
 
@@ -197,6 +206,7 @@ def test_dump_runs_in_the_container_without_any_secret() -> None:
         (FakeDocker(dump=b""), "verify"),
         (FakeDocker(list_rc=1), "verify"),
         (FakeDocker(toc=b";\n; no data\n"), "verify"),
+        (FakeDocker(read_rc=1), "verify"),  # cut off: the TOC reads, the data doesn't
     ],
 )
 def test_a_bad_dump_never_replaces_or_prunes_a_good_one(
@@ -415,3 +425,81 @@ def test_no_prune_keeps_every_backup(folder: Path) -> None:
     result = run_backup(folder, now=NOW + timedelta(hours=1), runner=FakeDocker(), prune_old=False)
     assert result.pruned == 0
     assert set(olds) <= set(folder.glob("*.dump")) and result.kept == 41
+
+
+# --- security review follow-ups -------------------------------------------------------
+
+
+def test_labelled_backup_is_outside_retention(folder: Path) -> None:
+    olds = [old_backup(folder, d) for d in range(0, 40)]
+    result = run_backup(
+        folder, now=NOW + timedelta(hours=1), runner=FakeDocker(), label="prerestore"
+    )
+    assert result.file_name == "aether-20261116T043000Z-prerestore.dump"
+    assert result.pruned == 0 and set(olds) <= set(folder.glob("*.dump"))
+    # Never matched by retention, so a later normal run neither keeps nor prunes it.
+    run_backup(folder, now=NOW + timedelta(hours=2), runner=FakeDocker())
+    assert (folder / result.file_name).exists()
+    assert parse_backup(folder / result.file_name) is None
+
+
+def test_bad_label_refused(folder: Path) -> None:
+    with pytest.raises(BackupError, match="invalid label name"):
+        run_backup(folder, now=NOW, runner=FakeDocker(), label="../x")
+
+
+def test_the_backup_just_written_is_never_pruned(folder: Path) -> None:
+    # The clock was once set ahead: 10 future-dated backups.
+    for d in range(1, 11):
+        p = folder / f"aether-{(NOW + timedelta(days=400 + d)).strftime('%Y%m%dT%H%M%SZ')}.dump"
+        p.write_bytes(b"future")
+    result = run_backup(folder, now=NOW, runner=FakeDocker())
+    assert (folder / result.file_name).exists()
+
+
+def test_a_much_smaller_backup_is_kept_and_warned(
+    monkeypatch: pytest.MonkeyPatch, folder: Path
+) -> None:
+    old = old_backup(folder, 1)
+    old.write_bytes(b"x" * 10_000)
+    code, records, _ = run_main(monkeypatch, folder, FakeDocker(dump=b"tiny"))
+    assert code == 0
+    levels = [r["level"] for r in records if r["logger"] == "aether.backup"]
+    assert levels == ["INFO", "WARNING"]
+
+
+def test_folder_of_another_user_is_refused(monkeypatch: pytest.MonkeyPatch, folder: Path) -> None:
+    monkeypatch.setattr(os, "geteuid", lambda: os.getuid() + 1)
+    with pytest.raises(BackupError, match="must belong to the user"):
+        run_backup(folder, now=NOW, runner=FakeDocker())
+
+
+def test_a_symlinked_lock_file_is_not_followed(folder: Path, tmp_path: Path) -> None:
+    target = tmp_path / "elsewhere"
+    (folder / ".lock").symlink_to(target)
+    with pytest.raises(OSError):
+        run_backup(folder, now=NOW, runner=FakeDocker())
+    assert not target.exists()
+
+
+def test_a_bad_setting_logs_one_line(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def broken() -> Settings:
+        raise ValueError(f"bad value {CANARY_URL}")
+
+    monkeypatch.setattr(core.backup, "get_settings", broken)
+    assert core.backup.main([]) == 1
+    out = capsys.readouterr().out
+    [record] = [json.loads(line) for line in out.splitlines()]
+    assert record["stage"] == "config" and record["error_type"] == "ValueError"
+    assert CANARY_PASSWORD not in out and "Traceback" not in out
+
+
+def test_invalid_database_name_is_not_echoed(
+    monkeypatch: pytest.MonkeyPatch, folder: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    s = settings(aether_backup_dir=str(folder))
+    assert core.backup.main(["--database", "Evil Name; DROP"], settings=s) == 1
+    out = capsys.readouterr().out
+    assert "Evil Name" not in out and "invalid database name" in out

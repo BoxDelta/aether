@@ -451,9 +451,10 @@ early; it is **not** a security boundary and does not replace Sentinel.
 -   AETHER's database (ADR-025, proposed; #3): `core.backup` runs
     `pg_dump` inside the Postgres container over its local socket, so no
     password is used or passed. Files are written under a temporary name,
-    verified with `pg_restore --list`, then renamed; the folder is private
-    (700, files 600) and outside the repository, and never a cloud
-    location. Retention is 7 daily plus 4 weekly (ADR-024 D5); the newest
+    verified (the table of contents, then a full read of every data
+    block), then renamed; the folder is private (700, owned by the user,
+    files 600) and outside the repository, and never a cloud location
+    (a policy: the code can't tell a synced folder). Retention is 7 daily plus 4 weekly (ADR-024 D5); the newest
     backup is never pruned, and a failed run prunes nothing. Failures
     exit non-zero with one log line holding no path, URL, password or
     tool output.
@@ -466,7 +467,10 @@ early; it is **not** a security boundary and does not replace Sentinel.
     back the past; the runbook (`docs/runbooks/db-backup-restore.md`)
     restores into a new database first, checks row counts, triggers and
     grants (`scripts/restore_check.sql`), and replaces the real database
-    only by renaming, keeping the old one.
+    only by renaming, keeping the old one. The safety backup taken before
+    a restore and the kept old database are outside retention and must
+    be deleted by hand within 5 weeks, or a deleted record survives in
+    them.
 -   Roles are not in a backup. A restore onto a new cluster recreates
     `aether_app` and sets its password from `.env`; the dump brings back
     its grants. Owner and role password verifiers are never backed up.

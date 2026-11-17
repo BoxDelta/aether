@@ -29,14 +29,20 @@ disk** as the database, so they protect against mistakes (a bad migration,
     or passed anywhere;
 -   writes into `AETHER_BACKUP_DIR` (default
     `~/.local/share/aether/backups`, outside the repo) under a temporary
-    name, checks it with `pg_restore --list`, and only then renames it to
-    `aether-<UTC time>.dump`;
+    name, checks it (`pg_restore --list` for the contents, then a full
+    read of every data block, so a cut-off file fails), and only then
+    renames it to `aether-<UTC time>.dump`;
 -   prunes old backups: the newest of each of the last 7 days that have a
     backup, plus the newest of each of the 4 weeks before that (ADR-024
     D5). The newest backup is never pruned, and nothing is pruned after a
     failed run;
 -   logs one JSON line: `Backup completed` with the file name, size and
-    counts, or `Backup failed` with the stage and exit code (exit 1).
+    counts, or `Backup failed` with the stage and exit code (exit 1). A
+    backup under half the size of the previous one adds a warning line.
+
+"Completed" means the archive is complete and readable, not that it holds
+the right data (an empty database backs up fine too). The restore drill
+(section 3) is what proves the data.
 
 Run one by hand:
 
@@ -61,6 +67,13 @@ journalctl --user -u aether-backup.service -n 5 --no-pager   # expect "Backup co
 systemctl --user enable --now aether-backup.timer
 systemctl --user list-timers aether-backup.timer  # next run around 03:30
 ```
+
+**What the timer runs.** It runs `core.backup` from the clone at
+`WorkingDirectory`, as you, with your Docker access (which is root-level).
+If that clone has an unreviewed branch checked out at 03:30, that branch's
+code runs. Keep the clone on `main` when you're not working in it, or
+point `WorkingDirectory` at a second clone that only ever pulls `main`
+(ADR-025 D8, #63).
 
 User timers run only while your user session exists. With
 `Persistent=true`, a run missed while the PC was off or you were logged
@@ -91,22 +104,25 @@ set backup (path sort ~/.local/share/aether/backups/aether-*.dump)[-1]
 path basename $backup
 ```
 
-**R2. Restore it into a new database.** All or nothing: on any error,
-nothing is left half-restored. If it fails on a `GRANT` naming
-`aether_app`, the role is missing (section 5).
+**R2. Create the new database, with the database-level rights.** A dump
+holds the tables, triggers and the grants on them, but not the rights on
+the database itself (who may connect). Set them as migration 0003 does,
+before any data goes in:
 
 ```fish
 docker compose exec -T postgres createdb -U aether aether_restore_check
-docker compose exec -T postgres pg_restore -U aether -d aether_restore_check --exit-on-error --single-transaction < $backup
-```
-
-**R3. Database-level rights.** A dump holds the tables, triggers and the
-grants on them, but not the rights on the database itself (who may
-connect). Set them as migration 0003 does:
-
-```fish
 docker compose exec -T postgres psql -U aether -d postgres -c 'REVOKE ALL ON DATABASE aether_restore_check FROM PUBLIC'
 docker compose exec -T postgres psql -U aether -d postgres -c 'GRANT CONNECT ON DATABASE aether_restore_check TO aether_app'
+```
+
+**R3. Restore into it.** All or nothing: on any error, nothing is left
+half-restored. If it fails on a `GRANT` naming `aether_app`, the role is
+missing (section 5). A restore runs the dump's SQL as the superuser
+`aether`, which is safe only because the backup folder is private to you:
+never restore a dump from anywhere else.
+
+```fish
+docker compose exec -T postgres pg_restore -U aether -d aether_restore_check --exit-on-error --single-transaction < $backup
 ```
 
 **R4. Check it.** Rows: events are append-only and their `id` only grows,
@@ -153,12 +169,13 @@ docker compose exec -T postgres dropdb -U aether aether_restore_check
     `restore_check.sql` must say `ok`.
 2.  Stop Core (Ctrl+C) and the timer:
     `systemctl --user stop aether-backup.timer`.
-3.  If the live database is still readable, back it up first.
-    `--no-prune` matters: a normal run keeps only the newest backup of
-    each day, so it could prune the backup you are restoring from.
+3.  If the live database is still readable, back it up first, with a
+    label. A labelled backup (`aether-<time>-prerestore.dump`) is outside
+    retention: this run prunes nothing (so the backup you restore from
+    stays), and later runs never prune or count it.
 
     ```fish
-    uv run python -m core.backup --no-prune
+    uv run python -m core.backup --label prerestore
     ```
 4.  Swap the names. The current database becomes `aether_before_restore`.
 
@@ -181,13 +198,23 @@ docker compose exec -T postgres dropdb -U aether aether_restore_check
     Then start Core, check `/ready`, and start the timer again:
     `systemctl --user start aether-backup.timer`.
 
-6.  Keep `aether_before_restore` until you're sure. Then back it up and
-    drop it. **Dropping it deletes the pre-restore data for good** (it is
-    still in that backup file).
+6.  Keep `aether_before_restore` until you're sure, then drop it.
+    **Dropping it deletes the pre-restore data for good**, except for the
+    labelled backup from step 3, which holds the same data.
 
     ```fish
-    uv run python -m core.backup --no-prune --database aether_before_restore
     docker compose exec -T postgres dropdb -U aether aether_before_restore
+    ```
+
+7.  **Delete the labelled backups by hand**, within 5 weeks. Retention
+    never touches them, so without this, anything deleted before the
+    restore (with Memory: deleted records) would survive in them for
+    good, breaking ADR-024 D5. The same applies to
+    `aether_before_restore` in step 6.
+
+    ```fish
+    ls ~/.local/share/aether/backups/*-*-*.dump     # labelled backups only
+    rm ~/.local/share/aether/backups/aether-*-prerestore.dump
     ```
 
 ### Going back (before step 6)

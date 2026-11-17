@@ -36,19 +36,26 @@ Constraints:
     process list, in the environment or in a log. Custom format is
     compressed, restores selectively, and `pg_restore --list` can verify
     it. Command: `uv run python -m core.backup` (`core/backup.py`).
--   **Safety of a run:** a private folder (700, files 600), a lock so
-    runs never overlap, a temporary name, `fsync`, then verification
-    (non-empty; `pg_restore --list` reads the whole archive and lists
-    table data), and only then a rename to `aether-<UTC time>.dump`. A
-    failed, empty or unreadable dump is deleted and never replaces or
-    prunes a good one.
+-   **Safety of a run:** a private folder (700, owned by the user, files
+    600), a lock so runs never overlap, a temporary name, `fsync`, then
+    verification: non-empty; `pg_restore --list` lists table data; and
+    `pg_restore --file=/dev/null` reads and decompresses every data
+    block (`--list` alone reads only the table of contents and passes a
+    cut-off file, which was checked). Only then a rename to
+    `aether-<UTC time>.dump`. A failed, empty or unreadable dump is
+    deleted and never replaces or prunes a good one. A dump under half
+    the size of the previous one is kept with a warning: verification
+    proves the archive is complete, not that it holds the right data.
 -   **Retention (D5):** the newest backup of each of the 7 most recent
     days that have one, plus the newest of each of the 4 most recent ISO
     weeks before the oldest daily one. With a daily backup, the oldest is
     4 to 5 weeks old. The newest backup is never pruned. Counting by days
     and weeks *that have backups* means a stopped schedule never ages
     the last backups out to nothing. Pruning runs only after a verified
-    backup, and `--no-prune` skips it (used before a restore).
+    backup and never removes the file just written. `--label` writes a
+    backup outside retention (never pruned or counted), used before a
+    restore; such files and the `aether_before_restore` database must be
+    deleted by hand within the D5 window, as the runbook says.
 -   **Location:** `AETHER_BACKUP_DIR`, default
     `~/.local/share/aether/backups`. It must be absolute, outside the
     repository and private (the command refuses otherwise). It moves to
@@ -147,6 +154,13 @@ Each has a recommendation, the main alternative and the trade-off.
     the PC, but a restore needs the offline key, and it adds a tool.
     Today the backups hold metadata only, and real memory data waits for
     #57 anyway.
+
+-   **D8. What the timer runs.** Recommended: the working clone, kept on
+    `main` when not in use (documented). Alternative: a second clone
+    that only pulls `main`. Trade-off: the timer runs whatever code is
+    checked out, as you, with Docker (root-level) access; a second clone
+    removes the risk of running an unreviewed branch at 03:30, at the
+    cost of keeping two clones (#63).
 
 ## Consequences
 

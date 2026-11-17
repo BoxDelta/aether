@@ -15,7 +15,14 @@ WITH c(name, pass) AS (VALUES
     ('public_schema', NOT has_schema_privilege('public', 'public', 'USAGE, CREATE')),
     ('public_function', NOT has_function_privilege('public', 'events_append_only()', 'EXECUTE')),
     ('public_database', NOT has_database_privilege('public', current_database(),
-                                                   'CONNECT, TEMPORARY'))
+                                                   'CONNECT, TEMPORARY')),
+    -- 0003: functions the owner creates later get no PUBLIC EXECUTE by default.
+    ('default_function_acl', EXISTS (
+        SELECT 1 FROM pg_default_acl d
+        WHERE d.defaclobjtype = 'f' AND d.defaclnamespace = 0
+          AND d.defaclrole = (SELECT relowner FROM pg_class WHERE oid = 'events'::regclass)
+          AND NOT EXISTS (SELECT 1 FROM aclexplode(d.defaclacl) a
+                          WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE')))
 )
 SELECT CASE WHEN bool_and(pass) THEN 'ok'
             ELSE 'NOT OK: ' || string_agg(name, ', ') FILTER (WHERE NOT pass) END

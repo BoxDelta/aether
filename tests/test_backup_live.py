@@ -194,7 +194,11 @@ def back_up(
     )
     printed = capsys.readouterr()
     assert code == 0, printed.out
-    assert [argv[4] for argv in started] == ["pg_dump", "pg_restore"]
+    assert [argv[4:6] for argv in started] == [
+        ["pg_dump", "--format=custom"],
+        ["pg_restore", "--list"],
+        ["pg_restore", "--file=/dev/null"],
+    ]
     [dump] = list(folder.glob(f"{database}-*.dump"))
     record = json.loads(printed.out.strip().splitlines()[-1])
     assert record["message"] == "Backup completed" and record["backup_file"] == dump.name
