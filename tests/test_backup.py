@@ -410,8 +410,27 @@ def test_service_runs_the_backup_privately_without_secrets() -> None:
     service = unit("aether-backup.service")
     assert "ExecStart=/usr/bin/env uv run --no-sync python -m core.backup\n" in service
     assert "Type=oneshot" in service and "UMask=0077" in service
-    assert "EnvironmentFile" not in service  # Settings reads .env itself; no copy here
+    assert "EnvironmentFile" not in service  # no .env and no secrets for the backup
     assert "://" not in service.replace("https://github.com/", "")
+
+
+def test_service_runs_from_the_main_only_second_clone() -> None:
+    # ADR-025 D8: never the working clone, and only a clean main.
+    service = unit("aether-backup.service")
+    assert "WorkingDirectory=%h/Projects/aether-backup\n" in service
+    assert (
+        'ExecStartPre=/bin/sh -c \'test "$$(git branch --show-current)" = main'
+        " && git diff --quiet HEAD'\n" in service
+    )
+
+
+def test_backup_runs_without_a_dotenv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The second clone has no .env: Settings must load with defaults only.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    s = Settings()
+    assert s.database_url is None and s.aether_backup_dir is None
+    assert backup_dir(s) == tmp_path / ".local/share/aether/backups"
 
 
 def test_timer_is_daily_and_catches_up() -> None:

@@ -1,6 +1,6 @@
 # ADR-025: Database backups and restore
 
-**Status:** Proposed\
+**Status:** Accepted (owner, 2026-11-16)\
 **Date:** 2026-11-16\
 **Owner:** BoxDelta
 
@@ -63,7 +63,8 @@ Constraints:
 -   **Schedule:** a systemd **user** timer, daily at 03:30 with
     `Persistent=true` (a missed run happens at the next login). The repo
     holds templates only (`scripts/systemd/`). The owner installs them by
-    hand (runbook).
+    hand (runbook). The timer runs from a second clone that only ever has
+    `main` checked out and has no `.env` (D8, owner decision).
 -   **Failure visibility:** exit code 1 and one JSON log line (`Backup
     failed`, the stage and exit code; no path beyond the file name, no
     URL, no password, no tool output). Under systemd it goes to the
@@ -154,7 +155,6 @@ Each has a recommendation, the main alternative and the trade-off.
     the PC, but a restore needs the offline key, and it adds a tool.
     Today the backups hold metadata only, and real memory data waits for
     #57 anyway.
-
 -   **D8. What the timer runs.** Recommended: the working clone, kept on
     `main` when not in use (documented). Alternative: a second clone
     that only pulls `main`. Trade-off: the timer runs whatever code is
@@ -162,14 +162,41 @@ Each has a recommendation, the main alternative and the trade-off.
     removes the risk of running an unreviewed branch at 03:30, at the
     cost of keeping two clones (#63).
 
+## Owner decisions (2026-11-16)
+
+D1 to D7 are accepted exactly as recommended. D8 takes the alternative.
+
+-   **D1.** Accepted as recommended: `pg_dump` (custom format) inside the
+    container.
+-   **D2.** Accepted as recommended: systemd user timer, daily 03:30,
+    `Persistent=true`, no lingering.
+-   **D3.** Accepted as recommended: 7 daily plus 4 weekly, counted by
+    days and weeks that have backups.
+-   **D4.** Accepted as recommended: a private local folder that moves to
+    the encrypted volume in #57, never a cloud location; an off-disk
+    encrypted copy after #57.
+-   **D5.** Accepted as recommended: recreate `aether_app` and set its
+    password from `.env`; no globals dump.
+-   **D6.** Accepted as recommended: exit code, one journal line and the
+    unit's failed state; no event.
+-   **D7.** Accepted as recommended: no encryption of the dump files
+    before #57; rely on #57.
+-   **D8.** Alternative chosen: the timer runs from a second clone
+    (suggested path `~/Projects/aether-backup`) that only ever has `main`
+    checked out and has no `.env`, never from the working clone. The
+    service refuses to start unless that clone is on a clean `main`. The
+    owner updates it by hand (`git pull --ff-only`, `uv sync --frozen`).
+    Runbook section 2.
+
 ## Consequences
 
 -   Easier: one command makes a verified, private backup without any
     credential; restore is rehearsed in a throwaway database with one
     check that prints `ok`; a restore never destroys the current data.
--   Harder: the timer is installed by hand, and a user timer depends on
-    the user session. Restoring onto a new cluster needs one manual
-    `CREATE ROLE` and `set-app-password`.
+-   Harder: the timer is installed by hand, a user timer depends on the
+    user session, and the second clone is updated by hand (a stale clone
+    keeps running the backup code it has). Restoring onto a new cluster
+    needs one manual `CREATE ROLE` and `set-app-password`.
 -   Risks: backups sit on the same unencrypted disk as the database until
     #57; everything after the last backup is lost on restore; deleted
     memory survives in backups for up to about 5 weeks (D5), longer if

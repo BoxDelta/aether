@@ -317,8 +317,10 @@ docker compose exec postgres psql -U aether -d aether -c '\password aether'
 `uv run python -m core.backup` makes a verified backup (`pg_dump` inside the
 container, no password used) in `AETHER_BACKUP_DIR` (default
 `~/.local/share/aether/backups`, private, outside the repo) and keeps 7
-daily plus 4 weekly backups (ADR-025, proposed). A daily systemd user
-timer is provided as templates in `scripts/systemd/`, installed by hand.
+daily plus 4 weekly backups (ADR-025). A daily systemd user timer is
+provided as templates in `scripts/systemd/`, installed by hand, and runs
+from a second clone that only ever has `main` checked out
+(`~/Projects/aether-backup`, no `.env`), never from the working clone.
 Install steps, the restore drill into a throwaway database, replacing the
 real database and going back are in
 [`docs/runbooks/db-backup-restore.md`](docs/runbooks/db-backup-restore.md).

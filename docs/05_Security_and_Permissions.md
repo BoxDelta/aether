@@ -448,16 +448,20 @@ early; it is **not** a security boundary and does not replace Sentinel.
 -   Define backup scope and retention.
 -   Encrypt backups where appropriate.
 -   Test restore procedures, not just backup creation.
--   AETHER's database (ADR-025, proposed; #3): `core.backup` runs
+-   AETHER's database (ADR-025; #3): `core.backup` runs
     `pg_dump` inside the Postgres container over its local socket, so no
     password is used or passed. Files are written under a temporary name,
     verified (the table of contents, then a full read of every data
     block), then renamed; the folder is private (700, owned by the user,
     files 600) and outside the repository, and never a cloud location
-    (a policy: the code can't tell a synced folder). Retention is 7 daily plus 4 weekly (ADR-024 D5); the newest
-    backup is never pruned, and a failed run prunes nothing. Failures
-    exit non-zero with one log line holding no path, URL, password or
-    tool output.
+    (a policy: the code can't tell a synced folder). Retention is 7
+    daily plus 4 weekly (ADR-024 D5); the newest backup is never
+    pruned, and a failed run prunes nothing. Failures exit non-zero with
+    one log line holding no path, URL, password or tool output. The
+    daily timer runs from a second clone that only ever has `main`
+    checked out and has no `.env`, and refuses to start otherwise, so
+    the timer never runs an unreviewed branch with the owner's Docker
+    access (ADR-025 D8).
 -   **Known limitation:** backups are **not encrypted at rest** until #57
     and sit on the same disk as the database, so they don't protect
     against losing the disk. Today they hold events only (metadata).

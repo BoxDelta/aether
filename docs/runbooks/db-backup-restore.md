@@ -56,11 +56,39 @@ ls -l ~/.local/share/aether/backups/     # drwx------ folder, -rw------- files
 The repository holds templates only (`scripts/systemd/`). Nothing is
 installed for you.
 
+**The timer runs from a second clone, never your working clone** (ADR-025
+D8). It runs as you, with your Docker access (which is root-level), so it
+must only run merged code: a clone at `~/Projects/aether-backup` that only
+ever has `main` checked out and has **no `.env`**. The backup needs no
+password or URL. Without a `.env` it uses the defaults
+(`AETHER_BACKUP_DIR` is `~/.local/share/aether/backups`, log level INFO).
+The service refuses to start (its `ExecStartPre` line) unless that clone
+is on `main` with no local changes. The manual commands in sections 3 and
+4 still run from your working clone.
+
+**2a. Create the second clone** (once). It comes from GitHub, so it only
+ever gets what was merged:
+
+```fish
+git clone https://github.com/BoxDelta/aether.git ~/Projects/aether-backup
+cd ~/Projects/aether-backup
+git branch --show-current            # main
+uv sync --frozen                     # its own virtual environment (.venv)
+test -e .env; and echo "a .env is here: take it out"; or echo "no .env: good"
+cd ~/Projects/aether
+```
+
+For a backup folder other than the default, don't add a `.env` to the
+second clone. After step 2b's `cp`, add a line under `[Service]` in
+`~/.config/systemd/user/aether-backup.service`:
+`Environment=AETHER_BACKUP_DIR=/absolute/path`.
+
+**2b. Install and start the timer:**
+
 ```fish
 mkdir -p ~/.config/systemd/user
 cp scripts/systemd/aether-backup.service scripts/systemd/aether-backup.timer ~/.config/systemd/user/
-# If the repo is not at ~/Projects/aether, fix WorkingDirectory first:
-grep WorkingDirectory ~/.config/systemd/user/aether-backup.service
+grep WorkingDirectory ~/.config/systemd/user/aether-backup.service   # %h/Projects/aether-backup
 systemctl --user daemon-reload
 systemctl --user start aether-backup.service      # one run now
 journalctl --user -u aether-backup.service -n 5 --no-pager   # expect "Backup completed"
@@ -68,12 +96,27 @@ systemctl --user enable --now aether-backup.timer
 systemctl --user list-timers aether-backup.timer  # next run around 03:30
 ```
 
-**What the timer runs.** It runs `core.backup` from the clone at
-`WorkingDirectory`, as you, with your Docker access (which is root-level).
-If that clone has an unreviewed branch checked out at 03:30, that branch's
-code runs. Keep the clone on `main` when you're not working in it, or
-point `WorkingDirectory` at a second clone that only ever pulls `main`
-(ADR-025 D8, #63).
+**2c. Update the second clone, by hand.** It is never updated
+automatically, so a stale clone keeps running the backup code it has.
+Update it after merging a PR that changes `core/`, `pyproject.toml`,
+`uv.lock` or `scripts/systemd/` (or simply after every merge). Never check
+out another branch in it, and never work in it.
+
+```fish
+cd ~/Projects/aether-backup
+git pull --ff-only                   # changes nothing if main has diverged
+uv sync --frozen
+cd ~/Projects/aether
+systemctl --user start aether-backup.service      # check a run still works
+journalctl --user -u aether-backup.service -n 3 --no-pager
+```
+
+If the merge changed the service or timer template, copy them again (the
+`cp` line in 2b), then run `systemctl --user daemon-reload`.
+
+If a run fails at `ExecStartPre` (the journal shows the `/bin/sh` step
+failed), the second clone is not on a clean `main`. Check it with
+`git -C ~/Projects/aether-backup status`.
 
 User timers run only while your user session exists. With
 `Persistent=true`, a run missed while the PC was off or you were logged
@@ -89,7 +132,8 @@ journalctl --user -u aether-backup.service -p err --since -7d --no-pager
 
 Remove the timer: `systemctl --user disable --now aether-backup.timer`,
 then delete the two files from `~/.config/systemd/user/` and run
-`systemctl --user daemon-reload`. The backups stay.
+`systemctl --user daemon-reload`. The backups stay, and so does the
+second clone until you delete it yourself.
 
 ## 3. Restore drill: into a new, throwaway database
 
