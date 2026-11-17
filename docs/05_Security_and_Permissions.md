@@ -86,8 +86,8 @@ confidence is not a substitute for authorization.
     exception text, `__cause__` or a traceback. Validation errors never
     echo the submitted input.
 -   Logs redact configured secrets by value (`ANTHROPIC_API_KEY`,
-    `AETHER_API_TOKEN`, and the `DATABASE_URL` password as written and
-    percent-decoded), Anthropic-key-shaped strings, `Bearer <credential>`
+    `AETHER_API_TOKEN`, and the `DATABASE_URL` and
+    `DATABASE_MIGRATION_URL` passwords as written and percent-decoded), Anthropic-key-shaped strings, `Bearer <credential>`
     values, and the password in any `scheme://user:password@host` URL,
     configured or not (`core/log.py`; its module docstring is the full
     list). Database errors are reported from safe parts only
@@ -111,11 +111,27 @@ confidence is not a substitute for authorization.
     hold prompts, answers, memory content, secrets or tracebacks. This is
     enforced by typed columns with CHECK constraints, redaction on write,
     and tests (`core/events.py`, docs/01 §7).
--   **Known limitation:** the events table is append-only through
-    triggers, but the app and the migrations share the owning database
-    role, which can drop the triggers. This protects against code bugs,
-    not against stolen database credentials. A migration role plus an
-    insert-only app role is tracked in #102.
+-   Database roles (#1, #12, ADR-020 addition 2026-11-16): Core connects
+    as `aether_app` (`DATABASE_URL`), which has only CONNECT, schema
+    USAGE, INSERT and SELECT on `events`, and SELECT on
+    `alembic_version`. It owns nothing, so it can't update, delete or
+    truncate events, drop or disable the append-only triggers, or create,
+    alter or drop tables. The owner `aether` (`DATABASE_MIGRATION_URL`)
+    runs migrations only. Nothing is granted to PUBLIC. Core refuses to
+    start, and `/ready` reports `misconfigured`, if its role is a
+    superuser, owns the database or `events`, can create objects, or is
+    the same as the migration role (tested live). Database passwords
+    shorter than 8 characters are refused as `misconfigured`, without
+    echoing them, because shorter values aren't redacted by value. The
+    app role's password is set as a SCRAM verifier, never sent in plain
+    text (`core/db_admin.py`). Upgrade steps for an existing install:
+    `docs/runbooks/db-app-role.md`.
+-   **Known limitation:** both URLs live in the same `.env`, readable by
+    the OS user that runs Core. The role split protects the events
+    against Core's own bugs and against a leaked app-role password, not
+    against someone who can read `.env` or the disk (the disk is not
+    encrypted yet, #57). The triggers stay as a second layer behind the
+    grants.
 -   Support credential rotation and revocation.
 -   Keep development, test, and production credentials separate.
 

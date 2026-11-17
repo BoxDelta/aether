@@ -138,3 +138,51 @@ def test_engine_disposed_even_if_router_close_raises(monkeypatch: pytest.MonkeyP
         pass
 
     assert disposed == [True]
+
+
+# --- Core refuses the owner role (#1, #12) ------------------------------------------
+
+
+def test_app_refuses_same_role_as_migrations() -> None:
+    from core.db import SAME_ROLE_MESSAGE, PrivilegedRoleError
+
+    url = "postgresql+asyncpg://aether:not-a-real-pw-791@127.0.0.1:1/aether"
+    settings = Settings(
+        _env_file=None, database_url=SecretStr(url), database_migration_url=SecretStr(url)
+    )
+    with pytest.raises(PrivilegedRoleError) as info:
+        create_app(settings)
+    assert str(info.value) == SAME_ROLE_MESSAGE
+
+
+def test_app_refuses_to_start_when_the_role_is_privileged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import core.app
+    from core.db import PRIVILEGED_MESSAGE, DbStatus, PrivilegedRoleError
+
+    async def privileged(*_: object) -> DbStatus:
+        return DbStatus(False, "misconfigured", PRIVILEGED_MESSAGE)
+
+    monkeypatch.setattr(core.app, "check_database", privileged)
+    url = "postgresql+asyncpg://aether_app:not-a-real-pw-792@127.0.0.1:1/aether"
+    app = create_app(
+        Settings(_env_file=None, database_url=SecretStr(url)),
+        router=Router([Closable("x")], load_identity()),
+    )
+    disposed = track_dispose(monkeypatch)
+
+    with pytest.raises(PrivilegedRoleError), TestClient(app):
+        pass  # pragma: no cover - startup must fail
+
+    assert disposed == [True]  # the pool is still closed
+
+
+def test_app_starts_when_the_database_is_down() -> None:
+    url = "postgresql+asyncpg://aether_app:not-a-real-pw-793@127.0.0.1:1/aether"
+    app = create_app(
+        Settings(_env_file=None, database_url=SecretStr(url)),
+        router=Router([Closable("x")], load_identity()),
+    )
+    with TestClient(app) as client:  # unreachable is not a reason to refuse
+        assert client.get("/health").status_code == 200

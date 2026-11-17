@@ -11,7 +11,9 @@ the design, follow the ADR numbers into `docs/adr/`.
     (`request_context.py`), JSON logging and secret redaction (`log.py`),
     the shared error format and 422 handler (`errors.py`), the `/chat`
     endpoint (`chat.py`), `/ready` (`ready.py`), the Postgres
-    engine (`db.py`), the append-only event log (`events.py`) and the
+    engine and its privileged-role check (`db.py`), the owner-only step
+    that sets the app role's password (`db_admin.py`), the append-only
+    event log (`events.py`) and the
     identity loader and system-prompt builder (`identity.py`).
 -   `router/`: "Nexus", which picks a model and calls it. The provider
     contract and privacy levels (`contract.py`), the routing rules and
@@ -20,8 +22,11 @@ the design, follow the ADR numbers into `docs/adr/`.
     adapters: `ollama.py` (local) and `claude.py` (cloud).
 -   `identity/`: `aether.yaml`, the single AETHER identity (name, voice,
     rules) that is applied to every model call (docs/07).
--   `migrations/`: Alembic migrations for Postgres. `0002_events.py` creates
-    the events table and the triggers that make it append-only.
+-   `migrations/`: Alembic migrations for Postgres, run as the owner role
+    (`DATABASE_MIGRATION_URL`). `0002_events.py` creates the events table
+    and the triggers that make it append-only. `0003_app_role.py` creates
+    `aether_app`, the role Core connects as (`DATABASE_URL`): insert and
+    read on `events`, nothing else.
 -   `scripts/`: the identity continuity run (`identity_continuity.py`) and a
     backup copy of the owner's `safemerge` fish function (never sourced).
 -   `tests/`: pytest, one file per module or behaviour (`test_routing.py`,
@@ -81,7 +86,9 @@ the design, follow the ADR numbers into `docs/adr/`.
     events to Postgres: received, route selected, any failed attempt,
     completed or failed. Events hold metadata only, never prompt or answer
     text. Free text is redacted and blanked if it contains the request's
-    own text. Without `DATABASE_URL`, events are skipped with one startup
+    own text. Core writes them as the app role `aether_app`, which can't
+    update, delete or truncate them (and Core refuses to start as the
+    owner). Without `DATABASE_URL`, events are skipped with one startup
     warning, and a failed write never affects the request. The events are
     built by two reporting hooks on `Router.handle()` (`on_decision`,
     `on_attempt_failed`). If building one raises, routing goes on, that one

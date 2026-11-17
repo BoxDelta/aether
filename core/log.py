@@ -9,7 +9,8 @@ and stack info; bool, number and None extras are kept as they are), in this orde
 1. Exact values of configured secrets (``secrets_from()``), longest first:
    - ``ANTHROPIC_API_KEY``;
    - ``AETHER_API_TOKEN``;
-   - the password in ``DATABASE_URL``, both as written and percent-decoded.
+   - the passwords in ``DATABASE_URL`` and ``DATABASE_MIGRATION_URL``, both as
+     written and percent-decoded.
 
    Values shorter than ``MIN_SECRET_LENGTH`` (8 characters) are not redacted
    by value, so ordinary log text isn't corrupted; the patterns below still apply.
@@ -138,8 +139,13 @@ def secrets_from(settings: Settings) -> list[str]:
         secrets.append(settings.anthropic_api_key.get_secret_value())
     if settings.aether_api_token is not None:
         secrets.append(settings.aether_api_token.get_secret_value())
-    if settings.database_url is not None:
-        password = urlsplit(settings.database_url.get_secret_value()).password
+    for url in (settings.database_url, settings.database_migration_url):
+        if url is None:
+            continue
+        try:
+            password = urlsplit(url.get_secret_value()).password
+        except ValueError:
+            password = None  # malformed URL: core.db reports it; patterns still apply
         if password:
             # As written in the URL and percent-decoded (drivers and errors may
             # show either form).

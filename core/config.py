@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     # in .errors()/.json() (even with hide_input_in_errors), which would expose
     # the password to anything that logs it.
     database_url: SecretStr | None = None
+    # The owner role, for Alembic migrations only (#1, #12). Core never connects
+    # with it; it is loaded here so the log redactor knows its password. When
+    # unset, migrations fall back to DATABASE_URL (a throwaway CI database).
+    database_migration_url: SecretStr | None = None
 
     # Bearer token for every route except /health (ADR-021, #57). Without it Core
     # serves only /health. Length is checked in core.auth, not here (see above).
@@ -85,6 +89,7 @@ class Settings(BaseSettings):
     @field_validator(
         "anthropic_api_key",
         "database_url",
+        "database_migration_url",
         "aether_api_token",
         "aether_cloud_max_output_tokens",
         mode="before",

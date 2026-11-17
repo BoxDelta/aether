@@ -229,30 +229,44 @@ One Postgres in Docker holds memory, runtime tasks and events (ADR-011,
 ADR-020). It listens on `127.0.0.1:5432` only. Its data lives in the Docker
 volume `aether_pgdata`, not in this repository.
 
-Create the password once. This appends two lines to `.env` and prints
+Two roles (ADR-020, #1, #12). The owner `aether` runs migrations only
+(`DATABASE_MIGRATION_URL`). Core connects as `aether_app`
+(`DATABASE_URL`), which can insert and read events but can't change or
+delete them, and Core refuses to start as the owner. An install from
+before this change moves over with
+[`docs/runbooks/db-app-role.md`](docs/runbooks/db-app-role.md).
+
+Create the passwords once. This appends three lines to `.env` and prints
 nothing secret. It does nothing if `.env` already has a non-empty value.
 If `.env` was copied from `.env.example`, delete its empty
-`POSTGRES_PASSWORD=` and `DATABASE_URL=` lines first.
+`POSTGRES_PASSWORD=`, `DATABASE_MIGRATION_URL=` and `DATABASE_URL=` lines
+first.
 
 ```fish
-if grep -qE '^(POSTGRES_PASSWORD|DATABASE_URL)=.' .env 2>/dev/null
+if grep -qE '^(POSTGRES_PASSWORD|DATABASE_MIGRATION_URL|DATABASE_URL)=.' .env 2>/dev/null
     echo ".env already has database settings; not changed"
 else
-    set -l pw (openssl rand -hex 24)
-    printf 'POSTGRES_PASSWORD=%s\nDATABASE_URL=postgresql+asyncpg://aether:%s@127.0.0.1:5432/aether\n' $pw $pw >> .env
-    echo "added POSTGRES_PASSWORD and DATABASE_URL to .env"
+    set -l owner (openssl rand -hex 24)
+    set -l app (openssl rand -hex 24)
+    printf 'POSTGRES_PASSWORD=%s\nDATABASE_MIGRATION_URL=postgresql+asyncpg://aether:%s@127.0.0.1:5432/aether\nDATABASE_URL=postgresql+asyncpg://aether_app:%s@127.0.0.1:5432/aether\n' $owner $owner $app >> .env
+    echo "added POSTGRES_PASSWORD, DATABASE_MIGRATION_URL and DATABASE_URL to .env"
 end
 ```
 
-Start it, check it, and apply migrations:
+Start it, apply migrations (as the owner), set the app role's password,
+and check it:
 
 ```fish
-docker compose up -d                # first run creates the volume and sets the password
+docker compose up -d                # first run creates the volume and sets the owner password
 docker compose ps                   # STATUS should say (healthy)
-uv run python -m core.db            # "ok: connected to aether@127.0.0.1:5432/aether"
-uv run alembic upgrade head
-env AETHER_DB_TESTS=1 uv run pytest -m db   # optional live checks (read-only)
+uv run alembic upgrade head         # creates the tables and the aether_app role
+uv run python -m core.db_admin set-app-password   # "ok: password set; Core can log in as aether_app@…"
+uv run python -m core.db            # "ok: connected to aether_app@127.0.0.1:5432/aether"
+env AETHER_DB_TESTS=1 uv run pytest -m db   # optional live checks (rows rolled back)
 ```
+
+`set-app-password` sends Postgres a SCRAM verifier, never the password
+itself. Run it again after changing the app password in `DATABASE_URL`.
 
 With `AETHER_DB_TESTS=1`, a missing `DATABASE_URL` or an unmigrated
 database fails the live tests instead of skipping them. Sentinel runs them
@@ -268,8 +282,10 @@ What the app reports (`uv run python -m core.db`, exit code 1):
 |---|---|
 | `DATABASE_URL` empty | `not_configured: DATABASE_URL is not set` |
 | Malformed URL | `misconfigured: DATABASE_URL must start with postgresql+asyncpg://` (never echoes the URL) |
+| Password under 8 characters | `misconfigured: DATABASE_URL needs a password of at least 8 characters` |
+| `DATABASE_URL` is the owner | `misconfigured: DATABASE_URL connects as a privileged role …` (Core also refuses to start) |
 | Container stopped / wrong port | `unreachable: cannot reach Postgres at aether@127.0.0.1:5432/aether. Is the container running?` |
-| Wrong password | `auth_failed: Postgres rejected the login for aether@127.0.0.1:5432/aether. Check that the password in DATABASE_URL matches POSTGRES_PASSWORD …` |
+| Wrong password | `auth_failed: Postgres rejected the login for aether_app@127.0.0.1:5432/aether. For the app role, set its password …` |
 | No answer within 5 s | `timeout: no answer from Postgres at …` |
 
 Stop and start without losing data:
@@ -284,10 +300,13 @@ docker compose down        # removes the container; the volume and data stay
 `docker compose config` prints the resolved password, so don't paste its
 output anywhere.
 
-Postgres stores the password only when the volume is first created.
-Changing `POSTGRES_PASSWORD` in `.env` later does not change it, and the app
-then reports `auth_failed`. To change the password, set it in the database
-(this asks for the new one twice), then update both lines in `.env`:
+Postgres stores the owner password only when the volume is first created.
+Changing `POSTGRES_PASSWORD` in `.env` later does not change it, and
+migrations then fail with `auth_failed`. To change the owner password, set
+it in the database (this asks for the new one twice), then update
+`POSTGRES_PASSWORD` and `DATABASE_MIGRATION_URL` in `.env`. To change the
+app password, edit `DATABASE_URL` and run `uv run python -m core.db_admin
+set-app-password`.
 
 ```fish
 docker compose exec postgres psql -U aether -d aether -c '\password aether'

@@ -3,7 +3,9 @@
 Every test runs inside a transaction that is rolled back: rows are inserted,
 read back and then undone. The migration round trip runs in a throwaway schema
 inside a rolled-back transaction, so the real ``public.events`` is never
-dropped or altered.
+dropped or altered. Inserts run as Core does, through the app role
+(``live_app``); the trigger and migration tests run as the owner (``live_owner``),
+since the app role can't reach them (tests/test_db_roles_live.py).
 
 Run (fish):  env AETHER_DB_TESTS=1 uv run pytest -m db
 """
@@ -22,7 +24,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from core.config import Settings
-from core.db import create_engine
+from core.db import create_engine, create_migration_engine
 from core.events import EventWriter, provider_unavailable, request_failed, route_selected
 from core.log import Redactor
 from router.contract import Message, ModelRequest, ProviderUnavailable
@@ -37,9 +39,17 @@ FAKE_KEY = "sk-ant-api03-FAKE-live-unconfigured-abcdef"  # gitleaks:allow
 PROMPT = "PRIVATE-PROMPT-MARKER live: my bank PIN is 4711"
 
 
-def in_rolled_back_tx(settings: Settings, body: Callable[[AsyncConnection], Awaitable[Any]]) -> Any:
+def in_rolled_back_tx(
+    settings: Settings,
+    body: Callable[[AsyncConnection], Awaitable[Any]],
+    *,
+    owner: bool = False,
+) -> Any:
+    """Run ``body`` in a transaction that is always rolled back. ``owner`` connects
+    with the migration engine (no privilege check) instead of Core's engine."""
+
     async def run() -> Any:
-        engine = create_engine(settings)
+        engine = create_migration_engine(settings) if owner else create_engine(settings)
         try:
             async with engine.connect() as conn:
                 tx = await conn.begin()
@@ -69,9 +79,9 @@ def error_with_secret_cause() -> ProviderUnavailable:
         return exc
 
 
-def test_live_events_never_store_secret_prompt_or_traceback(live: Settings) -> None:
+def test_live_events_never_store_secret_prompt_or_traceback(live_app: Settings) -> None:
     request = ModelRequest(messages=(Message(role="user", content=PROMPT),))
-    writer = EventWriter(create_engine(live), Redactor([FAKE_SECRET]))
+    writer = EventWriter(create_engine(live_app), Redactor([FAKE_SECRET]))
     exc = error_with_secret_cause()
     echo = Attempt("ollama", "ProviderBadResponse", f"echo {PROMPT} {FAKE_SECRET}", False)
     leaky_reason = f"fallback failed near {FAKE_KEY}"
@@ -98,7 +108,7 @@ def test_live_events_never_store_secret_prompt_or_traceback(live: Settings) -> N
 
         return [json.loads(r.j) for r in rows]
 
-    rows = in_rolled_back_tx(live, body)
+    rows = in_rolled_back_tx(live_app, body)
 
     assert len(rows) == 4
     everything = repr(rows)
@@ -120,8 +130,10 @@ def test_live_events_never_store_secret_prompt_or_traceback(live: Settings) -> N
         "TRUNCATE events",
     ],
 )
-def test_live_events_are_append_only(live: Settings, statement: str) -> None:
-    writer = EventWriter(create_engine(live), Redactor())
+def test_live_events_are_append_only(live_owner: Settings, statement: str) -> None:
+    # As the owner: the app role is refused before the trigger runs, so only the
+    # owner reaches it. The trigger is the second layer behind the grants.
+    writer = EventWriter(create_migration_engine(live_owner), Redactor())
     request = ModelRequest(messages=(Message(role="user", content="x"),))
 
     async def body(conn: AsyncConnection) -> str:
@@ -138,7 +150,7 @@ def test_live_events_are_append_only(live: Settings, statement: str) -> None:
         await nested.rollback()
         return "no error"
 
-    message = in_rolled_back_tx(live, body)
+    message = in_rolled_back_tx(live_owner, body, owner=True)
     assert "events is append-only" in message
 
 
@@ -161,7 +173,7 @@ BAD_VALUES = {
 
 
 @pytest.mark.parametrize("column", sorted(BAD_INSERTS))
-def test_live_database_rejects_non_metadata(live: Settings, column: str) -> None:
+def test_live_database_rejects_non_metadata(live_app: Settings, column: str) -> None:
     # Bypasses the Event model: the table's own CHECK constraints must refuse it.
     async def body(conn: AsyncConnection) -> str:
         await require_events_table(conn)
@@ -174,7 +186,7 @@ def test_live_database_rejects_non_metadata(live: Settings, column: str) -> None
         await nested.rollback()
         return "accepted"
 
-    result = in_rolled_back_tx(live, body)
+    result = in_rolled_back_tx(live_app, body)
     assert "CheckViolation" in result or "check constraint" in result
 
 
@@ -191,12 +203,22 @@ SELECT 'trg:' || t.tgname FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
 """
 
 
-def test_live_migration_round_trip_in_throwaway_schema(live: Settings) -> None:
+def test_live_migration_round_trip_in_throwaway_schema(live_owner: Settings) -> None:
     schema = f"aether_migtest_{uuid.uuid4().hex[:12]}"
     config = Config(str(REPO / "alembic.ini"))
+    # A row written before 0003 must come through it untouched: same id, and the same
+    # xmin (the transaction that wrote it), so the row was not rewritten.
+    row_sql = "SELECT id::text || ':' || xmin::text FROM events"
+    app_can = (
+        "SELECT 'insert:' || has_table_privilege('aether_app', 'events', 'INSERT')"
+        " || ' update:' || has_table_privilege('aether_app', 'events', 'UPDATE')"
+    )
 
     def snapshot(sync: Connection, name: str) -> set[str]:
         return {r[0] for r in sync.execute(text(SNAPSHOT), {"schema": name})}
+
+    def rows(sync: Connection, sql: str) -> set[str]:
+        return {r[0] for r in sync.execute(text(sql))}
 
     def migrate(sync: Connection) -> dict[str, set[str]]:
         public_before = snapshot(sync, "public")
@@ -208,6 +230,15 @@ def test_live_migration_round_trip_in_throwaway_schema(live: Settings) -> None:
         at_0001 = snapshot(sync, schema)
         command.upgrade(config, "0002")
         at_0002 = snapshot(sync, schema)
+        sync.execute(text(_BASE + ") VALUES (now(), 'request.received', 1, 'core')"))
+        row_at_0002 = rows(sync, row_sql)
+        command.upgrade(config, "0003")
+        at_0003 = snapshot(sync, schema)
+        row_at_0003 = rows(sync, row_sql)
+        app_at_0003 = rows(sync, app_can)
+        command.downgrade(config, "0002")
+        back_at_0002 = snapshot(sync, schema)
+        app_back_at_0002 = rows(sync, app_can)
         command.downgrade(config, "0001")
         back_at_0001 = snapshot(sync, schema)
         return {
@@ -215,14 +246,20 @@ def test_live_migration_round_trip_in_throwaway_schema(live: Settings) -> None:
             "public_after": snapshot(sync, "public"),
             "at_0001": at_0001,
             "at_0002": at_0002,
+            "at_0003": at_0003,
+            "back_at_0002": back_at_0002,
             "back_at_0001": back_at_0001,
+            "row_at_0002": row_at_0002,
+            "row_at_0003": row_at_0003,
+            "app_at_0003": app_at_0003,
+            "app_back_at_0002": app_back_at_0002,
         }
 
     async def body(conn: AsyncConnection) -> dict[str, set[str]]:
         result: dict[str, set[str]] = await conn.run_sync(migrate)
         return result
 
-    snaps = in_rolled_back_tx(live, body)
+    snaps = in_rolled_back_tx(live_owner, body, owner=True)
 
     added = snaps["at_0002"] - snaps["at_0001"]
     assert added == {
@@ -236,5 +273,13 @@ def test_live_migration_round_trip_in_throwaway_schema(live: Settings) -> None:
         "trg:events_no_truncate",
     }
     assert snaps["at_0001"] <= snaps["at_0002"]  # nothing from 0001 removed or changed
+    # 0003 only grants and revokes: no object added, dropped or recreated...
+    assert snaps["at_0003"] == snaps["at_0002"]
+    # ...and the existing row is the same row, not a rewritten copy.
+    assert snaps["row_at_0003"] == snaps["row_at_0002"]
+    assert len(snaps["row_at_0002"]) == 1
+    assert snaps["app_at_0003"] == {"insert:true update:false"}
+    assert snaps["app_back_at_0002"] == {"insert:false update:false"}
+    assert snaps["back_at_0002"] == snaps["at_0002"]
     assert snaps["back_at_0001"] == snaps["at_0001"]  # downgrade removes exactly that
     assert snaps["public_after"] == snaps["public_before"]  # real schema untouched
