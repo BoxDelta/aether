@@ -448,6 +448,36 @@ early; it is **not** a security boundary and does not replace Sentinel.
 -   Define backup scope and retention.
 -   Encrypt backups where appropriate.
 -   Test restore procedures, not just backup creation.
+-   AETHER's database (ADR-025; #3): `core.backup` runs
+    `pg_dump` inside the Postgres container over its local socket, so no
+    password is used or passed. Files are written under a temporary name,
+    verified (the table of contents, then a full read of every data
+    block), then renamed; the folder is private (700, owned by the user,
+    files 600) and outside the repository, and never a cloud location
+    (a policy: the code can't tell a synced folder). Retention is 7
+    daily plus 4 weekly (ADR-024 D5); the newest backup is never
+    pruned, and a failed run prunes nothing. Failures exit non-zero with
+    one log line holding no path, URL, password or tool output. The
+    daily timer runs from a second clone that only ever has `main`
+    checked out and has no `.env`, and refuses to start otherwise, so
+    the timer never runs an unreviewed branch with the owner's Docker
+    access (ADR-025 D8).
+-   **Known limitation:** backups are **not encrypted at rest** until #57
+    and sit on the same disk as the database, so they don't protect
+    against losing the disk. Today they hold events only (metadata).
+-   **Deletion and backups:** a deleted memory record stays in every
+    backup taken before the delete, until retention prunes the last of
+    them, about 5 weeks with daily backups (ADR-024 §4). A restore brings
+    back the past; the runbook (`docs/runbooks/db-backup-restore.md`)
+    restores into a new database first, checks row counts, triggers and
+    grants (`scripts/restore_check.sql`), and replaces the real database
+    only by renaming, keeping the old one. The safety backup taken before
+    a restore and the kept old database are outside retention and must
+    be deleted by hand within 5 weeks, or a deleted record survives in
+    them.
+-   Roles are not in a backup. A restore onto a new cluster recreates
+    `aether_app` and sets its password from `.env`; the dump brings back
+    its grants. Owner and role password verifiers are never backed up.
 -   Record destructive operations.
 -   Use version control and snapshots for recoverable project changes.
 -   Provide a way to stop or revoke active agent sessions and

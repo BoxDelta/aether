@@ -64,6 +64,11 @@ class Settings(BaseSettings):
     # unset, migrations fall back to DATABASE_URL (a throwaway CI database).
     database_migration_url: SecretStr | None = None
 
+    # Folder for database backups (#3, core.backup). Default:
+    # ~/.local/share/aether/backups, outside the repository. Kept as text and
+    # checked in core.backup, so an error names the setting, not the value.
+    aether_backup_dir: str | None = None
+
     # Bearer token for every route except /health (ADR-021, #57). Without it Core
     # serves only /health. Length is checked in core.auth, not here (see above).
     aether_api_token: SecretStr | None = None
@@ -92,6 +97,7 @@ class Settings(BaseSettings):
         "database_migration_url",
         "aether_api_token",
         "aether_cloud_max_output_tokens",
+        "aether_backup_dir",
         mode="before",
     )
     @classmethod
