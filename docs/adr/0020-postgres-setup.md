@@ -102,6 +102,32 @@ against Core's own bugs and a leaked app-role password, not against
 someone who can read `.env` or the disk (#57). Live tests create and
 drop a temporary member role of `aether_app` for each test.
 
+## Addition (2026-11-16): memory_records grants and the guard (#66)
+
+ADR-024 §1 adds `memory_records`, the first table Core must change and
+hard-delete (ADR-024 §4). The role and guard above are kept, with one
+narrow exception.
+
+-   **Grants.** Migration `0004` gives `aether_app` exactly SELECT,
+    INSERT, UPDATE and DELETE on `memory_records`. No TRUNCATE, TRIGGER
+    or REFERENCES, nothing for PUBLIC, and the owner still owns the
+    table.
+-   **Guard.** The privilege check still refuses TRUNCATE and TRIGGER on
+    every table, and owning or creating anything anywhere. It now refuses
+    UPDATE (on the table or on any single column) and DELETE on every
+    table **except** the one named exactly `memory_records`. So `events`
+    and `alembic_version` stay insert/read-only for Core, and a role with
+    UPDATE or DELETE on them is still refused (tested live, as is the
+    real app role with the `0004` grants being accepted). The check for
+    column-level UPDATE is new; before, only table-level UPDATE was seen.
+-   **Why by name.** The exception is one fixed table, not a pattern or
+    a list read from the database: the app role can't create tables, so
+    it can't make another `memory_records`, and a table called
+    `memory_records_x` is not exempt. Alternatives considered: a second
+    check only for `events` and `alembic_version` (would allow UPDATE on
+    any future table by default), and per-table row-level security
+    (more machinery than one table needs).
+
 ## Revisit when
 
 Backups are designed (Phase 2), pgvector is needed (ADR-011), a

@@ -2,7 +2,9 @@
 
 For an install that already has data in the `aether_pgdata` volume, at
 migration `0002` (Core connects as the owner `aether`). After this, Core
-connects as `aether_app`, which can only insert into and read `events`.
+connects as `aether_app`, which can only insert into and read `events`
+(migration `0004` later adds read, insert, update and delete on
+`memory_records`, #66).
 The owner `aether` runs migrations only. Design: ADR-020, addition
 2026-11-16. A fresh install follows the README instead.
 

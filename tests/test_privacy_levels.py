@@ -1,8 +1,10 @@
 """One source of truth for privacy levels (#58)."""
 
 import ast
+import importlib.util
 import re
 from pathlib import Path
+from types import ModuleType
 from typing import get_args
 
 import pytest
@@ -20,6 +22,8 @@ from router.contract import (
 
 REPO = Path(__file__).resolve().parent.parent
 NAMES = {"public", "personal", "sensitive", "secret"}
+# Packages scanned for a second list of level names (ADR-024 §1 adds memory/).
+SCANNED = ("core", "router", "identity", "memory")
 
 
 def test_order_comes_from_the_literal() -> None:
@@ -72,7 +76,9 @@ def test_level_names_listed_only_in_router_contract() -> None:
     # is a second list that could drift. Tests and the frozen migration are exempt
     # (the migration is checked against PRIVACY_ORDER below).
     offenders = []
-    for folder in ("core", "router", "identity"):
+    for folder in SCANNED:
+        if folder != "memory":  # the memory/ package arrives in ADR-024 step 4
+            assert (REPO / folder).is_dir(), folder
         for path in sorted((REPO / folder).rglob("*.py")):
             rel = path.relative_to(REPO).as_posix()
             if rel == "router/contract.py":
@@ -96,3 +102,24 @@ def test_events_migration_check_matches_privacy_order() -> None:
     m = re.search(r'_in\(\s*"privacy",\s*\(([^)]*)\)', source)
     assert m, "events_privacy CHECK not found"
     assert tuple(re.findall(r'"(\w+)"', m.group(1))) == PRIVACY_ORDER
+
+
+def _migration(name: str) -> ModuleType:
+    spec = importlib.util.spec_from_file_location(name, REPO / "migrations/versions" / name)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_memory_records_check_matches_privacy_order_without_secret() -> None:
+    # ADR-024 §1: the memory CHECK is the PrivacyLevel order minus secret, in order.
+    migration = _migration("0004_memory_records.py")
+    assert migration.PRIVACY_LEVELS == NON_SECRET_LEVELS
+    assert SECRET not in migration.PRIVACY_LEVELS
+    # ...and the constraint really is built from that tuple, under that name.
+    source = (REPO / "migrations/versions/0004_memory_records.py").read_text()
+    assert '_in("privacy", PRIVACY_LEVELS), name="memory_records_privacy"' in source
+    # The only literal list of level names in that migration is PRIVACY_LEVELS.
+    lists = _string_tuples_of_level_names(ast.parse(source))
+    assert [names for _, names in lists] == [list(NON_SECRET_LEVELS)]

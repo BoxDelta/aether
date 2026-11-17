@@ -80,8 +80,8 @@ Constraints:
     --exit-on-error`). Then the database-level rights (not in a dump),
     row counts (events are append-only with growing ids, so the restored
     rows must equal the live rows up to the restored max id), and
-    `scripts/restore_check.sql` (both triggers, the app role's rights,
-    nothing for PUBLIC). Replacing the real database is a **rename**,
+    `scripts/restore_check.sql` (both triggers, the app role's rights on
+    `events` and, since #66, on `memory_records`, nothing for PUBLIC). Replacing the real database is a **rename**,
     keeping the old one as `aether_before_restore`, so going back is a
     rename too and nothing is dropped until the owner decides.
     Runbook: `docs/runbooks/db-backup-restore.md`.
