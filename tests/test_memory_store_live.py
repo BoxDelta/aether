@@ -104,7 +104,12 @@ def store(live_app: Settings, live_owner: Settings) -> Iterator[Run[Any]]:
 
 
 def owner_record(n: int | str = 1, **changes: Any) -> NewRecord:
-    values: dict[str, Any] = {"content": content(n), "category": "preference", "privacy": "public"}
+    values: dict[str, Any] = {
+        "content": content(n),
+        "category": "preference",
+        "privacy": "public",
+        "source": "owner",
+    }
     return NewRecord(**{**values, **changes})
 
 

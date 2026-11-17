@@ -15,6 +15,10 @@ migration 0004 are the backstop:
   (``privacy_source = suggested``). The store never takes "approved" from a caller.
 - **Only the owner** may update, approve or delete (``NotAllowed`` otherwise):
   a model or tool can never approve, change or delete anything (ADR-024 §2).
+  The store can't tell who is calling: it trusts the ``source`` and ``actor`` its
+  caller passes, and ``source`` has no default. Callers (the API from step 6 on)
+  must set them from authentication (ADR-021), never from a request body or model
+  output.
 - **Approve**: the owner states the final level (it is required), which sets
   ``approved_at`` and ``privacy_source = owner``; content, category and key may be
   corrected in the same step. Any level the owner sets with ``update`` is also
@@ -45,9 +49,9 @@ from datetime import datetime
 from typing import Any, Literal, TypeVar, get_args
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, StatementError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from core.request_context import SAFE_ID_PATTERN
@@ -209,7 +213,8 @@ class NewRecord:
     content: str = field(repr=False)
     category: Category
     privacy: PrivacyLevel
-    source: Source = OWNER
+    # Required, no default: a forgotten source must never mean "the owner, approved".
+    source: Source
     key: str | None = field(default=None, repr=False)
     source_provider: str | None = None
     source_request_id: str | None = None
@@ -385,6 +390,10 @@ class MemoryStore:
                 return await operation(conn)
         except DBAPIError as exc:
             failure = _failure(exc)
+        except (StatementError, ValidationError) as exc:
+            # Not a database refusal: a statement that couldn't be built or a row that
+            # doesn't fit MemoryRecord. Type name only.
+            failure = StoreFailed(f"store error ({type(exc).__name__})")
         # Raised here, outside the except block, so the driver error isn't chained.
         raise failure
 

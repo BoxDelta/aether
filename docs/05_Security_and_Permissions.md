@@ -210,7 +210,10 @@ The memory store (`memory/store.py`, ADR-024 step 4, #69) refuses
 `secret` before the database, whose CHECK on `memory_records` is the
 backstop, and its error never echoes the content. A record from a model
 or a tool is always `pending` with a suggested level; only the owner can
-approve (stating the final level), correct or delete. The store puts no
+approve (stating the final level), correct or delete. The store can't
+tell who is calling: it trusts the `source` (no default) and `actor` its
+caller passes, so the API (step 6 on) must set them from authentication
+(ADR-021), never from a request body or model output. The store puts no
 memory content or key in log records, error messages or reprs. It has no
 caller yet: no API, no retrieval, no events.
 

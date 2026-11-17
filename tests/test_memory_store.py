@@ -66,6 +66,7 @@ def new(**changes: Any) -> NewRecord:
         "content": CANARY,
         "category": "preference",
         "privacy": "personal",
+        "source": "owner",
         "key": CANARY_KEY,
     }
     return NewRecord(**{**values, **changes})
@@ -89,7 +90,7 @@ def test_secret_is_refused_everywhere_a_level_is_given() -> None:
 def test_secret_refusal_does_not_echo_secret_shaped_content() -> None:
     content = "sk-ant-api03-FAKE-memstore-0000 my invented key"  # gitleaks:allow
     with pytest.raises(SecretRefused) as info:
-        NewRecord(content=content, category="reference", privacy=SECRET)
+        NewRecord(content=content, category="reference", privacy=SECRET, source="owner")
     assert "sk-ant" not in str(info.value) and "invented" not in str(info.value)
 
 
@@ -190,6 +191,12 @@ def test_only_the_owner_may_update_approve_or_delete(actor: Any) -> None:
     )
     refused(lambda: asyncio.run(store.approve(record_id, Approval("public"), actor=actor)), error)
     refused(lambda: asyncio.run(store.delete(record_id, actor=actor)), error)
+
+
+def test_new_record_requires_a_source() -> None:
+    # A forgotten source must never default to the owner (an approved record).
+    with pytest.raises(TypeError):
+        NewRecord(content=CANARY, category="task", privacy="public")  # type: ignore[call-arg]
 
 
 def test_approval_requires_a_level() -> None:

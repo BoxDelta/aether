@@ -38,7 +38,9 @@ the design, follow the ADR numbers into `docs/adr/`.
     hard-deletes `memory_records` through Core's app engine. Its checks
     run before the database: never `secret`; owner records approved at
     once, model and tool records always `pending` with a suggested level;
-    only the owner may approve, update or delete; content, key and
+    only the owner may approve, update or delete (the store trusts the
+    `source` and `actor` its caller passes; `source` has no default);
+    content, key and
     one-approved-record-per-key give store errors that never quote
     content or keys. Nothing calls it yet: no API, retrieval or events.
 -   `scripts/`: the identity continuity run (`identity_continuity.py`), a
