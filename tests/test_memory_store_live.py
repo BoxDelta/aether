@@ -26,6 +26,7 @@ from sqlalchemy import text
 
 from core.config import Settings
 from core.db import create_engine, create_migration_engine
+from core.log import SecretCheck, secrets_from
 from memory.store import (
     Approval,
     InvalidRecord,
@@ -39,8 +40,10 @@ from memory.store import (
     NotPending,
     RecordChanges,
     RecordNotFound,
+    SecretContent,
 )
 from tests.conftest import LIVE_DB
+from tests.fake_secrets import by_family
 
 pytestmark = LIVE_DB
 
@@ -99,7 +102,8 @@ def store(live_app: Settings, live_owner: Settings) -> Iterator[Run[Any]]:
         async def go() -> T:
             engine = create_engine(live_app)
             try:
-                return await body(MemoryStore(engine))
+                # Built from Settings, as every caller must (#70).
+                return await body(MemoryStore(engine, SecretCheck.from_settings(live_app)))
             finally:
                 await engine.dispose()
 
@@ -468,6 +472,41 @@ def test_failed_updates_leave_the_table_unchanged(store: Run[Any], live_owner: S
         with pytest.raises(error):
             store(attempt)
     assert snapshot(live_owner) == before
+
+
+# --- secret-shaped content is refused before the database (#70) ---------------------
+
+
+def test_refused_secrets_change_neither_table_nor_events(
+    store: Run[Any], live_app: Settings, live_owner: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The configured value is this run's own app-role password (from live_app's
+    # DATABASE_URL), so the check really is the one built from Settings.
+    password = max(secrets_from(live_app), key=len)
+    made = store(lambda s: s.create(owner_record(1)))
+    pending = store(lambda s: s.create(proposal(2)))
+    start = last_event_id(live_owner)
+    before = snapshot(live_owner)
+    caplog.set_level(logging.DEBUG)
+    for fake in by_family(password):
+        for attempt in (
+            lambda s, t=fake.text: s.create(owner_record(3, content=t)),
+            lambda s, t=fake.text: s.create(proposal(4, content=t)),
+            lambda s, t=fake.text: s.update(made.id, RecordChanges(content=t), actor="owner"),
+            lambda s, t=fake.text: s.approve(
+                pending.id, Approval("public", content=t), actor="owner"
+            ),
+        ):
+            with pytest.raises(SecretContent) as info:
+                store(attempt)
+            exc = info.value
+            assert exc.__cause__ is None and exc.__context__ is None
+            for shown in (str(exc), repr(exc)):
+                assert fake.core not in shown
+            assert fake.core not in caplog.text
+    assert events_after(live_owner, start) == []
+    assert snapshot(live_owner) == before
+    assert password not in caplog.text
 
 
 # --- no content or key in logs or events ---------------------------------------------

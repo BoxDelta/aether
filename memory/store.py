@@ -23,6 +23,14 @@ migration 0004 are the backstop:
   ``approved_at`` and ``privacy_source = owner``; content, category and key may be
   corrected in the same step. Any level the owner sets with ``update`` is also
   recorded as the owner's choice (``privacy_source = owner``).
+- **No secret-shaped content** (ADR-024 §1, #70): content that matches a secret
+  format or contains a configured secret value (``core.log.SecretCheck``, the log
+  redactor's own patterns and values) is refused with ``SecretContent`` on create,
+  update and approve, before the database. The key is checked too: its format
+  rules out the patterns, but a configured value could still appear there. The
+  checker is a required constructor argument, so no store exists without it.
+  Limit: a secret in a format the patterns don't know (an account number, say) is
+  not caught; the owner's approval review is the remaining check.
 - **Content** 1 to ``CONTENT_MAX`` characters of valid text; **key** matches
   ``KEY_PATTERN``; at most one approved record per key, so a clash raises
   ``KeyConflict`` (approve does not yet replace the old record: step 8, #67).
@@ -56,7 +64,7 @@ never content, a key or corrected text. Reads (``get``, ``list``) write no event
 import enum
 import logging
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, TypeVar, cast
@@ -73,6 +81,7 @@ from core.events import (
     memory_record_event,
     write_memory_event,
 )
+from core.log import SecretCheck
 from core.request_context import SAFE_ID_PATTERN
 from memory.types import (
     CATEGORIES,
@@ -128,6 +137,14 @@ class InvalidRecord(MemoryStoreError):
 class SecretRefused(InvalidRecord):
     def __init__(self) -> None:
         super().__init__("privacy", f"'{SECRET}' is never stored in memory (docs/05 §7.1)")
+
+
+class SecretContent(InvalidRecord):
+    """Content (or a key) that looks like a secret. Says nothing about which part,
+    which pattern or which configured value matched."""
+
+    def __init__(self, field_name: str = "content") -> None:
+        super().__init__(field_name, "looks like a secret and is never stored (docs/05 §7.1)")
 
 
 class NotAllowed(MemoryStoreError):
@@ -407,8 +424,26 @@ class MemoryStore:
     disposes it.
     """
 
-    def __init__(self, engine: AsyncEngine) -> None:
+    def __init__(self, engine: AsyncEngine, secret_check: SecretCheck) -> None:
+        # Required and type-checked: a store that skips the secret check can't exist.
+        if not isinstance(secret_check, SecretCheck):
+            raise TypeError("secret_check must be a core.log.SecretCheck")
         self._engine = engine
+        self._looks_secret = secret_check
+
+    def _refuse_secrets(self, columns: Mapping[str, object], operation: str) -> None:
+        """Raise ``SecretContent`` if the content or key looks like a secret. Called
+        before the database; logs the operation name only."""
+        for name in ("content", "key"):
+            value = columns.get(name)
+            if isinstance(value, str) and self._looks_secret(value):
+                logger.warning(
+                    "Memory %s refused: %s looks like a secret",
+                    operation,
+                    name,
+                    extra={"field": name},
+                )
+                raise SecretContent(name)
 
     async def _run(self, operation: Callable[[AsyncConnection], Awaitable[T]]) -> T:
         """Run ``operation`` in one transaction (rolled back if it raises)."""
@@ -441,6 +476,7 @@ class MemoryStore:
             "privacy_source": "owner" if owner else "suggested",
             "expires_at": new.expires_at,
         }
+        self._refuse_secrets(values, "create")
         approved_at = "now()" if owner else "NULL"
         sql = (
             f"INSERT INTO {TABLE} ({', '.join(values)}, approved_at)"  # noqa: S608 - fixed names
@@ -509,6 +545,7 @@ class MemoryStore:
         columns = changes.columns()
         if not columns:
             raise InvalidRecord("changes", "nothing to change")
+        self._refuse_secrets(columns, "update")
         extra = ", privacy_source = 'owner'" if "privacy" in columns else ""
 
         async def change(conn: AsyncConnection) -> MemoryRecord:
@@ -537,6 +574,7 @@ class MemoryStore:
         if not isinstance(approval, Approval):
             raise InvalidRecord("approval", "must be an Approval")
         columns = approval.columns()
+        self._refuse_secrets(columns, "approve")
         extra = ", status = 'approved', privacy_source = 'owner', approved_at = now()"
 
         async def change(conn: AsyncConnection) -> MemoryRecord:

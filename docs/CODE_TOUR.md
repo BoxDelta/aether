@@ -8,7 +8,8 @@ the design, follow the ADR numbers into `docs/adr/`.
 
 -   `core/`: the FastAPI service ("Core"). The app factory (`app.py`),
     settings (`config.py`), bearer-token auth (`auth.py`), request IDs
-    (`request_context.py`), JSON logging and secret redaction (`log.py`),
+    (`request_context.py`), JSON logging, secret redaction and the shared
+    "looks like a secret" check `SecretCheck` (`log.py`),
     the shared error format and 422 handler (`errors.py`), the `/chat`
     endpoint (`chat.py`), `/ready` (`ready.py`), the Postgres
     engine and its privileged-role check (`db.py`; the app role may update
@@ -48,8 +49,11 @@ the design, follow the ADR numbers into `docs/adr/`.
     content, key and
     one-approved-record-per-key give store errors that never quote
     content or keys. Every change writes one `memory.*` event in the same
-    transaction (ADR-024 step 5). Nothing calls it yet: no API or
-    retrieval.
+    transaction (ADR-024 step 5). Content or a key that looks like a
+    secret is refused on create, update and approve by `SecretCheck`
+    (`core/log.py`: the log redactor's own patterns and configured
+    values), which the store takes as a required constructor argument
+    (#70). Nothing calls it yet: no API or retrieval.
 -   `scripts/`: the identity continuity run (`identity_continuity.py`), a
     backup copy of the owner's `safemerge` fish function (never sourced),
     the systemd user timer templates for backups (`systemd/`, installed by

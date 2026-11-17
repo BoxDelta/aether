@@ -234,6 +234,34 @@ old and new level when the level changed) and a delete
 event can't be written the change is rolled back (ADR-024 §5, #72). It
 has no caller yet: no API, no retrieval.
 
+**Secret-shaped content is never stored (ADR-024 §1, #70).** Whatever its
+label, the store refuses content that looks like a secret, on create,
+update and approve (including corrected content), before the database is
+touched. The check is `SecretCheck` in `core/log.py`, built from the
+same things the log redactor masks, defined once (`SECRET_FORMATS` and
+`secrets_from()`):
+
+-   Anthropic-style API keys (`sk-ant-...`);
+-   `Bearer <credential>` in any casing, with any whitespace;
+-   a password in a `scheme://user:password@host` URL;
+-   the configured secret values (`ANTHROPIC_API_KEY`,
+    `AETHER_API_TOKEN`, the database passwords), only when at least 8
+    characters long, so a short value can't match ordinary text.
+
+The key is checked too: its format rules out the patterns, but a
+configured value could still be written there. The error (`SecretContent`,
+field `content`, or `key` for a key) says only that the value looks like
+a secret: never which pattern, which part or the text, with nothing
+chained and nothing logged but the operation and field name. Reads are
+not checked. `MemoryStore` takes the check as a required constructor
+argument, built from Settings (`SecretCheck.from_settings`), so no store
+exists without it. #8 will reuse the same check for cloud sends.
+
+Limit: the check knows only these formats and values. A secret in any
+other format (an account number, a password typed as plain words, a key
+from another provider) can still be stored if the owner approves it under
+a lower label; the owner's approval review is the remaining check.
+
 **Trust boundary: `OLLAMA_HOST` (ADR-023, #10).** "Local only" means
 the Ollama host is on this machine or the local network, not just that
 the Ollama adapter is used. Core decides this from the URL text, without
