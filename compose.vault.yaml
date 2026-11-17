@@ -4,7 +4,7 @@
 #   docker compose -f docker-compose.yml -f compose.vault.yaml up -d
 # or, after the switch in docs/runbooks/encrypted-volume.md, through
 # COMPOSE_FILE=docker-compose.yml:compose.vault.yaml in .env (compose reads it).
-# Day to day, start and stop it with scripts/vault.fish, which unlocks and checks
+# Day to day, start and stop it with scripts/aether-vault.fish, which unlocks and checks
 # the volume first.
 #
 # Fails closed. If the volume is locked or not mounted:
@@ -17,7 +17,7 @@
 # No password, key or passphrase is in this file.
 services:
   postgres:
-    # Not started by Docker at boot: the volume is locked then. scripts/vault.fish
+    # Not started by Docker at boot: the volume is locked then. aether-vault
     # starts it after unlocking and checking the marker. A crash is not restarted
     # automatically either (start it again with the script).
     restart: "no"
@@ -36,7 +36,12 @@ services:
     # default an error adds DETAIL lines that quote the row ("Failing row
     # contains (...)", "Key (key)=(...) already exists"), i.e. memory content,
     # and the failing statement. terse drops DETAIL, HINT, QUERY and CONTEXT;
-    # panic stops logging statements. Errors are still logged, without values.
+    # panic stops logging statements. Some primary messages can still quote a
+    # fragment of input (e.g. "invalid input syntax for type ...: ...").
+    # `docker compose exec postgres psql` runs as root (HOME=/root, in the
+    # container's layer on the unencrypted disk); keep its history on the volume.
+    environment:
+      PSQL_HISTORY: /var/lib/postgresql/.psql_history
     command:
       - postgres
       - -c

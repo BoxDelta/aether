@@ -121,25 +121,31 @@ it in your password manager **before** you go on.
 
 ```fish
 sudo cryptsetup luksFormat --type luks2 $f
-sudo cryptsetup luksDump $f | string match -r '^(Version|\s+cipher|\s+PBKDF):.*'
+sudo cryptsetup luksDump $f | string match -r '^(?:Version|\s+cipher|\s+PBKDF):.*'
 # expect: Version: 2, cipher: aes-xts-plain64, PBKDF: argon2id
 ```
 
-**2b. Open it, and make the filesystem** (this asks for the passphrase):
+**2b. Open it** (this asks for the passphrase):
 
 ```fish
 sudo cryptsetup open --type luks2 $f aether-vault
-sudo mkfs.ext4 -L aether-vault -m 0 /dev/mapper/aether-vault
-# expect: "Writing superblocks and filesystem accounting information: done"
 ```
 
-Optional: fill the volume with random-looking data first, so nobody with
-the disk can see which parts are used (ADR-026 §2). Run this before
-`mkfs.ext4`. It writes 20 GB, and the "No space left on device" at the end
-is expected:
+Optional, and only here, before `mkfs.ext4`: fill the volume with
+random-looking data, so nobody with the disk can see which parts are used
+(ADR-026 §2). Zeros written through the open volume land on disk as
+ciphertext. It writes 20 GB, and "No space left on device" at the end is
+expected:
 
 ```fish
 sudo dd if=/dev/zero of=/dev/mapper/aether-vault bs=4M status=progress
+```
+
+Then make the filesystem:
+
+```fish
+sudo mkfs.ext4 -L aether-vault -m 0 /dev/mapper/aether-vault
+# expect: "Writing superblocks and filesystem accounting information: done"
 ```
 
 **2c. The mount point: empty, private, immutable.** Nothing can be written
@@ -217,7 +223,10 @@ the volume, even after you change that passphrase. So:
 -   after changing or removing a passphrase, take a new header backup;
 -   destroy the old copies.
 
-On its own, without the container file, it reveals nothing.
+On its own, without the container file, it can't decrypt any data. But it
+does hold the key slots, so whoever has it can try to guess passphrases
+offline. argon2id makes each guess slow; a long passphrase is what really
+protects it. Keep it as private as the passphrase itself.
 
 **Rollback (stage 3):** nothing to undo.
 
@@ -232,11 +241,17 @@ What happens:
 
 The old Docker volume `aether_pgdata` stays untouched as the way back.
 
-**4a. Stop Core (Ctrl+C) and the backup timer, then take a labelled backup.**
-A labelled backup is outside retention: it is never pruned and never counted.
+**4a. Stop Core (Ctrl+C), disable the backup timer, then take a labelled
+backup.**
+
+-   *Disable* the timer, not just stop it: a stopped timer comes back after a
+    reboot, and with `Persistent=true` it would back up the new database to
+    the old, unencrypted folder.
+-   A labelled backup is outside retention: it is never pruned and never
+    counted.
 
 ```fish
-systemctl --user stop aether-backup.timer
+systemctl --user disable --now aether-backup.timer
 uv run python -m core.backup --label premove
 # expect: one JSON line, "Backup completed", file aether-<time>-premove.dump
 set backup (path sort ~/.local/share/aether/backups/aether-*-premove.dump)[-1]
@@ -250,6 +265,17 @@ first failure.
 ```fish
 cp scripts/aether-vault.fish ~/.config/fish/functions/
 type -q aether-vault; and echo installed           # expect: installed
+```
+
+Install the backup drop-in now too, so no backup of the new database can
+ever go to the old folder. It sets the folder on the volume, and refuses to
+run while the volume is not mounted.
+
+```fish
+mkdir -p ~/.config/systemd/user/aether-backup.service.d
+cp scripts/systemd/aether-backup.service.d/vault.conf ~/.config/systemd/user/aether-backup.service.d/
+systemctl --user daemon-reload
+systemctl --user cat aether-backup.service | string match '*vault*'   # expect: the drop-in's lines
 ```
 
 **4c. Stop the old Postgres, and start a new one on the volume.**
@@ -305,15 +331,23 @@ docker compose exec -T postgres psql -U aether -d aether -At < scripts/restore_c
 
 Start Core and check `/ready`: database `ok`.
 
-**Rollback (stage 4), at any point before stage 5.** Nothing was written to
-the old volume since 4a, so nothing is lost.
+**Rollback (stage 4), at any point before stage 5.**
+
+-   Nothing was written to the old volume since 4a.
+-   If you started Core at the end of 4f, events written since then exist
+    only on the volume. To keep them, back up first (with the volume open)
+    and restore that backup into the old database afterwards
+    (`db-backup-restore.md` section 4).
+-   Otherwise nothing is lost.
 
 ```fish
 aether-vault close               # stops the new Postgres, unmounts, locks
 set -e COMPOSE_FILE
+rm ~/.config/systemd/user/aether-backup.service.d/vault.conf
+systemctl --user daemon-reload
 docker compose up -d --wait      # the old container definition, on aether_pgdata
 uv run python -m core.db         # expect: ok: connected to aether_app@…
-systemctl --user start aether-backup.timer
+systemctl --user enable --now aether-backup.timer
 ```
 
 ## Stage 5. Switch over
@@ -345,15 +379,11 @@ uv run python -m core.backup
 ls -l ~/.local/share/aether/vault/backups/         # expect: aether-<time>.dump, -rw-------
 ```
 
-**5c. The nightly backup: install the drop-in.** It sets the folder and adds
-the guard. Then update the second clone (ADR-025 D8) and try both cases:
+**5c. The nightly backup.** The drop-in is in place (4b). Update the second
+clone (ADR-025 D8), and try both cases:
 
 ```fish
-mkdir -p ~/.config/systemd/user/aether-backup.service.d
-cp scripts/systemd/aether-backup.service.d/vault.conf ~/.config/systemd/user/aether-backup.service.d/
 git -C ~/Projects/aether-backup pull --ff-only
-systemctl --user daemon-reload
-systemctl --user cat aether-backup.service | string match '*vault*'   # expect: the drop-in's lines
 systemctl --user start aether-backup.service
 journalctl --user -u aether-backup.service -n 3 --no-pager   # expect: "Backup completed"
 ```
@@ -368,7 +398,7 @@ journalctl --user -u aether-backup.service -p err -n 2 --no-pager
 ls -A ~/.local/share/aether/vault                  # expect: nothing
 systemctl --user reset-failed aether-backup.service
 aether-vault open
-systemctl --user start aether-backup.timer
+systemctl --user enable --now aether-backup.timer
 ```
 
 **5d. A restore drill from the volume** (`db-backup-restore.md` section 3).
@@ -383,9 +413,7 @@ Then follow R2 to R5 there. `restore_check.sql` must print `ok`.
 **Rollback (stage 5):**
 
 -   Undo the configuration: remove the `COMPOSE_FILE` and
-    `AETHER_BACKUP_DIR` lines from `.env`, delete
-    `~/.config/systemd/user/aether-backup.service.d/vault.conf`, and run
-    `systemctl --user daemon-reload`.
+    `AETHER_BACKUP_DIR` lines from `.env`.
 -   Then do stage 4's rollback.
 -   **Everything written since stage 4** (new events) exists only on the
     volume. To keep it, first back it up, then restore that backup into
@@ -433,6 +461,23 @@ docker ps -a --filter volume=aether_pgdata -q      # expect: nothing (no contain
 docker volume rm aether_pgdata
 ```
 
+Then recreate the same name as a bind to the volume's data folder.
+
+-   Why: a `docker compose` run that misses the override (an explicit
+    `-f docker-compose.yml`, another folder, a lost `.env` line) would
+    otherwise create a new, empty `aether_pgdata` on the bare disk. Postgres
+    would then initialise a fresh database there.
+-   With this, even the base file uses the volume's data, and Docker can't
+    start Postgres while the volume is locked (the folder doesn't exist).
+
+```fish
+docker volume create --driver local --opt type=none --opt o=bind --opt device=$HOME/.local/share/aether/vault/data aether_pgdata
+docker volume inspect aether_pgdata --format '{{.Options.device}}'   # expect: …/vault/data
+```
+
+Compose may warn that this volume "already exists but was not created by
+Docker Compose"; that is expected.
+
 Use exactly this `docker volume rm`, never `docker compose down -v`, which
 removes whatever named volumes compose knows about without asking.
 
@@ -444,8 +489,14 @@ removes whatever named volumes compose knows about without asking.
 ```fish
 ls -l ~/.local/share/aether/backups/
 rm ~/.local/share/aether/backups/aether-*.dump
-rmdir ~/.local/share/aether/backups
+rm -f ~/.local/share/aether/backups/.lock    # the backup's lock file, if there
+ls -A ~/.local/share/aether/backups/                # expect: nothing
+sudo chattr +i ~/.local/share/aether/backups        # leave it empty and immutable
 ```
+
+A backup run that misses the drop-in and the `.env` line (a recopied service
+template, say) then fails at the old default folder instead of writing a
+plain-text dump there.
 
 -   **Old snapshots.** If stage 0 found snapper or Timeshift, snapshots
     from before the move still hold the old data. Delete them with the

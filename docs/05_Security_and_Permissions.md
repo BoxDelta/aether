@@ -537,16 +537,21 @@ early; it is **not** a security boundary and does not replace Sentinel.
     the move out by hand (`docs/runbooks/encrypted-volume.md`); until then,
     the database and the backups are **not encrypted at rest**. The move
     must happen before real memory data is stored.
-    -   **Fails closed.** With the volume locked or not mounted, Docker
-        refuses to start Postgres: the bind source exists only inside the
-        volume, `create_host_path: false`, and the bare mount point is
-        empty and immutable. The entrypoint also refuses without the
-        volume's marker, so no fresh database is ever initialised on the
-        bare disk. The nightly backup refuses to run (exit 1, one `err`
+    -   **Fails closed, with the override loaded** (`compose.vault.yaml`,
+        through `COMPOSE_FILE` in `.env` or `aether-vault`). With the volume
+        locked or not mounted, Docker refuses to start Postgres: the bind
+        source exists only inside the volume, `create_host_path: false`,
+        and the bare mount point is empty and immutable. The entrypoint
+        also refuses without the volume's marker.
+    -   A compose run that misses the override uses the old named volume
+        until the runbook's stage 7 recreates that name as a bind to the
+        volume. After that, it can't create a database on the bare disk
+        either. The nightly backup refuses to run (exit 1, one `err`
         journal line). Core still starts with events skipped, and `/ready`
         reports `degraded` with database `unreachable`.
-    -   **Encrypted:** the Postgres data and the backups, while the volume
-        is locked or the PC is off.
+    -   **Encrypted:** the Postgres data, the backups and psql history in
+        the container (`PSQL_HISTORY`), while the volume is locked or the
+        PC is off.
     -   **Not encrypted:**
         -   anything while the volume is open;
         -   swap on disk and hibernation images;
@@ -555,10 +560,11 @@ early; it is **not** a security boundary and does not replace Sentinel.
         -   data written before the move (old volume, old backups,
             snapshots). Deleting it is not wiping it on btrfs or an SSD,
             which is acceptable only because it holds event metadata.
-    -   Postgres's error log, which lives in Docker's log on the
-        unencrypted disk, no longer quotes rows, keys or statements
+    -   Postgres's error log lives in Docker's log on the unencrypted
+        disk. With the volume's override it no longer carries DETAIL
+        lines (rows, keys) or the failing statement
         (`log_error_verbosity=terse`, `log_min_error_statement=panic`).
-        That only holds with the volume's override.
+        Some primary messages can still quote a fragment of input.
 -   **Known limitation:** backups sit on the **same physical disk** as the
     database, so they don't protect against losing the disk. An encrypted
     off-machine copy is a separate follow-up. A forgotten passphrase loses

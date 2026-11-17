@@ -211,6 +211,24 @@ def test_close_keeps_it_unlocked_if_unmount_fails(tmp_path: Path) -> None:
     assert not r.called("cryptsetup close")
 
 
+def test_close_when_already_locked_only_stops_postgres(tmp_path: Path) -> None:
+    r = run(tmp_path, "close")
+    assert r.code == 0, r.out
+    assert not r.called("umount") and not r.called("cryptsetup close")
+
+
+def test_status_reports_without_changing_anything(tmp_path: Path) -> None:
+    r = run(tmp_path, "status", mounted=True)
+    assert "container file: present" in r.out and "unlocked: yes" in r.out
+    assert "mounted: yes, markers ok" in r.out
+    assert not r.called("cryptsetup open") and not r.called("mount")
+    assert not r.called("umount") and not r.called("cryptsetup close")
+    assert not any(" up " in c or " stop " in c for c in r.calls)
+    (tmp_path / "locked").mkdir()
+    locked = run(tmp_path / "locked", "status")
+    assert "unlocked: no" in locked.out and "mounted: no" in locked.out
+
+
 def test_unknown_command_prints_usage(tmp_path: Path) -> None:
     r = run(tmp_path, "format")
     assert r.code == 1 and "usage: aether-vault open | close | status" in r.out

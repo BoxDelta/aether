@@ -97,8 +97,10 @@ the machine is done by the owner from `docs/runbooks/encrypted-volume.md`.
         backup, a copy of the container file and a passphrase that was
         valid **when the backup was taken** can unlock it, even after that
         passphrase was changed or removed. After changing a passphrase,
-        take a new header backup and destroy the old ones. The header
-        backup alone, without the container file, reveals nothing.
+        take a new header backup and destroy the old ones. Without the
+        container file it decrypts nothing, but it holds the key slots, so
+        whoever has it can guess passphrases offline. argon2id slows each
+        guess; a long passphrase is what protects it.
     -   It is written to `/run/user/<uid>` (RAM), copied off the machine,
         then removed. It is never written to this disk.
 
@@ -128,8 +130,9 @@ the machine is done by the owner from `docs/runbooks/encrypted-volume.md`.
 
 ### 5. Postgres never starts on the bare disk
 
-Fail closed, in layers. Each layer was checked by hand on a throwaway
-compose project (see the PR):
+Fail closed, in layers. Layers 1 to 3 were checked by hand on a throwaway
+compose project (see the PR). Layers 1 to 4 hold only when the override is
+loaded; layer 6 covers a compose run that misses it.
 
 1.  **No source, no container.** `compose.vault.yaml` bind-mounts
     `~/.local/share/aether/vault/data` with `create_host_path: false`. That
@@ -155,6 +158,20 @@ compose project (see the PR):
     volume. The image declares `VOLUME /var/lib/postgresql`. If the path
     were left unmounted, Docker would silently create an anonymous volume
     on the unencrypted disk.
+6.  **A run without the override still can't use the bare disk.**
+    -   Without the override (an explicit `-f docker-compose.yml`, another
+        folder or env file, a lost `.env` line), compose falls back to the
+        named volume `aether_pgdata`, with `restart: unless-stopped`.
+    -   Before stage 7 that is the old, stale database, on the unencrypted
+        disk.
+    -   So at stage 7 the old volume is not just removed: the name
+        `aether_pgdata` is recreated as a local-driver bind to
+        `vault/data`. The base file then also uses the volume's data, and
+        Docker can't start it while the volume is locked. Without this, a
+        missing name would be created empty, and Postgres would initialise
+        a fresh cluster on the bare disk.
+    -   Until stage 7, `COMPOSE_FILE` in `.env` and the `aether-vault`
+        function are what keep compose on the override.
 
 **What Core and `/ready` do when the database is down** (the volume is
 locked, or Postgres is not started). This is unchanged:
@@ -172,7 +189,7 @@ locked, or Postgres is not started). This is unchanged:
 ### 6. Backups
 
 -   An opt-in systemd drop-in, `scripts/systemd/aether-backup.service.d/vault.conf`,
-    installed at the switch. It:
+    installed at stage 4, before the new database exists. It:
     -   sets `AETHER_BACKUP_DIR=%h/.local/share/aether/vault/backups`;
     -   adds an `ExecStartPre` guard: the vault must be a mount point, with
         its `.aether-vault` marker and its `backups/` folder.
@@ -181,6 +198,15 @@ locked, or Postgres is not started). This is unchanged:
     `core.backup`'s `mkdir` there would fail.
 -   The main template is unchanged until the default switches (section 9).
     ADR-025 gets an addition for this.
+-   During the move the timer is disabled, not just stopped: after a
+    reboot, a stopped timer with `Persistent=true` would run again.
+-   The backup goes to the volume only because of the drop-in or the
+    `.env` line, not by default. So:
+    -   at stage 7 the old default folder is left empty and immutable,
+        and a run that misses both fails there instead of writing a
+        plain-text dump;
+    -   `core.backup` itself refusing a folder outside the volume, once
+        the volume is the default, is a follow-up issue.
 
 ### 7. Moving the existing data
 
@@ -196,7 +222,8 @@ locked, or Postgres is not started). This is unchanged:
     way back. It is deleted (`docker volume rm aether_pgdata`, never
     `docker compose down -v`) only after the owner has run on the volume
     for a while and explicitly approves, with the impact explained in
-    the runbook.
+    the runbook. The name is then recreated as a bind to the volume
+    (section 5, layer 6).
 -   **Limit: deleting is not wiping.** On btrfs, on an SSD, deleting the
     old volume and the old backups frees their blocks, but doesn't
     overwrite them, and snapshots may still hold them. That is acceptable
@@ -216,7 +243,9 @@ What is covered:
 
 -   the Postgres data;
 -   the backups (from the switch on);
--   psql history inside the container (its home folder is on the volume).
+-   psql history: `docker compose exec postgres psql` runs as root with
+    `HOME=/root`, in the container's layer under `/var/lib/docker`. The
+    override sets `PSQL_HISTORY` to a file on the volume.
 
 What is not covered, and what to do:
 
@@ -226,10 +255,15 @@ What is not covered, and what to do:
     Don't hibernate, or use encrypted swap. Not changed by AETHER.
 -   **Postgres logs** (Docker's container log, under `/var/lib/docker`).
     The override sets `log_error_verbosity=terse` and
-    `log_min_error_statement=panic`, so errors no longer quote rows,
-    keys or statements. Checked: with default settings a failed insert
-    put the canary content into the log four times; with these settings,
-    none. Errors and their constraint names are still logged.
+    `log_min_error_statement=panic`.
+    -   Errors no longer carry DETAIL lines (which quote rows and keys) or
+        the failing statement. Checked: with default settings, a failed
+        insert put the canary content into the log four times; with these
+        settings, none.
+    -   Some primary messages can still quote a fragment of input (for
+        example `invalid input syntax for type …: "…"`, or a syntax error
+        near a token). The memory store sends values as bind parameters
+        and checks them first, so these are unlikely, but not impossible.
 -   **Core's logs and journald.** Core never logs content (docs/05 §9,
     the store's own rule). Covered by Core's code, not by the volume.
 -   **Core dumps** (`/var/lib/systemd/coredump`). A crash dump of Postgres
@@ -257,9 +291,11 @@ What is not covered, and what to do:
     `docker-compose.yml` is unchanged. Sentinel and anyone without the
     volume run as before.
 -   At the switch, the owner adds `COMPOSE_FILE=docker-compose.yml:compose.vault.yaml`
-    to `.env`. Compose reads it, so every `docker compose` command in the
-    repo uses the volume, and a forgotten `-f` can't start the old
-    database. Core ignores unknown `.env` keys.
+    to `.env`. Compose reads it, so every plain `docker compose` command
+    in the repo uses the volume. Core ignores unknown `.env` keys.
+-   This doesn't cover a command that names its own files or env file.
+    Until stage 7 recreates `aether_pgdata` as a bind to the volume
+    (section 5, layer 6), such a command could start the old database.
 -   The fish function `aether-vault` (`open`, `close`, `status`) is the
     daily routine.
 -   The backup drop-in is installed at the same stage.

@@ -134,6 +134,7 @@ narrow exception.
 
 ## Addition (2026-11-17): data on the encrypted volume (#57, ADR-026)
 
+Applies once ADR-026 is accepted; until then it describes the proposal.
 The runtime above (the named volume `aether_pgdata`) is kept as the
 default, and as the original decision. ADR-026 adds an opt-in override,
 `compose.vault.yaml`. The owner turns it on with
@@ -152,7 +153,12 @@ running `docs/runbooks/encrypted-volume.md`. With it:
     replaces `unless-stopped` for this setup.
 -   **Logs.** Postgres runs with `log_error_verbosity=terse` and
     `log_min_error_statement=panic`, so errors in Docker's log (on the
-    unencrypted disk) don't quote rows, keys or statements.
+    unencrypted disk) carry no DETAIL lines (rows, keys) and no
+    statements. `PSQL_HISTORY` keeps psql history on the volume.
+-   **The old name.** At the runbook's stage 7, `aether_pgdata` is
+    recreated as a bind to the volume's data folder. Even a compose run
+    without the override can then neither use the old data nor create a
+    new database on the bare disk.
 -   **Unchanged.** The image, user, database, port binding and healthcheck.
     Sentinel keeps the default.
 

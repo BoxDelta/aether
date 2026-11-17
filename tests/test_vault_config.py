@@ -6,8 +6,10 @@ How the override behaves under Docker (missing source refused, no marker refused
 marker present starts) was checked by hand on a throwaway project; see the PR.
 """
 
+import json
 import os
 import shlex
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -83,6 +85,47 @@ def test_marker_check_refuses_without_the_marker(tmp_path: Path) -> None:
     (tmp_path / ".aether-vault").touch()
     ok = start()
     assert ok.returncode == 0 and ok.stdout.strip().startswith("started postgres")
+
+
+def test_psql_history_stays_on_the_volume() -> None:
+    # `docker compose exec postgres psql` runs as root (HOME=/root, in the
+    # container's layer on the unencrypted disk) and inherits the service env.
+    assert override_service()["environment"] == {"PSQL_HISTORY": f"{TARGET}/.psql_history"}
+
+
+@pytest.mark.skipif(shutil.which("docker") is None, reason="docker CLI not installed")
+def test_merged_config_has_exactly_one_bind_mount_and_no_named_volume(tmp_path: Path) -> None:
+    # compose's own merge, offline (`config` needs no daemon). A throwaway env file
+    # replaces .env, which is never read; the output is parsed, never printed.
+    env_file = tmp_path / "env"
+    env_file.write_text("POSTGRES_PASSWORD=throwaway-not-a-secret\n")
+    home = tmp_path / "home"
+    docker = shutil.which("docker") or "docker"
+    argv = [docker, "compose", "--env-file", str(env_file), "-f", str(REPO / "docker-compose.yml")]
+    argv += ["-f", str(OVERRIDE), "config", "--format", "json"]
+    proc = subprocess.run(  # noqa: S603 - fixed argv
+        argv,
+        cwd=tmp_path,
+        env={"PATH": os.environ["PATH"], "HOME": str(home)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0 and "is not a docker command" in proc.stderr:
+        pytest.skip("docker compose plugin not installed")
+    assert proc.returncode == 0, "docker compose config failed"
+    merged = json.loads(proc.stdout)
+    service = merged["services"]["postgres"]
+    assert service["volumes"] == [
+        {
+            "type": "bind",
+            "source": f"{home}/.local/share/aether/vault/data",
+            "target": TARGET,
+            "bind": {"create_host_path": False},
+        }
+    ]
+    assert service["restart"] == "no"
+    assert not merged.get("volumes")  # the named volume is gone from the merge
 
 
 def test_override_holds_no_secret() -> None:
