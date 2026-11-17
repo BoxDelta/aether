@@ -57,7 +57,15 @@ the design, follow the ADR numbers into `docs/adr/`.
 -   `scripts/`: the identity continuity run (`identity_continuity.py`), a
     backup copy of the owner's `safemerge` fish function (never sourced),
     the systemd user timer templates for backups (`systemd/`, installed by
-    hand) and the restore check (`restore_check.sql`). The backup command
+    hand; `aether-backup.service.d/vault.conf` is the opt-in drop-in that
+    moves backups onto the encrypted volume and refuses to run when it is
+    locked), the `aether-vault` fish function that unlocks the encrypted
+    volume, checks it and only then starts Postgres (`aether-vault.fish`,
+    ADR-026), and the restore check (`restore_check.sql`).
+-   `compose.vault.yaml`: the opt-in compose override for the encrypted
+    volume (ADR-026). It bind-mounts the data with
+    `create_host_path: false`, checks the volume's marker, isn't started
+    at boot, and keeps rows out of Postgres's error log. The backup command
     itself is `core/backup.py` (`uv run python -m core.backup`, ADR-025).
 -   `tests/`: pytest, one file per module or behaviour (`test_routing.py`,
     `test_chat.py`, …). `conftest.py` clears AETHER's environment variables

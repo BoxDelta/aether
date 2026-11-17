@@ -202,6 +202,46 @@ D1 to D7 are accepted exactly as recommended. D8 takes the alternative.
     memory survives in backups for up to about 5 weeks (D5), longer if
     backups stop.
 
+## Addition (2026-11-17): backups on the encrypted volume (#57, ADR-026)
+
+Applies once ADR-026 is accepted; until then it describes the proposal.
+The decisions above are kept. Only the location changes, as D4
+anticipated, once the owner has run `docs/runbooks/encrypted-volume.md`.
+"Not encrypted at rest, yet" above stays true until then.
+
+-   **Location.** `AETHER_BACKUP_DIR` moves to
+    `~/.local/share/aether/vault/backups`, inside the same LUKS2 volume as
+    the data. For the timer this is set by an opt-in systemd drop-in,
+    `scripts/systemd/aether-backup.service.d/vault.conf`; for manual runs,
+    by a line in the working clone's `.env`. The service template itself
+    is unchanged until the volume becomes the default (ADR-026 §9).
+-   **Guard.** The drop-in adds an `ExecStartPre` check: the vault must be
+    a mount point, with its `.aether-vault` marker and its `backups`
+    folder. Otherwise the run fails as today, with exit 1, one journal
+    line at priority err and the unit in the failed state, and no backup
+    is written. The bare mount point is immutable (`chattr +i`), so even a
+    run that skipped the guard could not create the folder on the
+    unencrypted disk.
+-   **No fallback.** The folder is on the volume only through the drop-in
+    or the `.env` line. During the move the timer is disabled (a stopped
+    timer comes back after a reboot), and the drop-in is installed before
+    the new database exists. At stage 7 the old default folder is left
+    empty and immutable, so a run that misses both fails instead of
+    writing a plain-text dump. Making `core.backup` refuse a folder
+    outside the volume is a follow-up issue.
+-   **Restore.** The restore steps are unchanged; the backup path in R1
+    points at the new folder. The runbook's stage 5 includes a restore
+    drill from the volume.
+-   **Limits.**
+    -   The backups are still on the same physical disk as the data
+        (D4): an encrypted off-machine copy is a separate follow-up.
+    -   A forgotten passphrase loses the data and its backups together.
+    -   Old unencrypted backups are deleted after the move but can't be
+        securely wiped on btrfs or an SSD. They hold event metadata only,
+        which is why the move must happen before real memory data.
+    -   With the volume closed at 03:30, that night's backup fails and is
+        not retried until it is started by hand or the next night.
+
 ## Revisit when
 
 #57 lands (move the folder, confirm restore from it); Memory holds real

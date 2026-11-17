@@ -249,6 +249,10 @@ Consequences and risks. - Date and owners. - Revisit conditions.
 
   ADR-025                 Database backups and    Accepted (owner,
                           restore                 2026-11-16)
+
+  ADR-026                 Encrypted volume for    Proposed
+                          the database and        (2026-11-17)
+                          backups (LUKS2 file)
   -----------------------------------------------------------------------
 
 ## 8. Validation checklist before adopting a dependency
