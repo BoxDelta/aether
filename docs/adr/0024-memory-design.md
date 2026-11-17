@@ -481,8 +481,8 @@ stated gap, not a guarantee.
         criterion depend on the backup method, its retention and the
         restore runbook.
     -   **#57 (encrypted volume for the Postgres data and the
-        backups).** The host disk is not encrypted (root filesystem
-        directly on the NVMe, no LUKS), and column encryption was
+        backups).** The host disk is not encrypted (no full-disk
+        encryption), and column encryption was
         rejected (D11). Until the data volume and the backups are on a
         LUKS volume, memory stays on fake data. The volume is not
         converted in place; the options are in #57. #3's backup location
