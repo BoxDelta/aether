@@ -19,6 +19,7 @@ import logging
 from collections.abc import Awaitable, Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any, TypeVar
+from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 import pytest
@@ -26,6 +27,7 @@ from sqlalchemy import text
 
 from core.config import Settings
 from core.db import create_engine, create_migration_engine
+from core.log import SecretCheck
 from memory.store import (
     Approval,
     InvalidRecord,
@@ -39,8 +41,10 @@ from memory.store import (
     NotPending,
     RecordChanges,
     RecordNotFound,
+    SecretContent,
 )
 from tests.conftest import LIVE_DB
+from tests.fake_secrets import by_family
 
 pytestmark = LIVE_DB
 
@@ -99,7 +103,8 @@ def store(live_app: Settings, live_owner: Settings) -> Iterator[Run[Any]]:
         async def go() -> T:
             engine = create_engine(live_app)
             try:
-                return await body(MemoryStore(engine))
+                # Built from Settings, as every caller must (#70).
+                return await body(MemoryStore(engine, SecretCheck.from_settings(live_app)))
             finally:
                 await engine.dispose()
 
@@ -468,6 +473,45 @@ def test_failed_updates_leave_the_table_unchanged(store: Run[Any], live_owner: S
         with pytest.raises(error):
             store(attempt)
     assert snapshot(live_owner) == before
+
+
+# --- secret-shaped content is refused before the database (#70) ---------------------
+
+
+def test_refused_secrets_change_neither_table_nor_events(
+    store: Run[Any], live_app: Settings, live_owner: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The configured value is this run's own throwaway app-role password (from
+    # live_app's DATABASE_URL), taken explicitly: live_app also carries the owner's
+    # migration URL, whose password must never be used as a test value.
+    assert live_app.database_url is not None
+    password = urlsplit(live_app.database_url.get_secret_value()).password
+    assert password, "live_app's DATABASE_URL has no password"
+    made = store(lambda s: s.create(owner_record(1)))
+    pending = store(lambda s: s.create(proposal(2)))
+    start = last_event_id(live_owner)
+    before = snapshot(live_owner)
+    caplog.set_level(logging.DEBUG)
+    for fake in by_family(password):
+        for attempt in (
+            lambda s, t=fake.text: s.create(owner_record(3, content=t)),
+            lambda s, t=fake.text: s.create(proposal(4, content=t)),
+            lambda s, t=fake.text: s.update(made.id, RecordChanges(content=t), actor="owner"),
+            lambda s, t=fake.text: s.approve(
+                pending.id, Approval("public", content=t), actor="owner"
+            ),
+        ):
+            with pytest.raises(SecretContent) as info:
+                store(attempt)
+            exc = info.value
+            assert exc.__cause__ is None and exc.__context__ is None
+            # Value-free assertions: a failure must never print the secret.
+            echoed = any(fake.core in shown for shown in (str(exc), repr(exc), caplog.text))
+            assert not echoed, f"{fake.family}: the error or the logs echo the secret"
+    unchanged_events = events_after(live_owner, start) == []
+    unchanged_table = snapshot(live_owner) == before
+    assert unchanged_events, "a refused write left an event"
+    assert unchanged_table, "a refused write changed memory_records"
 
 
 # --- no content or key in logs or events ---------------------------------------------

@@ -234,6 +234,41 @@ old and new level when the level changed) and a delete
 event can't be written the change is rolled back (ADR-024 §5, #72). It
 has no caller yet: no API, no retrieval.
 
+**Secret-shaped content is never stored (ADR-024 §1, #70).** Whatever its
+label, the store refuses content that looks like a secret, on create,
+update and approve (including corrected content), before the database is
+touched. The check is `SecretCheck` in `core/log.py`, built from the
+same things the log redactor masks, defined once (`SECRET_FORMATS` and
+`secrets_from()`):
+
+-   Anthropic-style API keys (`sk-ant-...`);
+-   `Bearer <credential>` in any casing, with any whitespace, when the
+    credential is 8 or more token characters (`Bearer abc123` is not
+    refused). The word is also found inside a longer one, so
+    "standard-bearer organisation" is refused: the safe direction;
+-   a password in a `scheme://user:password@host` URL;
+-   the configured secret values (`ANTHROPIC_API_KEY`,
+    `AETHER_API_TOKEN`, the database passwords), only when at least 8
+    characters long, so a short value can't match ordinary text.
+
+The key, `source_provider` and `source_request_id` are checked too:
+their formats rule out the patterns, but a configured value could still
+be written there. The error (`SecretContent`, field `content`, or the
+other field's name) says only that the value looks like
+a secret: never which pattern, which part or the text, with nothing
+chained and nothing logged but the operation and field name. Reads are
+not checked. `MemoryStore` requires a `SecretCheck` as a constructor
+argument, so no store exists without one; the store checks only the
+type, so callers must build it with `SecretCheck.from_settings` to
+include the configured values. #8 will reuse the same check for cloud
+sends.
+
+Limit: the check knows only these formats and values, on the literal
+text. A secret in any other format (an account number, a password typed
+as plain words, a key from another provider) or split up (spaces, line
+breaks, zero-width characters) can still be stored if the owner approves it under
+a lower label; the owner's approval review is the remaining check.
+
 **Trust boundary: `OLLAMA_HOST` (ADR-023, #10).** "Local only" means
 the Ollama host is on this machine or the local network, not just that
 the Ollama adapter is used. Core decides this from the URL text, without

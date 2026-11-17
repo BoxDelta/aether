@@ -15,7 +15,10 @@ from typing import Any, get_args
 from uuid import UUID, uuid4
 
 import pytest
+from pydantic import SecretStr
 
+from core.config import Settings
+from core.log import MIN_SECRET_LENGTH, Redactor, SecretCheck
 from memory import store as store_module
 from memory import types as memory_types
 from memory.store import (
@@ -31,9 +34,11 @@ from memory.store import (
     NewRecord,
     NotAllowed,
     RecordChanges,
+    SecretContent,
     SecretRefused,
 )
 from router.contract import NON_SECRET_LEVELS, SECRET
+from tests.fake_secrets import NORMAL_TEXTS, FakeSecret, by_family, configured_value
 from tests.test_privacy_levels import REPO
 
 CANARY = "canary-memstore-41c9 the owner's invented allergy is to pineapples"
@@ -47,8 +52,17 @@ class _NoEngine:
         raise AssertionError("the store touched the database")
 
 
-def no_db_store() -> MemoryStore:
-    return MemoryStore(_NoEngine())  # type: ignore[arg-type]
+CONFIGURED = configured_value()
+
+
+def check() -> SecretCheck:
+    """The check as callers build it: from Settings, here with a configured token."""
+    settings = Settings(_env_file=None, aether_api_token=SecretStr(CONFIGURED))
+    return SecretCheck.from_settings(settings)
+
+
+def no_db_store(secret_check: SecretCheck | None = None) -> MemoryStore:
+    return MemoryStore(_NoEngine(), secret_check or check())  # type: ignore[arg-type]
 
 
 def refused(make: Any, error: type[Exception] = InvalidRecord) -> MemoryStoreError:
@@ -231,6 +245,138 @@ def test_changes_list_only_the_fields_given() -> None:
         "privacy": "public",
     }
     assert RecordChanges().content is UNSET
+
+
+# --- secret-shaped content is refused (ADR-024 §1, #70) ------------------------------
+
+
+FAKES = by_family(CONFIGURED)
+
+
+def _attempts(fake: FakeSecret) -> list[Any]:
+    """Create (owner and model), update and approve, each carrying ``fake``."""
+    store, record_id = no_db_store(), uuid4()
+    return [
+        lambda: asyncio.run(store.create(new(content=fake.text))),
+        lambda: asyncio.run(store.create(new(content=fake.text, source="model"))),
+        lambda: asyncio.run(
+            store.update(record_id, RecordChanges(content=fake.text), actor="owner")
+        ),
+        lambda: asyncio.run(
+            store.approve(record_id, Approval("public", content=fake.text), actor="owner")
+        ),
+    ]
+
+
+def assert_no_echo(exc: BaseException, fake: FakeSecret, logs: str) -> None:
+    assert exc.__cause__ is None and exc.__context__ is None
+    for text in (str(exc), repr(exc), " ".join(map(str, exc.args)), logs):
+        assert fake.core not in text and fake.text not in text
+        # No piece of it either (the random tail is what makes each fake unique).
+        assert fake.core[-12:] not in text
+        assert "canary-fakesecret" not in text
+
+
+@pytest.mark.parametrize("fake", FAKES, ids=lambda f: f.family)
+def test_secret_shaped_content_is_refused_on_create_update_and_approve(
+    fake: FakeSecret, caplog: pytest.LogCaptureFixture
+) -> None:
+    # _NoEngine fails the test if any of these reaches the database.
+    caplog.set_level("DEBUG")
+    for attempt in _attempts(fake):
+        with pytest.raises(SecretContent) as info:
+            attempt()
+        exc = info.value
+        assert isinstance(exc, InvalidRecord)
+        assert exc.field == "content"
+        assert "looks like a secret" in str(exc)
+        assert_no_echo(exc, fake, caplog.text)
+
+
+@pytest.mark.parametrize("fake", FAKES, ids=lambda f: f.family)
+def test_the_error_never_says_which_part_or_pattern(fake: FakeSecret) -> None:
+    store = no_db_store()
+    with pytest.raises(SecretContent) as info:
+        asyncio.run(store.create(new(content=fake.text)))
+    # The same message for every family: nothing to tell them apart.
+    assert str(info.value) == str(SecretContent())
+
+
+@pytest.mark.parametrize("text", NORMAL_TEXTS)
+def test_normal_content_passes_the_secret_check(text: str) -> None:
+    # Gets past the check and reaches the (stub) engine, which is the only refusal.
+    with pytest.raises(AssertionError, match="touched the database"):
+        asyncio.run(no_db_store().create(new(content=text)))
+
+
+def test_a_short_configured_value_does_not_match_everything() -> None:
+    short = "e" * (MIN_SECRET_LENGTH - 1)
+    store = no_db_store(SecretCheck([short, "a", "the"]))
+    with pytest.raises(AssertionError, match="touched the database"):
+        asyncio.run(store.create(new(content=f"the owner keeps {short} here, a fact")))
+    # At the minimum length a configured value does count.
+    exact = "e" * MIN_SECRET_LENGTH
+    with pytest.raises(SecretContent):
+        asyncio.run(no_db_store(SecretCheck([exact])).create(new(content=f"x {exact} y")))
+
+
+def test_a_configured_value_in_the_key_is_refused(caplog: pytest.LogCaptureFixture) -> None:
+    # Key format (a-z, 0-9, '_', '.') rules out every pattern, but a configured value
+    # in that alphabet could still be put there.
+    caplog.set_level("DEBUG")
+    value = "fakekey" + configured_value()[-16:]
+    store, record_id = no_db_store(SecretCheck([value])), uuid4()
+    key = f"note.{value}"
+    attempts: list[Any] = [
+        lambda: asyncio.run(store.create(new(key=key))),
+        lambda: asyncio.run(store.update(record_id, RecordChanges(key=key), actor="owner")),
+        lambda: asyncio.run(store.approve(record_id, Approval("public", key=key), actor="owner")),
+    ]
+    for attempt in attempts:
+        with pytest.raises(SecretContent) as info:
+            attempt()
+        assert info.value.field == "key"
+        for text in (str(info.value), repr(info.value), caplog.text):
+            assert value not in text and key not in text
+
+
+def test_a_configured_value_in_the_request_id_is_refused(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A request ID can come from a client header; a configured value must not be
+    # stored through it.
+    caplog.set_level("DEBUG")
+    value = configured_value()
+    store = no_db_store(SecretCheck([value]))
+    with pytest.raises(SecretContent) as info:
+        asyncio.run(store.create(new(source="model", source_request_id=f"req-{value}")))
+    assert info.value.field == "source_request_id"
+    leaked = any(value in t for t in (str(info.value), repr(info.value), caplog.text))
+    assert not leaked
+
+
+def test_reads_are_not_checked() -> None:
+    # get and list never run the check (a key filter is not stored content).
+    calls: list[str] = []
+
+    class Spy(SecretCheck):
+        def __call__(self, text: str) -> bool:
+            calls.append(text)
+            return True
+
+    store = no_db_store(Spy())
+    for read in (lambda: store.get(uuid4()), lambda: store.list(ListFilter(key=CANARY_KEY))):
+        with pytest.raises(AssertionError, match="touched the database"):
+            asyncio.run(read())
+    assert calls == []
+
+
+@pytest.mark.parametrize("bad", [None, lambda text: False, Redactor(), object()])
+def test_the_store_requires_a_secret_check(bad: Any) -> None:
+    with pytest.raises(TypeError, match="SecretCheck"):
+        MemoryStore(_NoEngine(), bad)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        MemoryStore(_NoEngine())  # type: ignore[arg-type,call-arg]
 
 
 # --- content and key stay out of reprs -----------------------------------------------

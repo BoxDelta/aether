@@ -24,6 +24,11 @@ and stack info; bool, number and None extras are kept as they are), in this orde
 3. The password in any ``scheme://user:password@host`` URL, configured or not
    (``_URL_CREDENTIALS``; user and host are kept so the log stays useful).
 
+The same values and patterns answer "does this text look like a secret?"
+(``SecretCheck``), used where a secret must be refused rather than masked: memory
+content (ADR-024 §1, #70) and, later, cloud sends (#8). ``SECRET_FORMATS`` holds the
+patterns once for both; ``tests/test_secret_check.py`` fails if they drift apart.
+
 ``tests/test_log_redaction_docs.py`` fails if ``secrets_from()`` reads a setting
 or ``_KEY_PATTERNS`` gains a pattern that this docstring doesn't list.
 """
@@ -56,15 +61,22 @@ _KEY_PATTERNS = (
 )
 
 
+# scheme://user:password@host -> scheme://user:[REDACTED]@host. The password runs
+# to the next "@" (a lookahead, so the "@" is kept) or whitespace, so a password
+# containing "/" or ":" is covered; when in doubt this over-redacts, which is the
+# safe direction.
+_URL_CREDENTIALS = re.compile(r"(?P<head>\b[A-Za-z][A-Za-z0-9+.\-]*://[^\s:/@]*:)[^\s@]+(?=@)")
+
+# Every secret format, defined once: the Redactor masks these (in this order),
+# SecretCheck refuses them. URL passwords first: a key pattern could otherwise eat
+# the scheme ("bearer postgresql://...") and hide the URL from _URL_CREDENTIALS.
+SECRET_FORMATS = (_URL_CREDENTIALS, *_KEY_PATTERNS)
+
+
 def _redact_match(match: re.Match[str]) -> str:
     # Keep a pattern's "head" group (the whitespace after "Bearer"), replace the rest.
     return (match.groupdict().get("head") or "") + REDACTED
 
-
-# scheme://user:password@host -> scheme://user:[REDACTED]@host. The password runs
-# to the next "@" (or whitespace), so a password containing "/" or ":" is covered;
-# when in doubt this over-redacts, which is the safe direction.
-_URL_CREDENTIALS = re.compile(r"(?P<head>\b[A-Za-z][A-Za-z0-9+.\-]*://[^\s:/@]*:)[^\s@]+@")
 
 # Attributes every LogRecord has; anything else came from ``extra=``.
 _STANDARD_ATTRS = frozenset(
@@ -83,22 +95,48 @@ _HANDLER_NAME = "aether-json"
 QUIET_LOGGERS = ("anthropic", "httpx", "httpx2", "httpcore", "ollama")
 
 
+def _usable_secrets(secrets: Iterable[str]) -> list[str]:
+    """Configured values long enough to match by value (``MIN_SECRET_LENGTH``),
+    longest first, so a secret containing another is replaced whole."""
+    return sorted({s for s in secrets if len(s) >= MIN_SECRET_LENGTH}, key=len, reverse=True)
+
+
 class Redactor:
     def __init__(self, secrets: Iterable[str] = ()) -> None:
-        # Longest first, so a secret containing another is replaced whole.
-        self._secrets = sorted(
-            {s for s in secrets if len(s) >= MIN_SECRET_LENGTH}, key=len, reverse=True
-        )
+        self._secrets = _usable_secrets(secrets)
 
     def __call__(self, text: str) -> str:
         for secret in self._secrets:
             text = text.replace(secret, REDACTED)
-        # URL passwords first: a key pattern could otherwise eat the scheme
-        # ("bearer postgresql://...") and hide the URL from _URL_CREDENTIALS.
-        text = _URL_CREDENTIALS.sub(rf"\g<head>{REDACTED}@", text)
-        for pattern in _KEY_PATTERNS:
+        for pattern in SECRET_FORMATS:
             text = pattern.sub(_redact_match, text)
         return text
+
+
+class SecretCheck:
+    """Does this text match a secret format or contain a configured secret value?
+
+    The same patterns (``SECRET_FORMATS``) and configured values (``secrets_from``,
+    at least ``MIN_SECRET_LENGTH`` characters) as the Redactor: it finds everything
+    the Redactor would mask (and also a URL whose password is literally
+    ``[REDACTED]``, which the Redactor leaves as it is). Answers only yes or no,
+    never which value or pattern matched, so a caller can't echo it.
+    """
+
+    def __init__(self, secrets: Iterable[str] = ()) -> None:
+        self._secrets = _usable_secrets(secrets)
+
+    @classmethod
+    def from_settings(cls, settings: Settings) -> "SecretCheck":
+        return cls(secrets_from(settings))
+
+    def __call__(self, text: str) -> bool:
+        return any(secret in text for secret in self._secrets) or any(
+            pattern.search(text) is not None for pattern in SECRET_FORMATS
+        )
+
+    def __repr__(self) -> str:
+        return f"SecretCheck(<{len(self._secrets)} configured values>)"
 
 
 class JsonFormatter(logging.Formatter):
