@@ -77,8 +77,7 @@ def test_level_names_listed_only_in_router_contract() -> None:
     # (the migration is checked against PRIVACY_ORDER below).
     offenders = []
     for folder in SCANNED:
-        if folder != "memory":  # the memory/ package arrives in ADR-024 step 4
-            assert (REPO / folder).is_dir(), folder
+        assert (REPO / folder).is_dir(), folder
         for path in sorted((REPO / folder).rglob("*.py")):
             rel = path.relative_to(REPO).as_posix()
             if rel == "router/contract.py":

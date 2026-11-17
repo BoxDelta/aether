@@ -32,7 +32,17 @@ the design, follow the ADR numbers into `docs/adr/`.
     `memory_records` table (ADR-024 §1: content, key, category, privacy
     never `secret`, status, provenance, timestamps, each checked by the
     database) and gives the app role read, insert, update and delete on
-    it, nothing more. There is no `memory/` package yet (ADR-024 step 4).
+    it, nothing more.
+-   `memory/`: the memory store (`store.py`, ADR-024 step 4).
+    `MemoryStore` creates, gets, lists, corrects, approves and
+    hard-deletes `memory_records` through Core's app engine. Its checks
+    run before the database: never `secret`; owner records approved at
+    once, model and tool records always `pending` with a suggested level;
+    only the owner may approve, update or delete (the store trusts the
+    `source` and `actor` its caller passes; `source` has no default);
+    content, key and
+    one-approved-record-per-key give store errors that never quote
+    content or keys. Nothing calls it yet: no API, retrieval or events.
 -   `scripts/`: the identity continuity run (`identity_continuity.py`), a
     backup copy of the owner's `safemerge` fish function (never sourced),
     the systemd user timer templates for backups (`systemd/`, installed by
