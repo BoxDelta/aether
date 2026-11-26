@@ -48,7 +48,7 @@ CANARY_KEY = "canary.memstore_41c9"
 class _NoEngine:
     """Fails the test if the store reaches for the database."""
 
-    def begin(self) -> Any:
+    def connect(self) -> Any:
         raise AssertionError("the store touched the database")
 
 
@@ -460,3 +460,18 @@ def test_store_matches_migration_0004() -> None:
     source = (REPO / "migrations/versions/0004_memory_records.py").read_text()
     assert f"key ~ '^{KEY_PATTERN}$'" in source
     assert set(MemoryRecord.model_fields) == set(re.findall(r'sa\.Column\(\s*"(\w+)"', source))
+
+
+# --- the search query filter (#92) ----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad", ["", "x" * (store_module.QUERY_MAX + 1), "tea\x00", "\ud800", 42, b"tea"]
+)
+def test_a_bad_query_is_refused(bad: Any) -> None:
+    exc = refused(lambda: ListFilter(query=bad))
+    assert isinstance(exc, InvalidRecord) and exc.field == "query"
+
+
+def test_the_query_stays_out_of_repr() -> None:
+    assert CANARY not in repr(ListFilter(query=CANARY))

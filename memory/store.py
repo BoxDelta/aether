@@ -1,7 +1,7 @@
 """The memory store (ADR-024 §1, §2, §4; step 4 of #58): ``public.memory_records``.
 
-A Python API only: no HTTP route and no retrieval for model calls yet (ADR-024 §9,
-steps 6 and 11). It uses Core's app engine (``core.db.create_engine``,
+Its HTTP routes are in ``core/memory_api.py`` (step 6); there is no retrieval for
+model calls yet (ADR-024 §9, step 11). It uses Core's app engine (``core.db.create_engine``,
 the ``aether_app`` role) and changes nothing about its privileges.
 
 Rules, checked here before anything reaches the database; the CHECK constraints of
@@ -49,6 +49,11 @@ chained. Logs carry the record ID and status only.
 
 Every operation runs in one transaction: if it fails, nothing is changed.
 
+**Database down** (ADR-026 §5, #80): if no connection can be made, or the
+connection is lost during an operation, the store raises ``StoreUnavailable``,
+never an empty list, "not found" or a write that did nothing. Its message names
+the error type only.
+
 **Events** (ADR-024 §5, step 5): every change writes exactly one metadata-only event
 in the *same* transaction, with actor ``memory``, so the change and its event commit
 or roll back together. A failed operation writes no event, and a failed event write
@@ -63,6 +68,7 @@ An event holds the record's ID, category, source and level (``MemoryRecordMeta``
 never content, a key or corrected text. Reads (``get``, ``list``) write no event.
 """
 
+import contextlib
 import enum
 import logging
 import re
@@ -113,6 +119,7 @@ KEY_PATTERN = r"[a-z0-9_.]{1,64}"
 OWNER: Source = "owner"
 LIST_LIMIT_MAX = 200
 LIST_LIMIT_DEFAULT = 50
+QUERY_MAX = 200
 
 _KEY = re.compile(KEY_PATTERN)
 _PROVIDER = re.compile(PROVIDER_NAME_PATTERN)
@@ -175,6 +182,11 @@ class KeyConflict(MemoryStoreError):
 
 class StoreFailed(MemoryStoreError):
     """Any other database error, described by its SQLSTATE or type name only."""
+
+
+class StoreUnavailable(StoreFailed):
+    """The database can't be reached (no connection, or the connection was lost).
+    Callers answer 503, never an empty result (#80). Type name only."""
 
 
 # --- checks ----------------------------------------------------------------------------
@@ -342,6 +354,9 @@ class ListFilter:
     privacy: PrivacyLevel | None = None
     category: Category | None = None
     key: str | None = field(default=None, repr=False)
+    # A case-insensitive substring of the content (owner inspection, ADR-024 §4).
+    # Content too: never in a URL or a log. Not retrieval (full-text search is step 11).
+    query: str | None = field(default=None, repr=False)
     include_expired: bool = False
     limit: int = LIST_LIMIT_DEFAULT
     offset: int = 0
@@ -354,12 +369,22 @@ class ListFilter:
         if self.category is not None:
             _check_choice("category", self.category, CATEGORIES)
         _check_key(self.key)
+        _check_query(self.query)
         if not isinstance(self.include_expired, bool):
             raise InvalidRecord("include_expired", "must be true or false")
         if not _is_int(self.limit) or not 1 <= self.limit <= LIST_LIMIT_MAX:
             raise InvalidRecord("limit", f"must be 1 to {LIST_LIMIT_MAX}")
         if not _is_int(self.offset) or self.offset < 0:
             raise InvalidRecord("offset", "must be 0 or more")
+
+
+def _check_query(value: object) -> None:
+    if value is None:
+        return
+    if not isinstance(value, str) or not 1 <= len(value) <= QUERY_MAX:
+        raise InvalidRecord("query", f"must be 1 to {QUERY_MAX} characters of text")
+    if "\x00" in value or (not value.isascii() and not _encodes(value)):
+        raise InvalidRecord("query", "must be valid Unicode text without NUL characters")
 
 
 def _is_int(value: object) -> bool:
@@ -452,17 +477,37 @@ class MemoryStore:
                 raise SecretContent(name)
 
     async def _run(self, operation: Callable[[AsyncConnection], Awaitable[T]]) -> T:
-        """Run ``operation`` in one transaction (rolled back if it raises)."""
+        """Run ``operation`` in one transaction (rolled back if it raises).
+
+        Connecting is a separate step, so every failure to get a connection
+        (refused, timeout, login refused, privileged role) is ``StoreUnavailable``,
+        as is a connection lost during the operation (#80)."""
         failure: MemoryStoreError
+        conn = self._engine.connect()
         try:
-            async with self._engine.begin() as conn:
-                return await operation(conn)
-        except DBAPIError as exc:
-            failure = _failure(exc)
-        except (StatementError, ValidationError) as exc:
-            # Not a database refusal: a statement that couldn't be built or a row that
-            # doesn't fit MemoryRecord. Type name only.
-            failure = StoreFailed(f"store error ({type(exc).__name__})")
+            await conn.start()
+        except Exception as exc:  # every way of not getting a connection
+            failure = StoreUnavailable(f"database unavailable ({type(exc).__name__})")
+        else:
+            try:
+                async with conn.begin():
+                    return await operation(conn)
+            except DBAPIError as exc:
+                failure = (
+                    StoreUnavailable(f"database connection lost ({type(exc.orig).__name__})")
+                    if exc.connection_invalidated
+                    else _failure(exc)
+                )
+            except (OSError, TimeoutError) as exc:
+                failure = StoreUnavailable(f"database connection lost ({type(exc).__name__})")
+            except (StatementError, ValidationError) as exc:
+                # Not a database refusal: a statement that couldn't be built or a row
+                # that doesn't fit MemoryRecord. Type name only.
+                failure = StoreFailed(f"store error ({type(exc).__name__})")
+            finally:
+                # Closing a lost connection can fail too; that changes nothing above.
+                with contextlib.suppress(Exception):
+                    await conn.close()
         # Raised here, outside the except block, so the driver error isn't chained.
         raise failure
 
@@ -529,6 +574,10 @@ class MemoryStore:
             if value is not None:
                 conditions.append(f"{name} = :{name}")
                 params[name] = value
+        if filters.query is not None:
+            # strpos, not LIKE: '%' and '_' in the query are plain characters.
+            conditions.append("strpos(lower(content), lower(:query)) > 0")
+            params["query"] = filters.query
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         sql = (
             f"SELECT {_COLUMNS} FROM {TABLE}{where}"  # noqa: S608 - fixed names only
