@@ -31,7 +31,7 @@ from router.routing import (
     Router,
     choose_route,
 )
-from tests.fakes import snapshot
+from tests.fakes import CHECK, snapshot
 
 ROOM = Headroom(True, "free VRAM 4096 MiB meets reserve 1536 MiB")
 NO_ROOM = Headroom(False, "free VRAM 512 MiB below reserve 1536 MiB")
@@ -417,7 +417,7 @@ def make_router(
 ) -> tuple[Router, FakeProvider, FakeProvider]:
     local = kw.get("local") or FakeProvider("ollama", "local")
     cloud = kw.get("cloud") or FakeProvider("claude", "cloud")
-    return Router([local, cloud], identity, probe=probe), local, cloud
+    return Router([local, cloud], identity, secret_check=CHECK, probe=probe), local, cloud
 
 
 def test_handle_calls_local_with_identity(
@@ -545,7 +545,9 @@ def test_override_cloud_needs_allow_cloud(identity: Identity) -> None:
 
 def test_duplicate_provider_names_rejected(identity: Identity) -> None:
     with pytest.raises(ValueError, match="unique"):
-        Router([FakeProvider("x", "local"), FakeProvider("x", "cloud")], identity)
+        Router(
+            [FakeProvider("x", "local"), FakeProvider("x", "cloud")], identity, secret_check=CHECK
+        )
 
 
 def test_from_settings_builds_local_then_cloud(identity: Identity) -> None:

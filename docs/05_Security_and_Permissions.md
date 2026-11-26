@@ -287,8 +287,26 @@ chained and nothing logged but the operation and field name. Reads are
 not checked. `MemoryStore` requires a `SecretCheck` as a constructor
 argument, so no store exists without one; the store checks only the
 type, so callers must build it with `SecretCheck.from_settings` to
-include the configured values. #8 will reuse the same check for cloud
-sends.
+include the configured values.
+
+**Content tripwire for cloud sends (#8).** The privacy level is whatever
+the caller says; this is the check on the text itself. Before any cloud
+provider is called, `call_with_identity` (`router/identity_call.py`,
+the one function every model call goes through) runs the same
+`SecretCheck` on every message and on the full system prompt. On a
+match nothing is sent, whatever the label: the call raises
+`SecretContentRefused`, which is not retryable, so routing never fails
+over with it, and `/chat` answers 422 `SecretContentRefused` with a fixed
+message that never says which text, pattern or value matched. The
+attempt, its error type and the `request.failed` event are recorded,
+metadata only. A manual override to the cloud and a failover from local
+to the cloud are refused the same way. Local sends are not checked: the
+text stays on the owner's machine. `Router` and `call_with_identity`
+require a `SecretCheck` (type-checked); `Router.from_settings` builds it
+with `SecretCheck.from_settings`. Memory context sent with a request
+(ADR-024 step 12) goes through the same path, so it is covered too. The
+limits below apply to this check as well: it catches known formats and
+configured values, not every secret.
 
 Limit: the check knows only these formats and values, on the literal
 text. A secret in any other format (an account number, a password typed

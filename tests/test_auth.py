@@ -23,7 +23,7 @@ from core.request_context import REQUEST_ID_HEADER
 from router.contract import ProviderUnavailable
 from router.routing import Router
 from tests.chat_helpers import ANSWER, PROMPT, USAGE
-from tests.fakes import FakeProvider, MemoryWriter, snapshot
+from tests.fakes import CHECK, FakeProvider, MemoryWriter, snapshot
 
 TOKEN = "fake-api-token-auth-tests-0123456789abcdef"  # noqa: S105  # gitleaks:allow
 WRONG = "fake-api-token-auth-WRONG-0123456789abcdef"  # gitleaks:allow
@@ -44,7 +44,7 @@ class App:
         self.app = create_app(
             self.settings,
             identity,
-            router=Router([self.local], identity, probe=lambda: snapshot(4.0)),
+            router=Router([self.local], identity, secret_check=CHECK, probe=lambda: snapshot(4.0)),
             events=EventRecorder(self.writer),
         )
         configure_logging(self.settings, stream=self.log)  # create_app reset it to stdout

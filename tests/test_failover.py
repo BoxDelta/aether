@@ -26,7 +26,7 @@ from router.routing import (
     RouteOptions,
     Router,
 )
-from tests.fakes import FakeProvider, snapshot
+from tests.fakes import CHECK, FakeProvider, snapshot
 
 PROMPT_TEXT = "PRIVATE-PROMPT-MARKER"
 LEAKY_TEXT = "sk-ant-LEAKED-IN-EXCEPTION"  # gitleaks:allow
@@ -51,7 +51,7 @@ def run(
     timeout_s: float = 60.0,
     **options: object,
 ) -> RoutedResponse:
-    router = Router(providers, identity, probe=lambda: snapshot(free_gib))
+    router = Router(providers, identity, secret_check=CHECK, probe=lambda: snapshot(free_gib))
     request = ModelRequest(
         messages=(Message(role="user", content=PROMPT_TEXT),),
         privacy=privacy,
@@ -322,7 +322,7 @@ def test_on_decision_reports_first_and_fallback(identity: Identity) -> None:
     local = FakeProvider("ollama", "local", error=ProviderTimeout("ollama", "slow"))
     cloud = FakeProvider("claude", "cloud")
     seen: list[str] = []
-    router = Router([local, cloud], identity, probe=lambda: snapshot(ROOM))
+    router = Router([local, cloud], identity, secret_check=CHECK, probe=lambda: snapshot(ROOM))
     request = ModelRequest(messages=(Message(role="user", content=PROMPT_TEXT),))
 
     asyncio.run(
@@ -336,7 +336,12 @@ def test_on_decision_reports_first_and_fallback(identity: Identity) -> None:
 
 def test_on_decision_not_called_for_no_route(identity: Identity) -> None:
     seen: list[str] = []
-    router = Router([FakeProvider("ollama", "local")], identity, probe=lambda: snapshot(ROOM))
+    router = Router(
+        [FakeProvider("ollama", "local")],
+        identity,
+        secret_check=CHECK,
+        probe=lambda: snapshot(ROOM),
+    )
     request = ModelRequest(messages=(Message(role="user", content="x"),), privacy="secret")
 
     with pytest.raises(NoRoute):
@@ -365,7 +370,7 @@ def test_no_fallback_chains_the_provider_error_and_reports_one_decision(
 ) -> None:
     local, cloud = FakeProvider("ollama", "local", error=error), FakeProvider("claude", "cloud")
     seen: list[str] = []
-    router = Router([local, cloud], identity, probe=lambda: snapshot(ROOM))
+    router = Router([local, cloud], identity, secret_check=CHECK, probe=lambda: snapshot(ROOM))
     request = ModelRequest(messages=(Message(role="user", content=PROMPT_TEXT),))
 
     with pytest.raises(RouteFailed) as info:
@@ -424,7 +429,7 @@ def handle_with(
 ) -> tuple[object, list[int]]:
     local = FakeProvider("ollama", "local", error=local_error)
     cloud = FakeProvider("claude", "cloud", error=cloud_error)
-    router = Router([local, cloud], identity, probe=lambda: snapshot(ROOM))
+    router = Router([local, cloud], identity, secret_check=CHECK, probe=lambda: snapshot(ROOM))
     request = ModelRequest(messages=(Message(role="user", content=PROMPT_TEXT),))
     try:
         result = asyncio.run(
@@ -520,7 +525,7 @@ def outcome_with_on_decision(
 ) -> tuple[object, list[int]]:
     local = FakeProvider("ollama", "local", error=local_error)
     cloud = FakeProvider("claude", "cloud", error=cloud_error)
-    router = Router([local, cloud], identity, probe=lambda: snapshot(ROOM))
+    router = Router([local, cloud], identity, secret_check=CHECK, probe=lambda: snapshot(ROOM))
     request = ModelRequest(messages=(Message(role="user", content=PROMPT_TEXT),))
     try:
         result = asyncio.run(
@@ -564,7 +569,7 @@ def test_on_decision_cancellation_still_propagates(identity: Identity) -> None:
         raise asyncio.CancelledError
 
     local, cloud = FakeProvider("ollama", "local"), FakeProvider("claude", "cloud")
-    router = Router([local, cloud], identity, probe=lambda: snapshot(ROOM))
+    router = Router([local, cloud], identity, secret_check=CHECK, probe=lambda: snapshot(ROOM))
     request = ModelRequest(messages=(Message(role="user", content=PROMPT_TEXT),))
 
     with pytest.raises(asyncio.CancelledError):

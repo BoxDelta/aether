@@ -12,7 +12,7 @@ from pydantic import SecretStr
 
 from core.config import Settings
 from core.identity import Identity, load_identity, render_system_prompt
-from core.log import configure_logging
+from core.log import SecretCheck, configure_logging
 from router.claude import ClaudeProvider
 from router.contract import (
     Message,
@@ -163,7 +163,7 @@ def claude(recorder: ClaudeRecorder) -> ClaudeProvider:
 
 
 def call(provider: Provider, req: ModelRequest, identity: Identity) -> ModelResponse:
-    return asyncio.run(call_with_identity(provider, req, identity))
+    return asyncio.run(call_with_identity(provider, req, identity, secret_check=SecretCheck()))
 
 
 def test_ollama_receives_identity_prompt_as_system_message() -> None:

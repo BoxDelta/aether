@@ -174,7 +174,9 @@ curl -s http://127.0.0.1:8000/ready -H "authorization: Bearer $token" | jq
 Errors come back as `{"request_id", "error": {"type", "message", "attempts"}}`:
 `502 RouteFailed` (providers failed; each attempt has provider, error type
 and a scrubbed message), `503 NoRoute` (no provider may take it, e.g. Secret
-data), `413` (body too large), `422` (invalid request, input not echoed),
+data), `413` (body too large), `422` (invalid request, input not echoed;
+or `SecretContentRefused`: the text looks like a secret, so it was not sent
+to the cloud),
 `401` (missing or wrong token), `503 AuthNotConfigured` (no valid token in
 `.env`). If `DATABASE_URL` is set, each request records
 metadata-only events after the response is sent. If the event write fails,

@@ -32,7 +32,7 @@ from memory.store import QUERY_MAX, MemoryStore
 from router.routing import Router
 from tests.chat_helpers import LOCAL
 from tests.fake_secrets import by_family, configured_value
-from tests.fakes import FakeProvider, snapshot
+from tests.fakes import CHECK, FakeProvider, snapshot
 
 # Lowercase hex after a lowercase prefix: valid in a key and in a request ID, so the
 # configured-value check is the only thing that can refuse it there. 32 characters,
@@ -55,7 +55,12 @@ class Core:
             database_url=SecretStr(database_url) if database_url else None,
         )
         identity = load_identity()
-        router = Router([FakeProvider("ollama", "local")], identity, probe=lambda: snapshot(4.0))
+        router = Router(
+            [FakeProvider("ollama", "local")],
+            identity,
+            secret_check=CHECK,
+            probe=lambda: snapshot(4.0),
+        )
         self.app = create_app(self.settings, identity, router=router)
         self.log = io.StringIO()
         configure_logging(self.settings, stream=self.log)

@@ -155,6 +155,17 @@ class PrivacyNotAllowed(ProviderError):
     """The request's privacy level is above what this provider may receive."""
 
 
+class SecretContentRefused(ProviderError):
+    """The text of a cloud send looks like a secret (#8). Raised before anything is
+    sent; never retryable, so routing never fails over with it. The message is fixed
+    and never says which text, pattern or value matched."""
+
+    MESSAGE = "request text looks like a secret; not sent to a cloud provider"
+
+    def __init__(self, provider: str) -> None:
+        super().__init__(provider, self.MESSAGE, retryable=False)
+
+
 # --- provider base class -------------------------------------------------------
 
 

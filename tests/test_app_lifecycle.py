@@ -18,6 +18,7 @@ from router.claude import ClaudeProvider
 from router.contract import ModelRequest, ModelResponse, Provider, ProviderInfo
 from router.ollama import OllamaProvider
 from router.routing import Router
+from tests.fakes import CHECK
 
 FAKE_KEY = "sk-ant-api03-FAKE-lifecycle-0123456789"  # gitleaks:allow
 
@@ -82,7 +83,7 @@ def test_router_closes_every_provider_even_if_one_fails() -> None:
     out = io.StringIO()
     configure_logging(Settings(_env_file=None), stream=out)
     first, broken, last = Closable("a"), Closable("b", fail=True), Closable("c")
-    router = Router([first, broken, last], load_identity())
+    router = Router([first, broken, last], load_identity(), secret_check=CHECK)
 
     asyncio.run(router.aclose())
 
@@ -95,7 +96,7 @@ def test_router_closes_every_provider_even_if_one_fails() -> None:
 
 def test_app_shutdown_closes_injected_router_providers() -> None:
     provider = Closable("ollama")
-    router = Router([provider], load_identity())
+    router = Router([provider], load_identity(), secret_check=CHECK)
     app = create_app(Settings(_env_file=None), router=router, events=EventRecorder(None))
 
     with TestClient(app):
@@ -131,7 +132,9 @@ def test_engine_disposed_even_if_router_close_raises(monkeypatch: pytest.MonkeyP
 
     url = "postgresql+asyncpg://aether:not-a-real-pw-790@127.0.0.1:1/aether"
     settings = Settings(_env_file=None, database_url=SecretStr(url))
-    app = create_app(settings, router=BrokenRouter([Closable("x")], load_identity()))
+    app = create_app(
+        settings, router=BrokenRouter([Closable("x")], load_identity(), secret_check=CHECK)
+    )
     disposed = track_dispose(monkeypatch)
 
     with pytest.raises(RuntimeError, match="router close bug"), TestClient(app):
@@ -168,7 +171,7 @@ def test_app_refuses_to_start_when_the_role_is_privileged(
     url = "postgresql+asyncpg://aether_app:not-a-real-pw-792@127.0.0.1:1/aether"
     app = create_app(
         Settings(_env_file=None, database_url=SecretStr(url)),
-        router=Router([Closable("x")], load_identity()),
+        router=Router([Closable("x")], load_identity(), secret_check=CHECK),
     )
     disposed = track_dispose(monkeypatch)
 
@@ -182,7 +185,7 @@ def test_app_starts_when_the_database_is_down() -> None:
     url = "postgresql+asyncpg://aether_app:not-a-real-pw-793@127.0.0.1:1/aether"
     app = create_app(
         Settings(_env_file=None, database_url=SecretStr(url)),
-        router=Router([Closable("x")], load_identity()),
+        router=Router([Closable("x")], load_identity(), secret_check=CHECK),
     )
     with TestClient(app) as client:  # unreachable is not a reason to refuse
         assert client.get("/health").status_code == 200
