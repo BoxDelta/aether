@@ -83,6 +83,12 @@ undoes the change:
 
 An event holds the record's ID, category, source and level (``MemoryRecordMeta``),
 never content, a key or corrected text. Reads (``get``, ``list``) write no event.
+
+**Export** (step 10, #122; ADR-024 §4, D10): ``export`` reads every unexpired record,
+all levels and pending ones included, and writes one ``memory.exported`` event with
+the count in the same transaction, so no export happens unrecorded. Expired records
+are left out by the same filter as ``list``; the export deletes nothing and runs no
+clean-up, so a read never changes the table.
 """
 
 import contextlib
@@ -104,6 +110,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from core.events import (
     MemoryRecordEventType,
     MemoryRecordMeta,
+    memory_exported,
     memory_record_event,
     write_memory_event,
 )
@@ -443,6 +450,16 @@ class MemoryRecord(BaseModel):
     expires_at: datetime | None
 
 
+class MemoryExport(BaseModel):
+    """Every unexpired record at one moment. ``exported_at`` is the database time of
+    the read, the same clock the expiry filter used."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    exported_at: datetime
+    records: tuple[MemoryRecord, ...]
+
+
 _COLUMNS = ", ".join(MemoryRecord.model_fields)
 _EXPIRED = (
     "((expires_at IS NOT NULL AND expires_at <= now())"
@@ -721,6 +738,27 @@ class MemoryStore:
 
         await self._run(remove)
         logger.info("Memory record rejected", extra={"record_id": str(record_id)})
+
+    async def export(self, *, actor: Source) -> MemoryExport:
+        """Every unexpired record (owner only), oldest first, with one
+        ``memory.exported`` event (the count) in the same transaction. If the event
+        can't be written, nothing is returned."""
+        _require_owner(actor, "export")
+        sql = (
+            f"SELECT {_COLUMNS} FROM {TABLE} WHERE {_NOT_EXPIRED}"  # noqa: S608 - fixed names
+            " ORDER BY created_at, id"
+        )
+
+        async def read(conn: AsyncConnection) -> MemoryExport:
+            # now() is fixed for the transaction: the time the filter used.
+            exported_at = (await conn.execute(text("SELECT now()"))).scalar_one()
+            records = tuple(_record(row) for row in await conn.execute(text(sql)))
+            await write_memory_event(conn, memory_exported(len(records)))
+            return MemoryExport(exported_at=exported_at, records=records)
+
+        export = await self._run(read)
+        logger.info("Memory exported", extra={"count": len(export.records)})
+        return export
 
     async def expire(self) -> int:
         """Delete every expired record (one ``memory.expired`` event each, in the same

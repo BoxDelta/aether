@@ -403,6 +403,18 @@ def memory_record_event(
     )
 
 
+def memory_exported(count: int, *, actor: MemoryActor = "memory") -> Event:
+    """The owner exported memory (ADR-024 §4, §5): the number of records only, never
+    their IDs, levels or content."""
+    return Event(
+        event_type="memory.exported",
+        actor=actor,
+        memory_export_count=count,
+        request_id=get_request_id(),
+        session_id=get_session_id(),
+    )
+
+
 # --- writing ----------------------------------------------------------------------
 
 

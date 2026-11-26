@@ -537,6 +537,7 @@ def test_no_content_or_key_in_logs_errors_or_events(
         await s.list(ListFilter(key=KEY))
         await s.update(a.id, RecordChanges(content=content(3), key=OTHER_KEY), actor="owner")
         await s.approve(b.id, Approval("personal", content=content(4)), actor="owner")
+        await s.export(actor="owner")
         for failing in (
             s.create(owner_record(5, key=KEY)),  # key conflict
             s.update(b.id, RecordChanges(key=OTHER_KEY), actor="owner"),  # key conflict
@@ -560,20 +561,22 @@ def test_no_content_or_key_in_logs_errors_or_events(
         "Memory record created",
         "Memory record updated",
         "Memory record approved",
+        "Memory exported",
         "Memory record deleted",
         "Memory record deleted",
     ]
     rendered = errors + [f"{r.getMessage()} {vars(r)!r} {r.exc_text or ''}" for r in caplog.records]
     for line in rendered:
         assert PREFIX not in line and KEY not in line and OTHER_KEY not in line, line
-    # One event per successful change (2 creates, update, approve, 2 deletes), none for
-    # the failures; no column of any of them holds content or a key.
+    # One event per successful change (2 creates, update, approve, 2 deletes) and the
+    # export, none for the failures; no column of any of them holds content or a key.
     written = events_after(live_owner, events_before)
     assert [e["event_type"] for e in written] == [
         "memory.approved",
         "memory.proposed",
         "memory.updated",
         "memory.approved",
+        "memory.exported",
         "memory.deleted",
         "memory.deleted",
     ]
@@ -1054,3 +1057,66 @@ def test_two_approvals_with_one_key_leave_exactly_one_approved_record(
     events = [e["event_type"] for e in events_after(live_owner, after)]
     assert events.count("memory.approved") == len(approved)
     assert events.count("memory.deleted") == len(approved) - 1  # a replacement is recorded
+
+
+# --- step 10 (#122): export --------------------------------------------------------------
+
+
+def test_export_has_every_unexpired_record_and_one_event_with_the_count(
+    store: Run[Any], live_owner: Settings
+) -> None:
+    public = store(lambda s: s.create(owner_record(1, key=KEY)))
+    sensitive = store(lambda s: s.create(owner_record(2, privacy="sensitive")))
+    pending = store(lambda s: s.create(proposal(3)))
+    expired = store(lambda s: s.create(owner_record(4)))
+    _expire_now(live_owner, expired.id)
+    before, after = snapshot(live_owner), last_event_id(live_owner)
+    [db_before] = owner_sql(live_owner, "SELECT now()")
+
+    export = store(lambda s: s.export(actor="owner"))
+
+    [db_after] = owner_sql(live_owner, "SELECT now()")
+    assert db_before <= export.exported_at <= db_after  # the database clock, not Python's
+    ids = [r.id for r in export.records]
+    assert {public.id, sensitive.id, pending.id} <= set(ids)
+    assert expired.id not in ids  # left out by the filter ...
+    assert snapshot(live_owner) == before  # ... and not deleted: the table is unchanged
+    assert len(ids) == len(set(ids))
+    assert [(r.created_at, str(r.id)) for r in export.records] == sorted(
+        (r.created_at, str(r.id)) for r in export.records
+    )
+    by_id = {r.id: r for r in export.records}
+    assert by_id[public.id] == public  # every column, as stored
+    assert by_id[sensitive.id].privacy == "sensitive"
+    assert by_id[pending.id].status == "pending"
+    assert by_id[pending.id].privacy_source == "suggested"
+    # The time of the read, after every record in it was created.
+    assert export.exported_at >= max(r.created_at for r in export.records)
+
+    events = events_after(live_owner, after)
+    assert len(events) == 1, events  # no memory.expired: the export runs no clean-up
+    event = events[0]
+    assert (event["event_type"], event["actor"]) == ("memory.exported", "memory")
+    assert event["memory_export_count"] == len(export.records)
+    described = {k: v for k, v in event.items() if k.startswith("memory_") and v is not None}
+    assert described == {"memory_export_count": len(export.records)}
+    assert PREFIX not in json.dumps(event) and KEY not in json.dumps(event)
+
+
+def test_an_export_whose_event_fails_returns_nothing(
+    store: Run[Any], live_owner: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import memory.store as store_module
+
+    store(lambda s: s.create(owner_record(1)))
+
+    async def lost(*_: Any, **__: Any) -> int:
+        raise OSError("connection lost while recording the export")
+
+    monkeypatch.setattr(store_module, "write_memory_event", lost)
+    start = last_event_id(live_owner)
+
+    with pytest.raises(StoreUnavailable):
+        store(lambda s: s.export(actor="owner"))
+
+    assert events_after(live_owner, start) == []

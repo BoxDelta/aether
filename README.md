@@ -16,7 +16,9 @@ content itself.
 Status: early-stage and built by one person on Arch Linux (GNOME).
 Phases 0 and 1 are done: Core (the API), model routing and the identity
 layer work today. Phase 2 (shared memory) is in progress: the memory
-store exists, but there is no memory API or retrieval yet. A web UI
+store and its owner API (`/memory`: list, search, create, approve,
+correct, delete and export) exist, but there is no retrieval into model
+calls yet. A web UI
 comes in Phase 3. Phase status lines are in
 [`docs/04_Development_Roadmap.md`](docs/04_Development_Roadmap.md). It is
 not production-ready, and it is built for a single user on their own
@@ -239,7 +241,7 @@ Two roles (ADR-020, #1, #12). The owner `aether` runs migrations only
 (`DATABASE_MIGRATION_URL`). Core connects as `aether_app`
 (`DATABASE_URL`), which can insert and read events but can't change or
 delete them, and Core refuses to start as the owner. On the
-`memory_records` table (ADR-024, no API yet) it can also update and
+`memory_records` table (ADR-024) it can also update and
 delete, but never truncate, add triggers, alter or drop. An install from
 before this change moves over with
 [`docs/runbooks/db-app-role.md`](docs/runbooks/db-app-role.md).

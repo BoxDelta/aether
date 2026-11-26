@@ -245,7 +245,8 @@ Its only caller is the memory API (`core/memory_api.py`, ADR-024 step 6,
 `GET /memory/{id}`, `POST /memory/search` (key and text query in the
 body, never the URL, which the access log records), `POST /memory`, and
 (step 8, #97) `POST /memory/{id}/approve` and `POST /memory/{id}/reject`,
-and (step 9, #101) `PATCH /memory/{id}` and `DELETE /memory/{id}`.
+and (step 9, #101) `PATCH /memory/{id}` and `DELETE /memory/{id}`, and
+(step 10, #122) `GET /memory/export`.
 Every route is behind the bearer token, which means the owner in Phase 2
 (ADR-024 §2), so the API always passes `source="owner"`; the body can't
 set `source`, `status`, `privacy_source` or `source_request_id` (extra
@@ -289,6 +290,18 @@ part of the read: if it fails, the list or create fails too (503 or
 sets back to `pending` would expire at once; build step 16 adds their
 "restored" marker and exempts it (#67). No retrieval for model calls
 yet.
+`GET /memory/export` returns one JSON document
+(`{"format": "aether-memory", "version": 1, "exported_at", "records"}`)
+with every column of every unexpired record: all levels, Sensitive
+included, and pending records (ADR-024 §4, D10). It is the owner's own
+data on the authenticated route; once downloaded the file is outside
+AETHER's control, so keep it off synced or shared folders. The response is
+`Cache-Control: no-store`. It takes no filters: any query parameter is a
+422, so `?privacy=public` can't pass for a filtered file. Expired records are left out by the same filter
+as the list; the export deletes nothing and runs no clean-up. One
+`memory.exported` event records the count only (no IDs, levels or
+content), in the same transaction as the read: if the event can't be
+written, no export is returned. Logs carry the count only.
 Limits: a `key` or `query` put in the `GET /memory` URL by mistake is
 refused with 422, but uvicorn's access log has already recorded the URL
 (redacted for secrets only), so the refusal makes the mistake loud, not
