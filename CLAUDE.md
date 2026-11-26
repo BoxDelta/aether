@@ -1,49 +1,31 @@
 # CLAUDE.md — rules for AI coding assistants on AETHER
 
-AETHER is a personal multi-model AI platform: one identity, shared
-memory, routing between local (Ollama) and cloud (Claude API) models.
-Owner: BoxDelta. Host: Arch / GNOME, fish shell, 8 GB VRAM GPU.
-
-## Read first
-
-- `docs/README.md` for the doc map.
-- `docs/04_Development_Roadmap.md` for the current phase. Work only on
-  the current phase unless the owner says otherwise.
-- `docs/05_Security_and_Permissions.md` before touching secrets,
-  permissions, tools, or provider routing.
-- `.claude/settings.json` and `.pre-commit-config.yaml` are the local
-  guardrails (docs/05 §10.3); never bypass them (`--no-verify` etc.).
-- `docs/adr/` for decisions already made. Do not contradict an Accepted
-  ADR; propose a new ADR instead.
-
-## Current phase
-
-Phase 0 → Phase 1. v1 scope is Core, Nexus (`router/`), Memory, web UI.
-Do not start Future items (3D graph, Android app, Oracle, Vault service,
+AETHER: personal multi-model AI platform (one identity, shared memory,
+local Ollama + cloud Claude routing). Owner: BoxDelta. Host: Arch / GNOME,
+fish shell, 8 GB VRAM GPU. Repo map and commands: `docs/QUICK_REF.md`.
+Read a doc only when the task touches it: 05 for secrets/permissions/
+tools/routing, 04 for scope questions, docs/adr/ before architecture
+changes (never contradict an Accepted ADR; propose a new one). Never
+bypass `.claude/settings.json` or `.pre-commit-config.yaml` (`--no-verify` etc.).
+Current phase: Phase 2 (Memory). Work only on it unless the owner says
+otherwise; no Future items (3D graph, Android app, Oracle, Vault service,
 AI review, hosted gateway) unless asked.
 
 ## Model choice
 
-- Issues labelled `model:opus` are started on Opus. Everything else runs
-  on Sonnet (the default in `.claude/settings.json`).
-- On Sonnet, if the work turns out to touch docs/05 areas, spans several
-  subsystems (`core/`, `router/`, `memory/`), or needs a new ADR, stop
-  and tell the owner so they can switch with `/model opus`. Don't push
-  through.
-- Always run the `security-reviewer` subagent
-  (`.claude/agents/security-reviewer.md`) before opening a PR that
-  touches docs/05 areas, and paste its report into the PR description
-  ("Security review" section).
+- Issues labelled `model:opus` start on Opus; the rest on Sonnet. On
+  Sonnet, if work touches docs/05 areas, spans two or more of `core/`,
+  `router/`, `memory/`, or needs a new ADR, stop and tell the owner so
+  they can switch with `/model opus`. Don't push through.
+- Always run `security-reviewer` (`.claude/agents/security-reviewer.md`)
+  before a PR touching docs/05 areas; paste its report into the PR.
 
-## Code conventions
+## Conventions
 
-- Backend: Python 3 + FastAPI (ADR-017, Accepted). Tests with pytest,
-  lint/format with ruff, type checks with mypy or pyright.
-- Plain folder names: `core/`, `router/`, `memory/`, `tools/`, `web/`,
-  `identity/`, `tests/`. Branded names (Nexus, Automata…) stay in docs.
-- One Postgres for memory, runtime tasks and events (ADR-011).
-- Create folders only when the current phase needs them.
-- Commands you suggest to the owner must work in the fish shell.
+- Python 3 + FastAPI (ADR-017); pytest, ruff, mypy; one Postgres (ADR-011).
+  Plain folder names, created only when the phase needs them.
+- Commands you suggest to the owner must work in fish.
+- Telegram replies: under 10 lines, no code dumps, never secrets or memory data.
 
 ## Hard rules
 
@@ -72,3 +54,6 @@ AI review, hosted gateway) unless asked.
 
 Implemented behavior, tests passing in Sentinel (GitHub Actions),
 limitations documented, security impact considered, docs updated.
+
+# Compact instructions
+Keep test results, file paths changed and open TODOs. Drop file dumps.
