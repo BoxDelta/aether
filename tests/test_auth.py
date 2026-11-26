@@ -1,5 +1,6 @@
 """Bearer-token authentication (ADR-021, #57)."""
 
+import asyncio
 import hmac
 import io
 import json
@@ -11,10 +12,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from starlette.routing import Route
+from starlette.types import Message, Receive, Scope, Send
 from starlette.websockets import WebSocketDisconnect
 
 from core.app import create_app
-from core.auth import MIN_TOKEN_LENGTH, check_authorization
+from core.auth import MIN_TOKEN_LENGTH, BearerAuth, check_authorization
 from core.config import Settings
 from core.events import EventRecorder
 from core.identity import load_identity
@@ -368,3 +370,37 @@ def test_token_never_in_events_on_success() -> None:
 def test_token_not_in_settings_repr() -> None:
     settings = Settings(_env_file=None, aether_api_token=SecretStr(TOKEN))
     assert TOKEN not in repr(settings) and TOKEN not in str(settings.model_dump())
+
+
+def _through_auth(headers: list[tuple[bytes, bytes]]) -> tuple[bool, list[Message]]:
+    """Run one request with exactly these raw headers through ``BearerAuth``. Returns
+    whether the app behind it was reached, and what was sent."""
+    reached = False
+    sent: list[Message] = []
+
+    async def inner(scope: Scope, receive: Receive, send: Send) -> None:
+        nonlocal reached
+        reached = True
+
+    async def receive() -> Message:
+        return {"type": "http.request"}
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    scope: Scope = {"type": "http", "method": "POST", "path": "/chat", "headers": headers}
+    asyncio.run(BearerAuth(inner, token=TOKEN.encode())(scope, receive, send))
+    return reached, sent
+
+
+def test_only_the_first_authorization_header_counts() -> None:
+    good = (b"authorization", f"Bearer {TOKEN}".encode())
+    bad = (b"authorization", b"Bearer not-the-token")
+
+    reached, sent = _through_auth([good, bad])
+    assert reached is True
+
+    # A valid second header must not rescue an invalid first one.
+    reached, sent = _through_auth([bad, good])
+    assert reached is False
+    assert sent[0]["status"] == 401
