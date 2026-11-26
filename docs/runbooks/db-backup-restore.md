@@ -10,8 +10,9 @@ every record in it.
 
 **What a backup holds today:** the `events` table (metadata only: IDs,
 privacy level, route, error type, latency, token counts; never prompts or
-answers) and `alembic_version`. Once Memory exists (Phase 2), backups also
-hold memory records, including `personal` and `sensitive` ones.
+answers), `alembic_version` and, since the memory API (ADR-024 step 6),
+`memory_records`: full rows (content, key, level and provenance),
+including `personal` and `sensitive` ones.
 
 **Not encrypted at rest yet.** Backups are plain files in a private
 folder (mode 700, files 600) on the PC's disk, which is not encrypted. The
@@ -214,10 +215,15 @@ docker compose exec -T postgres dropdb -U aether aether_restore_check
 > changes. The old database is **kept** under another name, so you can go
 > back, and nothing is dropped in this section.
 >
-> Once Memory exists, the ADR-024 §4 steps (re-delete, re-check levels,
-> re-insert memory events, read from `aether_before_restore`) go between
-> R4 and the swap. They're added to this runbook in build step 16 (#58).
-> Until then this section is for events only.
+> Memory records exist since the memory API (ADR-024 step 6). The ADR-024
+> §4 steps (re-delete, re-check levels, re-insert memory events, read
+> from `aether_before_restore`) go between R4 and the swap; they're added
+> to this runbook in build step 16 (#58). Until then a swap brings back
+> memory records deleted after the backup and undoes later corrections
+> and level changes, with nothing to repair it: a record raised to
+> `sensitive` goes back to its lower level, so once retrieval exists it
+> could be sent at that level. That is acceptable only while memory holds
+> invented data: real data waits for #57 and these restore steps (step 16).
 
 1.  Do the drill (section 3, R1 to R4) and keep `aether_restore_check`;
     `restore_check.sql` must say `ok` (or only `NOT OK: memory_table` for
