@@ -214,10 +214,13 @@ docker compose exec -T postgres dropdb -U aether aether_restore_check
 > changes. The old database is **kept** under another name, so you can go
 > back, and nothing is dropped in this section.
 >
-> Once Memory exists, the ADR-024 §4 steps (re-delete, re-check levels,
-> re-insert memory events, read from `aether_before_restore`) go between
-> R4 and the swap. They're added to this runbook in build step 16 (#58).
-> Until then this section is for events only.
+> Memory records exist since the memory API (ADR-024 step 6). The ADR-024
+> §4 steps (re-delete, re-check levels, re-insert memory events, read
+> from `aether_before_restore`) go between R4 and the swap; they're added
+> to this runbook in build step 16 (#58). Until then a swap brings back
+> memory records deleted after the backup and undoes later corrections
+> and level changes, with nothing to repair it. That is acceptable only
+> while memory holds invented data (#57 comes first for real data).
 
 1.  Do the drill (section 3, R1 to R4) and keep `aether_restore_check`;
     `restore_check.sql` must say `ok` (or only `NOT OK: memory_table` for

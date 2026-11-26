@@ -617,7 +617,10 @@ shapes only; they cannot recognise personal data.
     access (ADR-025 D8).
 -   **Known limitation:** backups are **not encrypted at rest** until #57
     and sit on the same disk as the database, so they don't protect
-    against losing the disk. Today they hold events only (metadata).
+    against losing the disk. They hold the events and, since the memory
+    API (`POST /memory`, ADR-024 step 6), memory records too: content,
+    keys and levels, unencrypted. Until #57 is done, only invented data
+    belongs in memory (ADR-024 §7).
 -   **Deletion and backups:** a deleted memory record stays in every
     backup taken before the delete, until retention prunes the last of
     them, about 5 weeks with daily backups (ADR-024 §4). A restore brings
