@@ -273,7 +273,9 @@ them); `null` for anything else is a 422, never "unchanged". A key that
 another approved record holds is a 409 (only approve replaces), and an
 expired record can't be corrected (404). `DELETE` hard-deletes any
 record, expired or not, with `memory.deleted` (ADR-024 §4: what remains
-in backups is described in §11 below). The store holds at most 50 pending records (D8): one more from
+in backups is described in §11 below). Setting a key first deletes
+expired records, so an expired record the owner can't see never blocks
+its key. The store holds at most 50 pending records (D8): one more from
 a model or a tool is refused with `PendingLimit`. A pending record
 expires 30 days after it was proposed, any record at its `expires_at`;
 an expired record is never returned, approved or rejected, and the

@@ -35,7 +35,9 @@ migration 0004 are the backstop:
   not caught; the owner's approval review is the remaining check.
 - **Content** 1 to ``CONTENT_MAX`` characters of valid text; **key** matches
   ``KEY_PATTERN``; at most one approved record per key, so a clash raises
-  ``KeyConflict`` on create and update (approve replaces instead, below).
+  ``KeyConflict`` on create and update (approve replaces instead, below). Setting a
+  key first deletes expired records (``expire``), so an expired record the owner
+  can't see never blocks its key.
 - **Expiry** (ADR-024 §1, D8): a record past ``expires_at``, and a pending record
   ``PENDING_DAYS`` after it was created, is expired. It is left out of ``get`` and
   ``list`` unless asked for, and can't be updated, approved or rejected; it can
@@ -589,7 +591,7 @@ class MemoryStore:
             await write_memory_event(conn, memory_record_event(kind, _meta(record)))
             return record
 
-        await self._sweep()
+        await (self.expire() if new.key is not None else self._sweep())
         record = await self._run(insert)
         logger.info(
             "Memory record created", extra={"record_id": str(record.id), "status": record.status}
@@ -649,6 +651,10 @@ class MemoryStore:
         if not columns:
             raise InvalidRecord("changes", "nothing to change")
         self._refuse_secrets(columns, "update")
+        if columns.get("key") is not None:
+            # An expired approved record still holds its key in the unique index, but
+            # the owner can't see it: clear expired records first, not a 409.
+            await self.expire()
         extra = ", privacy_source = 'owner'" if "privacy" in columns else ""
 
         async def change(conn: AsyncConnection) -> MemoryRecord:

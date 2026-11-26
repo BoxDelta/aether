@@ -375,3 +375,22 @@ def test_delete_is_a_hard_delete_of_any_record(
         ("memory.deleted", expired),
     ]
     assert client.delete(f"/memory/{approved}").status_code == 404
+
+
+def test_an_expired_record_never_blocks_its_key(client: TestClient, live_owner: Settings) -> None:
+    # The unique index still counts an expired approved record; the owner can't see
+    # it, so setting its key clears expired records first instead of a 409.
+    for attempt in ("create", "patch"):
+        holder = client.post("/memory", json=record(f"{attempt}-old", key=KEY)).json()["id"]
+        _expire(live_owner, holder)
+        after = last_event_id(live_owner)
+        if attempt == "create":
+            r = client.post("/memory", json=record(f"{attempt}-new", key=KEY))
+        else:
+            other = client.post("/memory", json=record(f"{attempt}-new")).json()["id"]
+            after = last_event_id(live_owner)
+            r = client.patch(f"/memory/{other}", json={"key": KEY})
+        assert r.status_code in (200, 201), (attempt, r.text)
+        expired = [e for e in events_after(live_owner, after) if e["memory_record_id"] == holder]
+        assert [e["event_type"] for e in expired] == ["memory.expired"], attempt
+        client.delete(f"/memory/{r.json()['id']}")
