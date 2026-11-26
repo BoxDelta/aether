@@ -10,6 +10,9 @@ vision; they are scheduled once v1 is in daily use.
 
 ## Phase 0 --- Repository foundation and Sentinel v1
 
+**Status:** Done (2026-11-14; repository public and `protect-main`
+ruleset active, ADR-022).
+
 **Goal:** A safe, documented place to build AETHER.
 
 Deliverables:
@@ -17,13 +20,19 @@ Deliverables:
 -   Private GitHub repository with `docs/`, `docs/adr/`, `.gitignore`,
     `.env.example`, `README.md` and `CLAUDE.md`.
 -   Sentinel v1 in GitHub Actions: secret scan (gitleaks) on every push.
+    Sentinel v1 is deterministic checks only (tests, lint, types, secret
+    scan; CodeQL also runs on pull requests). AI review is manual and
+    advisory (`security-reviewer`, `@codex review`) and is not part of
+    Sentinel; an automated AI reviewer in CI is Future.
 -   GitHub Project board; Issues for Phase 1 work.
 -   ADRs for decisions made so far; backend language decided (ADR-017).
 -   Drafts of the identity specification and privacy classification.
 -   Branch protection on `main` (checks must pass) once Phase 1 adds
-    tests. **Not enforceable on GitHub Free while the repository is private** (ADR-022 enables it after the public flip);
-    the owner merges with a `safemerge` function that waits for checks
-    instead (ADR-018, #10).
+    tests. It could not be enforced on GitHub Free while the repository
+    was private; since the public flip (2026-11-14, ADR-022) the
+    `protect-main` ruleset enforces it (docs/05 §10.1). The owner still
+    merges with the `safemerge` function, which waits for checks
+    (ADR-018, #10).
 
 Exit criteria:
 
@@ -33,6 +42,10 @@ Exit criteria:
 -   No credentials or personal memory data are committed.
 
 ## Phase 1 --- Core and Nexus (one identity, two models)
+
+**Status:** Done (exit check passed on the real PC on 2026-11-14,
+`docs/runbooks/phase1-exit-check.md`). Open Phase 1 follow-ups are
+tracked as `phase-1` issues.
 
 **Goal:** One request path, one identity, local and cloud models.
 
@@ -47,7 +60,8 @@ Deliverables:
 -   Simple, explainable routing rules plus a manual override.
 -   GPU/RAM probe so routing can avoid local inference under load.
 -   `events` table recording requests, routes, errors.
--   Sentinel extended: tests, lint, type checks on every push.
+-   Sentinel extended: tests, lint, type checks on every push
+    (deterministic checks only; AI review stays manual and advisory).
 
 Exit criteria:
 
@@ -59,6 +73,9 @@ Exit criteria:
 -   Tests pass in Sentinel.
 
 ## Phase 2 --- Memory
+
+**Status:** In progress (since 2026-11-15; build order in ADR-024 §9,
+#58).
 
 **Goal:** Cross-provider continuity, the core of AETHER.
 
@@ -80,6 +97,8 @@ Exit criteria:
 -   Deletion and restore are tested.
 
 ## Phase 3 --- Web UI, tools and daily use
+
+**Status:** Not started.
 
 **Goal:** Make AETHER usable every day from the PC and the phone.
 
@@ -104,15 +123,31 @@ Exit criteria:
 Not ordered; pick based on what daily use shows is most valuable.
 
 -   Neural 3D activity and memory graph (Three.js).
--   Sentinel AI review layer (independent reviewer on pull requests).
+-   Sentinel AI review layer: an automated, independent AI reviewer on
+    pull requests in CI. Today AI review is manual and advisory, outside
+    Sentinel.
 -   Native Chronos scheduling service, if n8n becomes limiting.
 -   Oracle research workflows with citations.
 -   Native Android app (Kotlin + Jetpack Compose).
 -   Spoken voice for Aether (speech-to-text and text-to-speech).
 -   Dedicated Vault secrets service.
 -   Additional provider adapters (Gemini, Groq, OpenRouter, Mistral).
+    OpenRouter design: ADR-028 (Proposed, after Phase 2 exits).
 -   Hosted always-on gateway with the home PC as a worker.
 -   Threat-model review, load/failure testing, backup drills.
+
+## Phase exit steps
+
+When a phase's exit criteria look met:
+
+1.  Run the phase's exit check on the real PC where one exists (Phase 1:
+    `docs/runbooks/phase1-exit-check.md`) and record the results.
+2.  Run the end-of-phase code-health review (ADR-029, Proposed) and file
+    its findings as issues.
+3.  Update the phase status line in this document (done, with the
+    date), then `06` section 5 and the status in the root `README.md`.
+4.  Move unfinished work to issues labelled for the next phase, or keep
+    the current phase label with a reason.
 
 ## Prioritization rules
 

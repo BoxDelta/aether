@@ -13,10 +13,14 @@ requests (cloud is opt-in per request). Labels are set by the caller, and
 unlabelled requests are treated as Personal; AETHER does not yet classify
 content itself.
 
-Status: early-stage and built by one person on Arch Linux (GNOME). Core
-(the API), model routing and the identity layer work today. Shared memory
-and a web UI are next. It is not production-ready, and it is built for a
-single user on their own machine.
+Status: early-stage and built by one person on Arch Linux (GNOME).
+Phases 0 and 1 are done: Core (the API), model routing and the identity
+layer work today. Phase 2 (shared memory) is in progress: the memory
+store exists, but there is no memory API or retrieval yet. A web UI
+comes in Phase 3. Phase status lines are in
+[`docs/04_Development_Roadmap.md`](docs/04_Development_Roadmap.md). It is
+not production-ready, and it is built for a single user on their own
+machine.
 
 Start with [`docs/README.md`](docs/README.md) for the documentation map
 and [`CONTRIBUTING.md`](CONTRIBUTING.md) for how to contribute.
