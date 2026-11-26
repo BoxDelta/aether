@@ -300,11 +300,17 @@ over with it, and `/chat` answers 422 `SecretContentRefused` with a fixed
 message that never says which text, pattern or value matched. The
 attempt, its error type and the `request.failed` event are recorded,
 metadata only. A manual override to the cloud and a failover from local
-to the cloud are refused the same way. Local sends are not checked: the
-text stays on the owner's machine. `Router` and `call_with_identity`
+to the cloud are refused the same way. Any provider kind other than
+`local` is checked, so a new kind fails closed. Local sends are not
+checked. That includes an Ollama host that is not on this machine: an
+untrusted `OLLAMA_HOST`, or one trusted with `AETHER_OLLAMA_TRUST_HOST`,
+is still `local` (ADR-023), and whether it should get this check is part
+of #22. `Router` and `call_with_identity`
 require a `SecretCheck` (type-checked); `Router.from_settings` builds it
-with `SecretCheck.from_settings`. Memory context sent with a request
-(ADR-024 step 12) goes through the same path, so it is covered too. The
+with `SecretCheck.from_settings`. The check covers each message and the
+system prompt; a test pins `ModelRequest`'s fields, so memory context
+(ADR-024 step 12) must be added to the checked texts, or that test fails,
+before it can reach the cloud. The
 limits below apply to this check as well: it catches known formats and
 configured values, not every secret.
 

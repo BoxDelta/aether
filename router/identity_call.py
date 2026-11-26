@@ -14,9 +14,11 @@ text that would be sent (each message and the full system prompt) is checked wit
 ``SecretCheck`` (``core/log.py``: the log redactor's patterns and the configured
 secret values). On a match the call is refused with ``SecretContentRefused``
 (not retryable, so no failover) and nothing is sent, whatever the privacy level
-says. Local providers are not checked: the text stays on the owner's machine.
-Being here, in the one call path, the check also covers failover and every later
-caller (memory context, step 12 of #58).
+says. Local providers are not checked (an untrusted ``OLLAMA_HOST`` is still
+``local`` until #22 decides otherwise). Being here, in the one call path, the
+check also covers failover. ``_outgoing_texts`` lists the request's text fields;
+tests/test_cloud_tripwire.py pins ``ModelRequest``'s fields, so a new one (memory
+context, step 12 of #58) must be added here or the test fails.
 """
 
 import logging
@@ -70,7 +72,8 @@ async def call_with_identity(
     }
     started = time.perf_counter()
     try:
-        if provider.info.kind == "cloud" and any(map(secret_check, _outgoing_texts(prepared))):
+        # Anything not explicitly local is checked, so a new provider kind fails closed.
+        if provider.info.kind != "local" and any(map(secret_check, _outgoing_texts(prepared))):
             raise SecretContentRefused(provider.name)
         response = await provider.generate(prepared)
     except ProviderError as exc:

@@ -193,22 +193,38 @@ def test_chat_sends_the_same_text_locally() -> None:
 
 # --- the one call path: nothing else calls a provider -----------------------------------
 
+# Calls that send to a model, and the one file each may appear in.
+_SENDS = {
+    "generate": "router/identity_call.py",  # Provider.generate: the checked path
+    "_generate": "router/contract.py",  # the adapter hook, called by Provider.generate
+    "messages.create": "router/claude.py",  # the Anthropic SDK call
+}
+
 
 def test_only_call_with_identity_calls_a_provider() -> None:
     # The tripwire is only as good as "every model call goes through
     # call_with_identity". Real calls (AST), in the code folders' Python files only.
     from tests.test_privacy_levels import REPO
 
-    callers = []
+    found: set[tuple[str, str]] = set()
     for folder in ("core", "router", "memory", "scripts"):
         for path in sorted((REPO / folder).rglob("*.py")):
-            calls = [
-                node
-                for node in ast.walk(ast.parse(path.read_text()))
-                if isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "generate"
-            ]
-            if calls:
-                callers.append(path.relative_to(REPO).as_posix())
-    assert callers == ["router/identity_call.py"]
+            rel = path.relative_to(REPO).as_posix()
+            for node in ast.walk(ast.parse(path.read_text())):
+                if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+                    continue
+                name = node.func.attr
+                owner = node.func.value
+                if name == "create" and isinstance(owner, ast.Attribute):
+                    name = f"{owner.attr}.create"
+                if name in _SENDS:
+                    found.add((name, rel))
+    assert found == {(name, rel) for name, rel in _SENDS.items()}
+
+
+def test_every_text_field_of_a_request_is_a_tripwire_decision() -> None:
+    # A new field (memory context, step 12) fails this test until it is either
+    # added to _outgoing_texts or recorded here as not text that is sent.
+    checked = {"messages", "system"}
+    not_text = {"model", "max_tokens", "temperature", "timeout_s", "privacy"}
+    assert set(ModelRequest.model_fields) == checked | not_text
