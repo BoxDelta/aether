@@ -17,7 +17,7 @@ Rules applied here:
   Core's request ID (``core.request_context``).
 - **The store** is built once per app, from Settings, with
   ``SecretCheck.from_settings`` so the configured values are refused too (#75).
-- **Database down** (#80, ADR-026 §5): no database configured, or none reachable,
+- **Database down** (#80; ADR-026 §5, proposed in #82): no database configured, or none reachable,
   is a 503 ``MemoryUnavailable`` with a fixed message: never an empty list, a 404
   or a write that did nothing.
 - **Errors** carry the field and the rule, never the value: validation errors go

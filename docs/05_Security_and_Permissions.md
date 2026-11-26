@@ -255,6 +255,11 @@ at 16 KiB. With no database configured or reachable (for example the
 encrypted volume locked) every memory route answers 503
 `MemoryUnavailable` with a fixed message, never an empty list, a 404 or
 a write that did nothing (#80). No retrieval for model calls yet.
+Limits: a `key` or `query` put in the `GET /memory` URL by mistake is
+refused with 422, but uvicorn's access log has already recorded the URL
+(redacted for secrets only), so the refusal makes the mistake loud, not
+unlogged (#93). A 422 names an unknown field in `loc` (its name, never its
+value) back to the sender (#94).
 
 **Secret-shaped content is never stored (ADR-024 §1, #70).** Whatever its
 label, the store refuses content that looks like a secret, on create,
