@@ -347,6 +347,18 @@ class _BrokenStore:
     async def create(self, *_: Any, **__: Any) -> Any:
         raise self.error
 
+    async def approve(self, *_: Any, **__: Any) -> Any:
+        raise self.error
+
+    async def reject(self, *_: Any, **__: Any) -> Any:
+        raise self.error
+
+    async def update(self, *_: Any, **__: Any) -> Any:
+        raise self.error
+
+    async def delete(self, *_: Any, **__: Any) -> Any:
+        raise self.error
+
 
 def test_an_unexpected_store_error_is_a_fixed_500_without_details(
     core: tuple[Core, TestClient],
@@ -358,6 +370,10 @@ def test_an_unexpected_store_error_is_a_fixed_500_without_details(
         client.get("/memory"),
         client.get(f"/memory/{uuid4()}"),
         client.post("/memory", json=record(key=CANARY_KEY)),
+        client.post(f"/memory/{uuid4()}/approve", json={"privacy": "public"}),
+        client.post(f"/memory/{uuid4()}/reject"),
+        client.patch(f"/memory/{uuid4()}", json={"content": CANARY}),
+        client.delete(f"/memory/{uuid4()}"),
     ]
 
     for r in responses:
@@ -373,7 +389,8 @@ def test_an_unexpected_store_error_is_a_fixed_500_without_details(
         for line in c.log.getvalue().splitlines()
         if "Memory " in line and " failed" in line
     ]
-    assert {f["operation"] for f in failures} == {"list", "get", "create"}
+    operations = {"list", "get", "create", "approve", "reject", "update", "delete"}
+    assert {f["operation"] for f in failures} == operations
     for failure in failures:
         assert failure["level"] == "ERROR"
         assert failure["error"] == "database error (XX000)"  # type and SQLSTATE only
