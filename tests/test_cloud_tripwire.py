@@ -7,6 +7,7 @@ sent: ``SecretContentRefused``, not retryable, so no failover; ``/chat`` answers
 ``tests/fake_secrets.py``; responses, logs and events are checked not to hold it.
 """
 
+import ast
 import asyncio
 import json
 from typing import Any
@@ -188,3 +189,26 @@ def test_chat_sends_the_same_text_locally() -> None:
     r = s.client.post("/chat", json={"messages": [{"role": "user", "content": FAKES[0].text}]})
     assert r.status_code == 200
     assert s.local.calls == 1 and s.cloud.calls == 0
+
+
+# --- the one call path: nothing else calls a provider -----------------------------------
+
+
+def test_only_call_with_identity_calls_a_provider() -> None:
+    # The tripwire is only as good as "every model call goes through
+    # call_with_identity". Real calls (AST), in the code folders' Python files only.
+    from tests.test_privacy_levels import REPO
+
+    callers = []
+    for folder in ("core", "router", "memory", "scripts"):
+        for path in sorted((REPO / folder).rglob("*.py")):
+            calls = [
+                node
+                for node in ast.walk(ast.parse(path.read_text()))
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "generate"
+            ]
+            if calls:
+                callers.append(path.relative_to(REPO).as_posix())
+    assert callers == ["router/identity_call.py"]
