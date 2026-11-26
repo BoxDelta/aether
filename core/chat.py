@@ -17,6 +17,10 @@ Safety rules applied here:
   the error type, the routing reason and each attempt's provider, error type and
   scrubbed message; never ``__cause__``, exception text or a traceback.
   Validation errors never echo the submitted input.
+- Tripwire (#8): a cloud send whose text looks like a secret is refused before
+  anything is sent (``router/identity_call.py``). It is a 422
+  ``SecretContentRefused`` with a fixed message, not a 502: the request, not a
+  provider, is the problem. No failover; the text is never echoed.
 - Access: bearer token, checked by core.auth before this module sees the request
   (ADR-021, #57).
 - Events: metadata only (core/events.py). A failed event write never fails the
@@ -51,6 +55,7 @@ from router.contract import (
     ProviderKind,
     ProviderName,
     Role,
+    SecretContentRefused,
 )
 from router.contract import Message as ModelMessage
 from router.routing import (
@@ -187,7 +192,11 @@ chat_router = APIRouter()
     responses={
         401: {"model": ErrorResponse, "description": "Missing or invalid API token"},
         413: {"model": ErrorResponse, "description": "Request body too large"},
-        422: {"model": ErrorResponse, "description": "Invalid request (input not echoed)"},
+        422: {
+            "model": ErrorResponse,
+            "description": "Invalid request (input not echoed), or SecretContentRefused: "
+            "the text looks like a secret and was not sent to a cloud provider",
+        },
         502: {"model": ErrorResponse, "description": "Provider(s) failed (RouteFailed)"},
         503: {"model": ErrorResponse, "description": "No provider may take it (NoRoute)"},
     },
@@ -240,6 +249,14 @@ async def chat(
         )
     except RouteFailed as exc:
         events.append(request_failed(exc, request, options))
+        refused = SecretContentRefused.__name__
+        if any(a.error_type == refused for a in exc.attempts):
+            return error_json(
+                422,
+                refused,
+                SecretContentRefused.MESSAGE,
+                attempts=[_attempt_info(a, redact) for a in exc.attempts],
+            )
         return error_json(
             502,
             "RouteFailed",

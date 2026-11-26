@@ -18,7 +18,9 @@ Rules, in order:
 6. Otherwise refused with ``NoRoute``.
 
 Every decision carries a human-readable reason and is logged without prompt text.
-Routing calls providers only through ``call_with_identity`` (#16).
+Routing calls providers only through ``call_with_identity`` (#16), which refuses a
+cloud send whose text looks like a secret (#8, ``SecretContentRefused``, never
+retried or failed over). ``Router`` requires the ``SecretCheck`` for that.
 
 Failover (#19), in ``Router.handle``:
 
@@ -46,6 +48,7 @@ from pydantic import BaseModel, ConfigDict
 
 from core.config import Settings
 from core.identity import Identity
+from core.log import SecretCheck
 from router import hardware
 from router.claude import ClaudeProvider
 from router.contract import (
@@ -235,12 +238,17 @@ class Router:
         providers: Sequence[Provider],
         identity: Identity,
         *,
+        secret_check: SecretCheck,
         probe: Callable[[], HardwareSnapshot] = hardware.probe,
         min_free_vram_bytes: int = MIN_FREE_VRAM_BYTES,
     ) -> None:
         names = [p.name for p in providers]
         if len(set(names)) != len(names):
             raise ValueError("provider names must be unique")
+        # Required and type-checked, like MemoryStore's (#75): no router without it.
+        if not isinstance(secret_check, SecretCheck):
+            raise TypeError("secret_check must be a core.log.SecretCheck")
+        self._secret_check = secret_check
         self._providers = tuple(providers)
         self._by_name = {p.name: p for p in providers}
         self._identity = identity
@@ -253,6 +261,7 @@ class Router:
         return cls(
             [OllamaProvider.from_settings(settings), ClaudeProvider.from_settings(settings)],
             identity,
+            secret_check=SecretCheck.from_settings(settings),
         )
 
     def provider(self, name: str) -> Provider | None:
@@ -377,7 +386,9 @@ class Router:
 
     async def _call(self, decision: RouteDecision, request: ModelRequest) -> ModelResponse:
         provider = self._by_name[decision.provider]
-        return await call_with_identity(provider, request, self._identity)
+        return await call_with_identity(
+            provider, request, self._identity, secret_check=self._secret_check
+        )
 
     async def _call_fallback(
         self,

@@ -8,13 +8,31 @@ only through this function.
 
 The log record carries metadata only (provider, model, privacy level, outcome,
 identity version); never prompt or response text.
+
+**Content tripwire for cloud sends (#8).** Before a cloud provider is called, every
+text that would be sent (each message and the full system prompt) is checked with
+``SecretCheck`` (``core/log.py``: the log redactor's patterns and the configured
+secret values). On a match the call is refused with ``SecretContentRefused``
+(not retryable, so no failover) and nothing is sent, whatever the privacy level
+says. Local providers are not checked (an untrusted ``OLLAMA_HOST`` is still
+``local`` until #22 decides otherwise). Being here, in the one call path, the
+check also covers failover. ``_outgoing_texts`` lists the request's text fields;
+tests/test_cloud_tripwire.py pins ``ModelRequest``'s fields, so a new one (memory
+context, step 12 of #58) must be added here or the test fails.
 """
 
 import logging
 import time
 
 from core.identity import Identity, render_system_prompt
-from router.contract import ModelRequest, ModelResponse, Provider, ProviderError
+from core.log import SecretCheck
+from router.contract import (
+    ModelRequest,
+    ModelResponse,
+    Provider,
+    ProviderError,
+    SecretContentRefused,
+)
 
 logger = logging.getLogger("aether.router.call")
 
@@ -25,9 +43,24 @@ def apply_identity(request: ModelRequest, identity: Identity, provider: str) -> 
     return request.model_copy(update={"system": system})
 
 
+def _outgoing_texts(request: ModelRequest) -> list[str]:
+    texts = [m.content for m in request.messages]
+    if request.system is not None:
+        texts.append(request.system)
+    return texts
+
+
 async def call_with_identity(
-    provider: Provider, request: ModelRequest, identity: Identity
+    provider: Provider,
+    request: ModelRequest,
+    identity: Identity,
+    *,
+    secret_check: SecretCheck,
 ) -> ModelResponse:
+    """Call ``provider`` with the identity applied. ``secret_check`` is required:
+    callers build it with ``SecretCheck.from_settings`` so configured values count."""
+    if not isinstance(secret_check, SecretCheck):
+        raise TypeError("secret_check must be a core.log.SecretCheck")
     prepared = apply_identity(request, identity, provider.name)
     fields: dict[str, object] = {
         "identity_name": identity.name,
@@ -39,6 +72,9 @@ async def call_with_identity(
     }
     started = time.perf_counter()
     try:
+        # Anything not explicitly local is checked, so a new provider kind fails closed.
+        if provider.info.kind != "local" and any(map(secret_check, _outgoing_texts(prepared))):
+            raise SecretContentRefused(provider.name)
         response = await provider.generate(prepared)
     except ProviderError as exc:
         logger.warning(

@@ -20,7 +20,7 @@ from router.contract import (
 )
 from router.ollama import OllamaProvider, classify_host
 from router.routing import NoRoute, RouteOptions, Router
-from tests.fakes import snapshot
+from tests.fakes import CHECK, snapshot
 
 MODEL = "llama3.1:8b"
 UNTRUSTED_HOST_MARKER = "gpu-box.example.org"
@@ -244,7 +244,7 @@ def test_default_settings_host_is_trusted() -> None:
 
 
 def router(host: str, seen: list[httpx.Request], identity: Identity) -> Router:
-    return Router([provider(host, seen)], identity, probe=snapshot)
+    return Router([provider(host, seen)], identity, secret_check=CHECK, probe=snapshot)
 
 
 def test_sensitive_is_refused_for_untrusted_host(identity: Identity) -> None:

@@ -23,7 +23,8 @@ the design, follow the ADR numbers into `docs/adr/`.
 -   `router/`: "Nexus", which picks a model and calls it. The provider
     contract and privacy levels (`contract.py`), the routing rules and
     failover (`routing.py`), the GPU/RAM probe (`hardware.py`), the one
-    function every model call goes through (`identity_call.py`), and the two
+    function every model call goes through (`identity_call.py`, which also
+    refuses a cloud send whose text looks like a secret, #8), and the two
     adapters: `ollama.py` (local) and `claude.py` (cloud).
 -   `identity/`: `aether.yaml`, the single AETHER identity (name, voice,
     rules) that is applied to every model call (docs/07).

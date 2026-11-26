@@ -40,7 +40,7 @@ from core.log import Redactor, configure_logging
 from router.contract import Message, ModelRequest
 from router.routing import RouteDecision, RouteOptions, Router
 from tests.conftest import APP_ROLE, LIVE_DB
-from tests.fakes import FakeProvider
+from tests.fakes import CHECK, FakeProvider
 from tests.test_events_live import in_rolled_back_tx, require_events_table
 
 pytestmark = LIVE_DB
@@ -227,7 +227,7 @@ def test_core_starts_as_app_role(live_app: Settings, identity: Identity) -> None
 
 
 def _fake_router(identity: Identity) -> Router:
-    return Router([FakeProvider("ollama", "local")], identity)
+    return Router([FakeProvider("ollama", "local")], identity, secret_check=CHECK)
 
 
 # --- set-app-password (core.db_admin) ----------------------------------------------------

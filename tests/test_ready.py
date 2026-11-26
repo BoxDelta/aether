@@ -21,6 +21,7 @@ from core.identity import load_identity
 from core.ready import Components, ReadyResponse, migration_head, overall
 from router.contract import ModelRequest, ModelResponse, Provider, ProviderInfo, ProviderKind
 from router.routing import Router
+from tests.fakes import CHECK
 
 TOKEN = "fake-api-token-ready-tests-0123456789abcdef"  # noqa: S105  # gitleaks:allow
 AUTH = {"authorization": f"Bearer {TOKEN}"}
@@ -75,7 +76,10 @@ def make_client(
     )
     identity = load_identity()
     app = create_app(
-        settings, identity, router=Router(list(providers), identity), events=EventRecorder(None)
+        settings,
+        identity,
+        router=Router(list(providers), identity, secret_check=CHECK),
+        events=EventRecorder(None),
     )
     return TestClient(app, headers=AUTH, raise_server_exceptions=False)
 

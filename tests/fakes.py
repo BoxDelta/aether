@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from core.events import Event, EventWriter, request_texts, to_row
-from core.log import Redactor
+from core.log import Redactor, SecretCheck
 from router.contract import (
     FinishReason,
     ModelRequest,
@@ -20,6 +20,9 @@ from router.contract import (
 from router.hardware import UNKNOWN_GPU, GpuState, HardwareSnapshot
 
 GIB = 1024**3
+# The tripwire check for test routers: patterns only. Core builds its own with
+# SecretCheck.from_settings (tests/test_cloud_tripwire.py checks that).
+CHECK = SecretCheck()
 
 
 def snapshot(free_gib: float | None = 4.0) -> HardwareSnapshot:

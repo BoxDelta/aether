@@ -14,7 +14,7 @@ from core.app import create_app
 from core.config import Settings
 from core.events import EventRecorder, EventWriter
 from core.identity import load_identity
-from core.log import Redactor, secrets_from
+from core.log import Redactor, SecretCheck, secrets_from
 from router.contract import FinishReason, ProviderUnavailable, Usage
 from router.routing import Router
 from tests.fakes import FakeProvider, MemoryWriter, snapshot
@@ -62,12 +62,18 @@ class Setup:
             usage=USAGE,
         )
         identity = load_identity()
-        router = Router([self.local, self.cloud], identity, probe=lambda: snapshot(free_gib))
         settings = Settings(
             _env_file=None,
             anthropic_api_key=SecretStr(FAKE_KEY),
             aether_api_token=SecretStr(TOKEN),
             aether_cloud_max_output_tokens=cloud_cap,
+        )
+        # Built as Router.from_settings builds it, so configured values count (#8).
+        router = Router(
+            [self.local, self.cloud],
+            identity,
+            secret_check=SecretCheck.from_settings(settings),
+            probe=lambda: snapshot(free_gib),
         )
         # The same redactor Core builds, so the token is covered too.
         self.writer = (

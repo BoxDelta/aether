@@ -24,7 +24,7 @@ from router.routing import Router
 from tests.chat_helpers import LOCAL
 from tests.conftest import LIVE_DB
 from tests.fake_secrets import configured_value
-from tests.fakes import FakeProvider, snapshot
+from tests.fakes import CHECK, FakeProvider, snapshot
 from tests.test_memory_store_live import events_after, last_event_id, owner_sql
 
 pytestmark = LIVE_DB
@@ -50,7 +50,9 @@ def client(live_app: Settings, live_owner: Settings) -> Iterator[TestClient]:
     before = set(owner_sql(live_owner, "SELECT id::text FROM public.memory_records"))
     settings = live_app.model_copy(update={"aether_api_token": SecretStr(TOKEN)})
     identity = load_identity()
-    router = Router([FakeProvider("ollama", "local")], identity, probe=lambda: snapshot(4.0))
+    router = Router(
+        [FakeProvider("ollama", "local")], identity, secret_check=CHECK, probe=lambda: snapshot(4.0)
+    )
     app = create_app(settings, identity, router=router)
     headers = {"authorization": f"Bearer {TOKEN}"}
     try:
