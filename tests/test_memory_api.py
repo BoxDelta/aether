@@ -28,7 +28,7 @@ from core.identity import load_identity
 from core.log import configure_logging
 from core.memory_api import MAX_BODY_BYTES, UNAVAILABLE_MESSAGE
 from core.request_context import REQUEST_ID_HEADER
-from memory.store import QUERY_MAX, MemoryStore
+from memory.store import QUERY_MAX, MemoryStore, StoreFailed
 from router.routing import Router
 from tests.chat_helpers import LOCAL
 from tests.fake_secrets import by_family, configured_value
@@ -329,6 +329,54 @@ def _assert_unavailable(c: Core, responses: list[Any]) -> None:
         }
         assert "records" not in body
         assert_clean(c, r)
+
+
+class _BrokenStore:
+    """A store whose every read and write fails with a database error that is not
+    "unavailable", to reach the API's 500 branch."""
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    async def list(self, *_: Any, **__: Any) -> Any:
+        raise self.error
+
+    async def get(self, *_: Any, **__: Any) -> Any:
+        raise self.error
+
+    async def create(self, *_: Any, **__: Any) -> Any:
+        raise self.error
+
+
+def test_an_unexpected_store_error_is_a_fixed_500_without_details(
+    core: tuple[Core, TestClient],
+) -> None:
+    c, client = core
+    c.app.state.memory = _BrokenStore(StoreFailed("database error (XX000)"))
+
+    responses = [
+        client.get("/memory"),
+        client.get(f"/memory/{uuid4()}"),
+        client.post("/memory", json=record(key=CANARY_KEY)),
+    ]
+
+    for r in responses:
+        assert r.status_code == 500, r.text
+        assert r.json()["error"] == {
+            "type": "MemoryStoreFailed",
+            "message": "the memory store failed",
+            "attempts": [],
+        }
+        assert_clean(c, r)
+    failures = [
+        json.loads(line)
+        for line in c.log.getvalue().splitlines()
+        if "Memory " in line and " failed" in line
+    ]
+    assert {f["operation"] for f in failures} == {"list", "get", "create"}
+    for failure in failures:
+        assert failure["level"] == "ERROR"
+        assert failure["error"] == "database error (XX000)"  # type and SQLSTATE only
 
 
 def test_unreachable_database_is_503_on_every_route(core: tuple[Core, TestClient]) -> None:
