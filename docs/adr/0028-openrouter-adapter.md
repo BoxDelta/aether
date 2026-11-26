@@ -23,9 +23,16 @@ records the design so it can be built later.
 
 Option 2, after Phase 2 exit criteria pass.
 
--   One adapter in `router/` with a configurable base URL
-    (`https://openrouter.ai/api/v1`) and an explicit `api_key` argument.
-    It never falls back to `OPENAI_API_KEY`.
+-   One adapter in `router/` with a fixed base URL
+    (`https://openrouter.ai/api/v1`), not freely configurable, and an
+    explicit `api_key` argument. The host is checked at startup, and the
+    key is never sent to any other host. It never falls back to
+    `OPENAI_API_KEY`.
+-   Core runs the same secret-shaped-content check Memory uses
+    (`SecretCheck`, docs/05 §7.1) on outbound context, and blocks the
+    request on a match.
+-   `max_tokens` is set on every request, with the value in config
+    (`AETHER_CLOUD_MAX_OUTPUT_TOKENS`, docs/05 §7).
 -   Every request sets `provider.zdr=true`, `data_collection=deny` and
     `allow_fallbacks=false`, and names an explicit model. OpenRouter's
     own auto-routing is not used. Nexus chooses and logs the route and,

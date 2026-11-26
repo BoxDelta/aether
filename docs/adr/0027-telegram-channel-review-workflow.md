@@ -25,6 +25,7 @@ and Sonnet by default. The plugin is enabled only for this project.
 Pairing uses an allowlist containing only the owner. The bot token lives
 in `~/.claude/channels/telegram/.env` (mode 600), never in the repo or in
 chat. `--dangerously-skip-permissions` is not used on this session.
+Permission relay is OFF: tool approvals happen only at the terminal.
 
 Reviews move into Claude Code: `reviewer` (sonnet) before every PR;
 `security-reviewer` (opus for guardrail PRs) as `CLAUDE.md` requires;
