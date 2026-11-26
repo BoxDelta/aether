@@ -486,7 +486,9 @@ early; it is **not** a security boundary and does not replace Sentinel.
     -   *model*: `"sonnet"` by default; issues labelled `model:opus`
         are started on Opus (rules in `CLAUDE.md`, "Model choice").
 -   **Security-reviewer subagent** (`.claude/agents/security-reviewer.md`,
-    runs on Opus): read-only review of `git diff main...HEAD`, plus
+    runs on Sonnet by default, on Opus when the PR touches `.claude/`,
+    `CLAUDE.md`, `.github/`, the pre-commit config, this document, or
+    code handling secrets, permissions or routing): read-only review of `git diff main...HEAD`, plus
     uncommitted changes (`git status`, `git diff HEAD`), against this
     document and the Accepted ADRs, run before opening any PR that
     touches the areas this document covers. Its report says whether
