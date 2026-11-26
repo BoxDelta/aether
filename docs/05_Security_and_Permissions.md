@@ -260,7 +260,8 @@ a write that did nothing (#80). Approve requires the owner's `privacy`
 category and key; the secret check runs on the corrected text. If
 another approved record has the final key, approving deletes that record
 in the same transaction (`memory.deleted`, then `memory.approved`), so
-the new value replaces the old one. Reject hard-deletes a pending record
+the new value replaces the old one (two approvals with the same key at
+the same moment: the second gets 409 `KeyConflict`, nothing lost). Reject hard-deletes a pending record
 (`memory.rejected`); an approved record is deleted only with `DELETE`
 (step 9). The store holds at most 50 pending records (D8): one more from
 a model or a tool is refused with `PendingLimit`. A pending record

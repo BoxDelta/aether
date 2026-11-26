@@ -891,6 +891,17 @@ def _age_sql(record_id: UUID, days: int) -> str:
     )
 
 
+def _expire_sql(record_id: UUID) -> str:
+    return (
+        "UPDATE public.memory_records SET expires_at = now() - interval '1 second'"  # noqa: S608
+        f" WHERE id = '{UUID(str(record_id))}'"
+    )
+
+
+def _expire_now(owner: Settings, record_id: UUID) -> None:
+    owner_sql(owner, _expire_sql(record_id))
+
+
 def _age(owner: Settings, record_id: UUID, days: int) -> None:
     owner_sql(owner, _age_sql(record_id, days))
 
@@ -900,13 +911,12 @@ def test_expired_records_are_hidden_then_deleted_with_events(
 ) -> None:
     old_pending = store(lambda s: s.create(proposal(1)))
     young_pending = store(lambda s: s.create(proposal(2)))
-    past = datetime.now(UTC) + timedelta(seconds=1)
-    timed = store(lambda s: s.create(owner_record(3, expires_at=past)))
+    timed = store(lambda s: s.create(owner_record(3)))
     approved_old = store(lambda s: s.create(owner_record(4)))
     _age(live_owner, old_pending.id, PENDING_DAYS + 1)
     _age(live_owner, young_pending.id, PENDING_DAYS - 1)
     _age(live_owner, approved_old.id, PENDING_DAYS + 100)  # only pending ages out
-    asyncio.run(asyncio.sleep(1.2))  # past ``timed``'s expiry
+    _expire_now(live_owner, timed.id)
 
     expired = {old_pending.id, timed.id}
     for record_id in expired:
@@ -951,3 +961,43 @@ def test_list_and_create_sweep_at_most_once_a_minute(store: Run[Any], live_owner
         return seen
 
     assert store(body) == [False, True, False]
+
+
+def test_concurrent_proposals_never_pass_the_limit(store: Run[Any], live_owner: Settings) -> None:
+    # The advisory lock is what makes the count safe: fire more proposals than there
+    # is room for, all at once, and exactly the room is used.
+    room = PENDING_MAX - _pending_count(live_owner)
+    assert room > 0
+
+    async def flood(s: MemoryStore) -> list[object]:
+        tries = [s.create(proposal(f"flood-{n}")) for n in range(room + 5)]
+        return list(await asyncio.gather(*tries, return_exceptions=True))
+
+    results = store(flood)
+    assert sum(isinstance(r, MemoryRecord) for r in results) == room
+    assert sum(isinstance(r, PendingLimit) for r in results) == 5
+    assert _pending_count(live_owner) == PENDING_MAX
+
+
+def test_approve_replaces_an_expired_approved_holder(store: Run[Any], live_owner: Settings) -> None:
+    # The unique index covers expired approved records too, so approve must replace
+    # one the clean-up hasn't deleted yet. One store, after its sweep, so nothing
+    # sweeps the expired holder first.
+    old = store(lambda s: s.create(owner_record(1, key=KEY)))
+
+    async def body(s: MemoryStore) -> tuple[int, MemoryRecord]:
+        await s.list()  # this store's sweep; the next one is a minute away
+        await _owner_sql(live_owner, _expire_sql(old.id))
+        new = await s.create(proposal(2, key=KEY))
+        mark = int((await _owner_sql(live_owner, "SELECT max(id) FROM events"))[0])
+        return mark, await s.approve(new.id, Approval("public"), actor="owner")
+
+    after, approved = store(body)
+
+    assert approved.key == KEY
+    with pytest.raises(RecordNotFound):
+        store(lambda s: s.get(old.id, include_expired=True))
+    assert _ids(events_after(live_owner, after)) == [
+        ("memory.deleted", str(old.id)),
+        ("memory.approved", str(approved.id)),
+    ]

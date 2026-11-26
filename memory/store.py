@@ -46,7 +46,9 @@ migration 0004 are the backstop:
   a model or a tool raises ``PendingLimit``; the proposer drops it and counts.
 - **Approve replaces a key** (ADR-024 §1, #67): if another approved record has the
   key the approved record ends up with, that record is deleted in the same
-  transaction (``memory.deleted``), so the new value replaces the old one.
+  transaction (``memory.deleted``), so the new value replaces the old one. Two
+  approvals of different records with the same key at the same moment can both
+  find nothing to replace; the second then hits the unique index: ``KeyConflict``.
 - **Reject** deletes a pending record (owner only), with ``memory.rejected``.
 - **Delete** is a hard delete: the row is gone, no tombstone (ADR-024 §4).
 
