@@ -12,8 +12,8 @@ the design, follow the ADR numbers into `docs/adr/`.
     "looks like a secret" check `SecretCheck` (`log.py`),
     the shared error format and 422 handler (`errors.py`), the `/chat`
     endpoint (`chat.py`), `/ready` (`ready.py`), the memory routes
-    (`memory_api.py`: list, get, search, owner create, approve and
-    reject), the Postgres
+    (`memory_api.py`: list, get, search, owner create, approve,
+    reject, correct and delete), the Postgres
     engine and its privileged-role check (`db.py`; the app role may update
     and delete only in `memory_records`), the owner-only step
     that sets the app role's password (`db_admin.py`), verified backups

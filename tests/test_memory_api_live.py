@@ -9,6 +9,7 @@ Run (fish):  env AETHER_DB_TESTS=1 uv run pytest -m db
 """
 
 import asyncio
+import json
 from collections.abc import Iterator
 from typing import Any
 from uuid import UUID, uuid4
@@ -272,3 +273,105 @@ def test_approve_and_reject_refuse_what_is_not_pending(
 
     assert client.get(f"/memory/{approved}").json()["status"] == "approved"
     assert events_after(live_owner, after) == []
+
+
+# --- PATCH and DELETE (step 9, #101) -----------------------------------------------------
+
+
+def _expire(owner: Settings, record_id: str) -> None:
+    owner_sql(
+        owner,
+        "UPDATE public.memory_records SET expires_at = now() - interval '1 second'"  # noqa: S608
+        f" WHERE id = '{UUID(record_id)}'",
+    )
+
+
+def test_owner_corrects_a_record(client: TestClient, live_owner: Settings) -> None:
+    created = client.post("/memory", json=record(1, key=KEY, privacy="public")).json()
+    after = last_event_id(live_owner)
+
+    r = client.patch(
+        f"/memory/{created['id']}",
+        json={"content": content("corrected"), "privacy": "sensitive", "category": "decision"},
+    )
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["content"] == content("corrected")
+    assert (body["privacy"], body["category"], body["key"]) == ("sensitive", "decision", KEY)
+    assert body["status"] == "approved" and body["privacy_source"] == "owner"
+    assert body["updated_at"] > created["updated_at"]
+    [event] = events_after(live_owner, after)
+    assert event["event_type"] == "memory.updated"
+    assert (event["memory_level"], event["memory_old_level"]) == ("sensitive", "public")
+    assert PREFIX not in json.dumps(event) and KEY not in json.dumps(event)
+
+
+def test_patch_clears_key_and_expiry_with_null(client: TestClient) -> None:
+    later = "2099-01-01T00:00:00+00:00"
+    created = client.post("/memory", json=record(1, key=KEY, expires_at=later)).json()
+    assert created["expires_at"] is not None
+
+    r = client.patch(f"/memory/{created['id']}", json={"key": None, "expires_at": None})
+
+    assert r.status_code == 200, r.text
+    assert (r.json()["key"], r.json()["expires_at"]) == (None, None)
+    assert r.json()["content"] == content(1)  # left out: unchanged
+
+
+def test_a_level_set_on_a_pending_record_is_the_owners(
+    client: TestClient, live_app: Settings
+) -> None:
+    record_id = propose(live_app, 1)
+    r = client.patch(f"/memory/{record_id}", json={"privacy": "public"})
+    assert r.status_code == 200
+    assert (r.json()["status"], r.json()["privacy_source"]) == ("pending", "owner")
+
+
+def test_patch_refuses_a_key_another_record_holds(client: TestClient) -> None:
+    client.post("/memory", json=record(1, key=KEY))
+    other = client.post("/memory", json=record(2)).json()["id"]
+
+    r = client.patch(f"/memory/{other}", json={"key": KEY})
+
+    assert r.status_code == 409 and r.json()["error"]["type"] == "KeyConflict"
+    assert client.get(f"/memory/{other}").json()["key"] is None
+
+
+def test_patch_refuses_unknown_and_expired_records(
+    client: TestClient, live_owner: Settings
+) -> None:
+    expired = client.post("/memory", json=record(1)).json()["id"]
+    _expire(live_owner, expired)
+    after = last_event_id(live_owner)
+    for record_id in (expired, str(uuid4())):
+        r = client.patch(f"/memory/{record_id}", json={"content": content("new")})
+        assert r.status_code == 404
+    assert events_after(live_owner, after) == []
+
+
+def test_delete_is_a_hard_delete_of_any_record(
+    client: TestClient, live_app: Settings, live_owner: Settings
+) -> None:
+    approved = client.post("/memory", json=record(1)).json()["id"]
+    pending = propose(live_app, 2)
+    expired = client.post("/memory", json=record(3)).json()["id"]
+    _expire(live_owner, expired)
+    after = last_event_id(live_owner)
+
+    for record_id in (approved, pending, expired):
+        r = client.delete(f"/memory/{record_id}")
+        assert r.status_code == 204 and r.content == b"", record_id
+
+    sql = (
+        "SELECT count(*) FROM public.memory_records"  # noqa: S608
+        f" WHERE id IN ('{approved}', '{pending}', '{expired}')"
+    )
+    assert owner_sql(live_owner, sql) == [0]
+    events = events_after(live_owner, after)
+    assert [(e["event_type"], e["memory_record_id"]) for e in events] == [
+        ("memory.deleted", approved),
+        ("memory.deleted", pending),
+        ("memory.deleted", expired),
+    ]
+    assert client.delete(f"/memory/{approved}").status_code == 404

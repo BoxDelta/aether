@@ -217,8 +217,13 @@ def test_invalid_records_are_refused_without_echo(
 def test_body_size_is_capped(core: tuple[Core, TestClient]) -> None:
     _, client = core
     big = json.dumps(record(content="x" * (MAX_BODY_BYTES + 1)))
-    for path in ("/memory", "/memory/search", f"/memory/{uuid4()}/approve"):
-        r = client.post(path, content=big, headers={"content-type": "application/json"})
+    for method, path in (
+        ("POST", "/memory"),
+        ("POST", "/memory/search"),
+        ("POST", f"/memory/{uuid4()}/approve"),
+        ("PATCH", f"/memory/{uuid4()}"),
+    ):
+        r = client.request(method, path, content=big, headers={"content-type": "application/json"})
         assert r.status_code == 413
         assert r.json()["error"]["type"] == "RequestTooLarge"
 
@@ -233,6 +238,8 @@ def test_memory_routes_need_the_token() -> None:
         ("POST", "/memory", record()),
         ("POST", f"/memory/{uuid4()}/approve", {"privacy": "public"}),
         ("POST", f"/memory/{uuid4()}/reject", None),
+        ("PATCH", f"/memory/{uuid4()}", {"content": CANARY}),
+        ("DELETE", f"/memory/{uuid4()}", None),
     ]
     for method, path, body in calls:
         r = client.request(method, path, json=body)
@@ -306,6 +313,8 @@ def _every_route(client: TestClient) -> list[Any]:
         client.post("/memory", json=record(key=CANARY_KEY)),
         client.post(f"/memory/{uuid4()}/approve", json={"privacy": "public", "key": CANARY_KEY}),
         client.post(f"/memory/{uuid4()}/reject"),
+        client.patch(f"/memory/{uuid4()}", json={"content": CANARY, "key": CANARY_KEY}),
+        client.delete(f"/memory/{uuid4()}"),
     ]
 
 
@@ -336,6 +345,8 @@ def test_unreachable_database_is_503_on_every_route(core: tuple[Core, TestClient
         "create",
         "approve",
         "reject",
+        "update",
+        "delete",
     }
     assert all(w["level"] == "WARNING" for w in warnings)
 
@@ -389,3 +400,52 @@ def test_approve_and_reject_need_a_uuid(core: tuple[Core, TestClient]) -> None:
     r = client.post("/memory/not-a-uuid/approve", json={"privacy": "public"})
     assert field_errors(r) == [["path", "record_id"]]
     assert field_errors(client.post("/memory/not-a-uuid/reject")) == [["path", "record_id"]]
+
+
+def test_approve_refuses_null_for_what_it_cannot_clear(core: tuple[Core, TestClient]) -> None:
+    # null is never "unchanged": only the key can be cleared.
+    _, client = core
+    for name in ("content", "category"):
+        r = _approve(client, {"privacy": "public", name: None})
+        assert field_errors(r) == [["body"]], name
+
+
+# --- PATCH and DELETE (step 9, #101): input checks before the database -----------------
+
+
+def _patch(client: TestClient, body: Any) -> Any:
+    return client.patch(f"/memory/{uuid4()}", json=body)
+
+
+@pytest.mark.parametrize(
+    ("body", "loc"),
+    [
+        ({}, ["body", "changes"]),  # nothing to change
+        ({"privacy": "secret"}, ["body", "privacy"]),
+        ({"content": f"{CANARY} {TOKEN}"}, ["body", "content"]),
+        ({"key": f"note.{TOKEN}"}, ["body", "key"]),
+        ({"content": ""}, ["body", "content"]),
+        ({"content": None}, ["body"]),
+        ({"category": None}, ["body"]),
+        ({"privacy": None}, ["body"]),
+        ({"key": "Not A Key"}, ["body", "key"]),
+        ({"expires_at": "2030-01-01T00:00:00"}, ["body", "expires_at"]),
+        ({"status": "approved"}, ["body", "status"]),
+        ({"source": "owner"}, ["body", "source"]),
+        ({"privacy_source": "owner"}, ["body", "privacy_source"]),
+    ],
+)
+def test_patch_input_is_checked_without_echo(
+    core: tuple[Core, TestClient], body: dict[str, Any], loc: list[str]
+) -> None:
+    c, client = core
+    r = _patch(client, body)
+    assert field_errors(r) == [loc]
+    assert_clean(c, r, f"note.{TOKEN}")
+
+
+def test_patch_and_delete_need_a_uuid(core: tuple[Core, TestClient]) -> None:
+    _, client = core
+    r = client.patch("/memory/not-a-uuid", json={"content": "x"})
+    assert field_errors(r) == [["path", "record_id"]]
+    assert field_errors(client.delete("/memory/not-a-uuid")) == [["path", "record_id"]]
