@@ -8,6 +8,7 @@ keys are invented canaries.
 Run (fish):  env AETHER_DB_TESTS=1 uv run pytest -m db
 """
 
+import asyncio
 from collections.abc import Iterator
 from typing import Any
 from uuid import UUID, uuid4
@@ -18,8 +19,11 @@ from pydantic import SecretStr
 
 from core.app import create_app
 from core.config import Settings
+from core.db import create_engine
 from core.identity import load_identity
+from core.log import SecretCheck
 from core.request_context import REQUEST_ID_HEADER
+from memory.store import MemoryStore, NewRecord
 from router.routing import Router
 from tests.chat_helpers import LOCAL
 from tests.conftest import LIVE_DB
@@ -167,4 +171,104 @@ def test_refused_records_write_nothing(client: TestClient, live_owner: Settings)
         assert client.post("/memory", json=body).status_code == 422
 
     assert owner_sql(live_owner, "SELECT count(*) FROM public.memory_records") == count
+    assert events_after(live_owner, after) == []
+
+
+# --- approve and reject (step 8, #97) ---------------------------------------------------
+
+
+def propose(live_app: Settings, n: int | str, **changes: Any) -> str:
+    """A pending record from a "model", through the store (nothing proposes yet)."""
+    values: dict[str, Any] = {
+        "content": content(n),
+        "category": "project",
+        "privacy": "personal",
+        "source": "model",
+        "source_provider": "ollama",
+        **changes,
+    }
+
+    async def go() -> str:
+        engine = create_engine(live_app)
+        try:
+            store = MemoryStore(engine, SecretCheck.from_settings(live_app))
+            return str((await store.create(NewRecord(**values))).id)
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(go())
+
+
+def test_owner_approves_with_level_and_corrections(
+    client: TestClient, live_app: Settings, live_owner: Settings
+) -> None:
+    record_id = propose(live_app, 1, key=KEY)
+    after = last_event_id(live_owner)
+
+    r = client.post(
+        f"/memory/{record_id}/approve",
+        json={"privacy": "sensitive", "content": content("corrected"), "category": "decision"},
+    )
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert (body["status"], body["privacy"], body["privacy_source"]) == (
+        "approved",
+        "sensitive",
+        "owner",
+    )
+    assert body["content"] == content("corrected") and body["category"] == "decision"
+    assert body["key"] == KEY  # left out: kept
+    assert body["source"] == "model" and body["source_provider"] == "ollama"
+    assert [e["event_type"] for e in events_after(live_owner, after)] == ["memory.approved"]
+
+
+def test_approve_with_key_null_clears_it(client: TestClient, live_app: Settings) -> None:
+    record_id = propose(live_app, 1, key=KEY)
+    r = client.post(f"/memory/{record_id}/approve", json={"privacy": "public", "key": None})
+    assert r.status_code == 200 and r.json()["key"] is None
+
+
+def test_approve_replaces_the_approved_record_with_that_key(
+    client: TestClient, live_app: Settings
+) -> None:
+    old = client.post("/memory", json=record("old", key=KEY)).json()["id"]
+    new = propose(live_app, "new", key=KEY)
+
+    r = client.post(f"/memory/{new}/approve", json={"privacy": "personal"})
+
+    assert r.status_code == 200 and r.json()["key"] == KEY
+    assert client.get(f"/memory/{old}").status_code == 404
+    found = client.post("/memory/search", json={"key": KEY}).json()["records"]
+    assert [x["id"] for x in found] == [new]
+
+
+def test_reject_deletes_a_pending_record(
+    client: TestClient, live_app: Settings, live_owner: Settings
+) -> None:
+    record_id = propose(live_app, 1)
+    assert client.get("/memory", params={"status": "pending", "limit": 200}).status_code == 200
+    after = last_event_id(live_owner)
+
+    r = client.post(f"/memory/{record_id}/reject")
+
+    assert r.status_code == 204 and r.content == b""
+    assert client.get(f"/memory/{record_id}").status_code == 404
+    assert [e["event_type"] for e in events_after(live_owner, after)] == ["memory.rejected"]
+
+
+def test_approve_and_reject_refuse_what_is_not_pending(
+    client: TestClient, live_owner: Settings
+) -> None:
+    approved = client.post("/memory", json=record()).json()["id"]
+    after = last_event_id(live_owner)
+
+    for action, body in (("approve", {"privacy": "public"}), ("reject", None)):
+        r = client.post(f"/memory/{approved}/{action}", json=body)
+        assert r.status_code == 409, action
+        assert r.json()["error"]["type"] == "NotPending"
+        missing = client.post(f"/memory/{uuid4()}/{action}", json=body)
+        assert missing.status_code == 404, action
+
+    assert client.get(f"/memory/{approved}").json()["status"] == "approved"
     assert events_after(live_owner, after) == []

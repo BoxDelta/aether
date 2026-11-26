@@ -16,8 +16,10 @@ Run (fish):  env AETHER_DB_TESTS=1 uv run pytest -m db
 import asyncio
 import json
 import logging
+import time
 from collections.abc import Awaitable, Callable, Iterator
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import Any, TypeVar
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
@@ -29,6 +31,9 @@ from core.config import Settings
 from core.db import create_engine, create_migration_engine
 from core.log import SecretCheck
 from memory.store import (
+    PENDING_DAYS,
+    PENDING_MAX,
+    SWEEP_INTERVAL_S,
     Approval,
     InvalidRecord,
     KeyConflict,
@@ -39,6 +44,7 @@ from memory.store import (
     NewRecord,
     NotAllowed,
     NotPending,
+    PendingLimit,
     RecordChanges,
     RecordNotFound,
     SecretContent,
@@ -409,12 +415,12 @@ def test_key_conflicts_are_store_errors_and_change_nothing(
 ) -> None:
     first = store(lambda s: s.create(owner_record(1, key=KEY)))
     other = store(lambda s: s.create(owner_record(2, key=OTHER_KEY)))
-    pending = store(lambda s: s.create(proposal(3, key=KEY)))  # pending may share a key
+    store(lambda s: s.create(proposal(3, key=KEY)))  # pending may share a key
     before = snapshot(live_owner)
     attempts: dict[str, Callable[[MemoryStore], Awaitable[Any]]] = {
         "create": lambda s: s.create(owner_record(4, key=KEY)),
         "update": lambda s: s.update(other.id, RecordChanges(key=KEY), actor="owner"),
-        "approve": lambda s: s.approve(pending.id, Approval("public"), actor="owner"),
+        # approve replaces the old record instead (#97): tests/test_memory_approval_live.py
     }
     for name, attempt in attempts.items():
         with pytest.raises(KeyConflict) as info:
@@ -756,3 +762,192 @@ def test_a_refused_event_rolls_the_memory_change_back(
     assert events_after(live_owner, start) == []
     assert snapshot(live_owner) == before
     assert store(lambda s: s.get(made.id)).content == content(1)
+
+
+# --- step 8 (#97): approve replaces a key, reject, the pending limit, expiry -------------
+
+
+async def _reject_as(record_id: UUID, who: Any, s: MemoryStore) -> None:
+    await s.reject(record_id, actor=who)
+
+
+async def _create(new: NewRecord, s: MemoryStore) -> MemoryRecord:
+    return await s.create(new)
+
+
+async def _get(record_id: UUID, include_expired: bool, s: MemoryStore) -> MemoryRecord:
+    return await s.get(record_id, include_expired=include_expired)
+
+
+def _ids(events: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    return [(e["event_type"], e["memory_record_id"]) for e in events]
+
+
+def test_approve_replaces_the_approved_record_with_that_key(
+    store: Run[Any], live_owner: Settings
+) -> None:
+    old = store(lambda s: s.create(owner_record(1, key=KEY)))
+    new = store(lambda s: s.create(proposal(2, key=KEY)))
+    after = last_event_id(live_owner)
+
+    approved = store(lambda s: s.approve(new.id, Approval("personal"), actor="owner"))
+
+    assert approved.status == "approved" and approved.key == KEY
+    with pytest.raises(RecordNotFound):
+        store(lambda s: s.get(old.id, include_expired=True))
+    assert _ids(events_after(live_owner, after)) == [
+        ("memory.deleted", str(old.id)),
+        ("memory.approved", str(new.id)),
+    ]
+
+
+def test_approve_with_a_corrected_key_replaces_that_key(store: Run[Any]) -> None:
+    old = store(lambda s: s.create(owner_record(1, key=OTHER_KEY)))
+    keep = store(lambda s: s.create(owner_record(2, key=KEY)))
+    new = store(lambda s: s.create(proposal(3, key=KEY)))
+
+    approval = Approval("public", key=OTHER_KEY)
+    assert store(lambda s: s.approve(new.id, approval, actor="owner")).key == OTHER_KEY
+
+    with pytest.raises(RecordNotFound):
+        store(lambda s: s.get(old.id))
+    assert store(lambda s: s.get(keep.id)).key == KEY  # its old key was not the final one
+
+
+def test_approve_with_the_key_cleared_replaces_nothing(store: Run[Any]) -> None:
+    old = store(lambda s: s.create(owner_record(1, key=KEY)))
+    new = store(lambda s: s.create(proposal(2, key=KEY)))
+    approved = store(lambda s: s.approve(new.id, Approval("public", key=None), actor="owner"))
+    assert approved.key is None
+    assert store(lambda s: s.get(old.id)).key == KEY
+
+
+def test_reject_deletes_a_pending_record(store: Run[Any], live_owner: Settings) -> None:
+    pending = store(lambda s: s.create(proposal(1)))
+    after = last_event_id(live_owner)
+
+    store(lambda s: s.reject(pending.id, actor="owner"))
+
+    with pytest.raises(RecordNotFound):
+        store(lambda s: s.get(pending.id, include_expired=True))
+    events = events_after(live_owner, after)
+    assert _ids(events) == [("memory.rejected", str(pending.id))]
+    assert events[0]["actor"] == "memory" and events[0]["memory_source"] == "model"
+    assert PREFIX not in json.dumps(events)
+
+
+def test_reject_refuses_what_is_not_a_pending_record(store: Run[Any], live_owner: Settings) -> None:
+    approved = store(lambda s: s.create(owner_record(1)))
+    pending = store(lambda s: s.create(proposal(2)))
+    before, after = snapshot(live_owner), last_event_id(live_owner)
+
+    with pytest.raises(NotPending):
+        store(lambda s: s.reject(approved.id, actor="owner"))
+    with pytest.raises(RecordNotFound):
+        store(lambda s: s.reject(uuid4(), actor="owner"))
+    for source in ("model", "tool"):
+        with pytest.raises(NotAllowed):
+            store(partial(_reject_as, pending.id, source))
+
+    assert snapshot(live_owner) == before
+    assert events_after(live_owner, after) == []
+
+
+def _pending_count(owner: Settings) -> int:
+    sql = (
+        "SELECT count(*) FROM public.memory_records WHERE status = 'pending'"  # noqa: S608
+        " AND (expires_at IS NULL OR expires_at > now())"
+        f" AND created_at > now() - interval '{PENDING_DAYS} days'"
+    )
+    return int(owner_sql(owner, sql)[0])
+
+
+def test_at_most_fifty_pending_records(store: Run[Any], live_owner: Settings) -> None:
+    room = PENDING_MAX - _pending_count(live_owner)
+    assert room > 0, "the test database already holds the maximum of pending records"
+
+    async def fill(s: MemoryStore) -> None:
+        for n in range(room):
+            await s.create(proposal(f"fill-{n}"))
+
+    store(fill)
+    before, after = snapshot(live_owner), last_event_id(live_owner)
+
+    for source in ("model", "tool"):
+        with pytest.raises(PendingLimit) as info:
+            store(partial(_create, proposal("one too many", source=source)))
+        assert PREFIX not in str(info.value) and info.value.__cause__ is None
+    assert snapshot(live_owner) == before
+    assert events_after(live_owner, after) == []
+
+    # The owner's own records are not proposals: the limit doesn't apply.
+    assert store(lambda s: s.create(owner_record("owner"))).status == "approved"
+
+
+def _age_sql(record_id: UUID, days: int) -> str:
+    return (
+        "UPDATE public.memory_records SET created_at = now() - interval"  # noqa: S608
+        f" '{int(days)} days', updated_at = now() WHERE id = '{UUID(str(record_id))}'"
+    )
+
+
+def _age(owner: Settings, record_id: UUID, days: int) -> None:
+    owner_sql(owner, _age_sql(record_id, days))
+
+
+def test_expired_records_are_hidden_then_deleted_with_events(
+    store: Run[Any], live_owner: Settings
+) -> None:
+    old_pending = store(lambda s: s.create(proposal(1)))
+    young_pending = store(lambda s: s.create(proposal(2)))
+    past = datetime.now(UTC) + timedelta(seconds=1)
+    timed = store(lambda s: s.create(owner_record(3, expires_at=past)))
+    approved_old = store(lambda s: s.create(owner_record(4)))
+    _age(live_owner, old_pending.id, PENDING_DAYS + 1)
+    _age(live_owner, young_pending.id, PENDING_DAYS - 1)
+    _age(live_owner, approved_old.id, PENDING_DAYS + 100)  # only pending ages out
+    asyncio.run(asyncio.sleep(1.2))  # past ``timed``'s expiry
+
+    expired = {old_pending.id, timed.id}
+    for record_id in expired:
+        with pytest.raises(RecordNotFound):
+            store(partial(_get, record_id, False))
+        assert store(partial(_get, record_id, True)).id == record_id
+    with pytest.raises(RecordNotFound):  # nor can it be approved or rejected
+        store(lambda s: s.approve(old_pending.id, Approval("public"), actor="owner"))
+
+    after = last_event_id(live_owner)
+    assert store(lambda s: s.expire()) >= 2
+
+    for record_id in expired:
+        with pytest.raises(RecordNotFound):
+            store(partial(_get, record_id, True))
+    events = [e for e in events_after(live_owner, after) if UUID(e["memory_record_id"]) in expired]
+    assert sorted(e["event_type"] for e in events) == ["memory.expired"] * 2
+    assert PREFIX not in json.dumps(events)
+    assert store(lambda s: s.get(young_pending.id)).status == "pending"
+    assert store(lambda s: s.get(approved_old.id)).status == "approved"
+
+
+def test_list_and_create_sweep_at_most_once_a_minute(store: Run[Any], live_owner: Settings) -> None:
+    first = store(lambda s: s.create(proposal(1)))
+    second = store(lambda s: s.create(proposal(2)))
+    _age(live_owner, first.id, PENDING_DAYS + 1)
+
+    async def exists(record_id: UUID) -> bool:
+        sql = f"SELECT count(*) FROM public.memory_records WHERE id = '{record_id}'"  # noqa: S608
+        return await _owner_sql(live_owner, sql) == [1]
+
+    async def body(s: MemoryStore) -> list[bool]:
+        seen = []
+        await s.list()  # a new store sweeps on its first list
+        seen.append(await exists(first.id))
+        await _owner_sql(live_owner, _age_sql(second.id, PENDING_DAYS + 1))
+        await s.list()  # within the minute: no sweep
+        seen.append(await exists(second.id))
+        s._last_sweep = time.monotonic() - SWEEP_INTERVAL_S
+        await s.create(owner_record(3))  # create sweeps too, once the minute is up
+        seen.append(await exists(second.id))
+        return seen
+
+    assert store(body) == [False, True, False]

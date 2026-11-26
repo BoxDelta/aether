@@ -26,6 +26,7 @@ from core.events import EventRecorder, EventWriter
 from core.identity import Identity, load_identity
 from core.log import Redactor, SecretCheck, configure_logging, secrets_from
 from core.memory_api import BODY_PATHS as MEMORY_BODY_PATHS
+from core.memory_api import BODY_PREFIXES as MEMORY_BODY_PREFIXES
 from core.memory_api import MAX_BODY_BYTES as MEMORY_MAX_BODY_BYTES
 from core.memory_api import memory_router, memory_store
 from core.ready import ready_router
@@ -146,7 +147,12 @@ def create_app(
     # Added last = outermost. Order per request: request IDs, then auth (before any
     # body is read), then the body-size check, then the route.
     app.add_middleware(BodySizeLimit, max_bytes=MAX_BODY_BYTES, paths=frozenset({CHAT_PATH}))
-    app.add_middleware(BodySizeLimit, max_bytes=MEMORY_MAX_BODY_BYTES, paths=MEMORY_BODY_PATHS)
+    app.add_middleware(
+        BodySizeLimit,
+        max_bytes=MEMORY_MAX_BODY_BYTES,
+        paths=MEMORY_BODY_PATHS,
+        prefixes=MEMORY_BODY_PREFIXES,
+    )
     app.add_middleware(BearerAuth, token=configured_token(settings))
     # An incoming request ID holding a configured secret is replaced (#75).
     app.add_middleware(RequestContextMiddleware, looks_secret=SecretCheck.from_settings(settings))

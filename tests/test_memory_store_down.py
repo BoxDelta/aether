@@ -51,6 +51,11 @@ def operations(store: MemoryStore) -> dict[str, Any]:
         "update": lambda: store.update(record_id, RecordChanges(content=CANARY), actor="owner"),
         "approve": lambda: store.approve(record_id, Approval("public"), actor="owner"),
         "delete": lambda: store.delete(record_id, actor="owner"),
+        "reject": lambda: store.reject(record_id, actor="owner"),
+        "expire": lambda: store.expire(),
+        "propose": lambda: store.create(
+            NewRecord(content=CANARY, category="task", privacy="public", source="model")
+        ),
     }
 
 

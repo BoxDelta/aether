@@ -35,10 +35,19 @@ migration 0004 are the backstop:
   not caught; the owner's approval review is the remaining check.
 - **Content** 1 to ``CONTENT_MAX`` characters of valid text; **key** matches
   ``KEY_PATTERN``; at most one approved record per key, so a clash raises
-  ``KeyConflict`` (approve does not yet replace the old record: step 8, #67).
-- **Expiry**: a record past ``expires_at`` is left out of ``get`` and ``list`` unless
-  asked for, and can't be updated or approved; it can still be deleted. Nothing
-  deletes expired records yet (the clean-up is step 8).
+  ``KeyConflict`` on create and update (approve replaces instead, below).
+- **Expiry** (ADR-024 §1, D8): a record past ``expires_at``, and a pending record
+  ``PENDING_DAYS`` after it was created, is expired. It is left out of ``get`` and
+  ``list`` unless asked for, and can't be updated, approved or rejected; it can
+  still be deleted. ``expire`` deletes every expired record, with one
+  ``memory.expired`` event each; ``list`` and ``create`` run it first, at most once
+  every ``SWEEP_INTERVAL_S`` per store (no scheduler).
+- **Limit** (D8): at most ``PENDING_MAX`` unexpired pending records. One more from
+  a model or a tool raises ``PendingLimit``; the proposer drops it and counts.
+- **Approve replaces a key** (ADR-024 §1, #67): if another approved record has the
+  key the approved record ends up with, that record is deleted in the same
+  transaction (``memory.deleted``), so the new value replaces the old one.
+- **Reject** deletes a pending record (owner only), with ``memory.rejected``.
 - **Delete** is a hard delete: the row is gone, no tombstone (ADR-024 §4).
 
 What never leaves the store: memory content and keys never appear in log records,
@@ -62,7 +71,8 @@ undoes the change:
 - create by a model or a tool (``pending``): ``memory.proposed``;
 - create by the owner (approved at once, D1) and ``approve``: ``memory.approved``;
 - ``update``: ``memory.updated``, with the old level as well when the level changed;
-- ``delete``: ``memory.deleted``.
+- ``delete``, and the old record a key replacement removes: ``memory.deleted``;
+- ``reject``: ``memory.rejected``; the clean-up: ``memory.expired``.
 
 An event holds the record's ID, category, source and level (``MemoryRecordMeta``),
 never content, a key or corrected text. Reads (``get``, ``list``) write no event.
@@ -72,6 +82,7 @@ import contextlib
 import enum
 import logging
 import re
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -120,6 +131,11 @@ OWNER: Source = "owner"
 LIST_LIMIT_MAX = 200
 LIST_LIMIT_DEFAULT = 50
 QUERY_MAX = 200
+PENDING_MAX = 50  # D8
+PENDING_DAYS = 30  # D8
+SWEEP_INTERVAL_S = 60.0
+# pg_advisory_xact_lock key that serialises the pending-limit check (any fixed number).
+_PENDING_LOCK = 0x4D454D50  # "MEMP"
 
 _KEY = re.compile(KEY_PATTERN)
 _PROVIDER = re.compile(PROVIDER_NAME_PATTERN)
@@ -173,6 +189,11 @@ class NotPending(MemoryStoreError):
     def __init__(self, record_id: UUID) -> None:
         super().__init__(f"memory record {record_id} is not pending")
         self.record_id = record_id
+
+
+class PendingLimit(MemoryStoreError):
+    def __init__(self) -> None:
+        super().__init__(f"at most {PENDING_MAX} pending memory records")
 
 
 class KeyConflict(MemoryStoreError):
@@ -416,7 +437,12 @@ class MemoryRecord(BaseModel):
 
 
 _COLUMNS = ", ".join(MemoryRecord.model_fields)
-_NOT_EXPIRED = "(expires_at IS NULL OR expires_at > now())"
+_EXPIRED = (
+    "((expires_at IS NOT NULL AND expires_at <= now())"
+    f" OR (status = 'pending' AND created_at <= now() - interval '{PENDING_DAYS} days'))"
+)
+_NOT_EXPIRED = f"NOT {_EXPIRED}"
+_META = "id, category, source, privacy"  # the columns an event may describe
 T = TypeVar("T")
 
 
@@ -427,6 +453,13 @@ def _record(row: Any) -> MemoryRecord:
 def _meta(record: MemoryRecord) -> MemoryRecordMeta:
     return MemoryRecordMeta(
         record_id=record.id, category=record.category, source=record.source, level=record.privacy
+    )
+
+
+def _row_meta(row: Any) -> MemoryRecordMeta:
+    """Event metadata from a ``RETURNING {_META}`` row (a deleted record)."""
+    return MemoryRecordMeta(
+        record_id=row.id, category=row.category, source=row.source, level=row.privacy
     )
 
 
@@ -461,6 +494,7 @@ class MemoryStore:
             raise TypeError("secret_check must be a core.log.SecretCheck")
         self._engine = engine
         self._looks_secret = secret_check
+        self._last_sweep: float | None = None  # time.monotonic() of the last clean-up
 
     def _refuse_secrets(self, columns: Mapping[str, object], operation: str) -> None:
         """Raise ``SecretContent`` if a free-text column looks like a secret. Called
@@ -536,6 +570,14 @@ class MemoryStore:
         )
 
         async def insert(conn: AsyncConnection) -> MemoryRecord:
+            if not owner:
+                # Serialise proposals so two can't both pass the count at 49.
+                await conn.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _PENDING_LOCK})
+                count_sql = (
+                    f"SELECT count(*) FROM {TABLE} WHERE status = 'pending' AND {_NOT_EXPIRED}"  # noqa: S608
+                )
+                if (await conn.scalar(text(count_sql)) or 0) >= PENDING_MAX:
+                    raise PendingLimit
             record = _record((await conn.execute(text(sql), values)).one())
             kind: MemoryRecordEventType = (
                 "memory.approved" if record.status == "approved" else "memory.proposed"
@@ -543,6 +585,7 @@ class MemoryStore:
             await write_memory_event(conn, memory_record_event(kind, _meta(record)))
             return record
 
+        await self._sweep()
         record = await self._run(insert)
         logger.info(
             "Memory record created", extra={"record_id": str(record.id), "status": record.status}
@@ -587,6 +630,7 @@ class MemoryStore:
         async def select(conn: AsyncConnection) -> list[MemoryRecord]:
             return [_record(row) for row in await conn.execute(text(sql), params)]
 
+        await self._sweep()
         return await self._run(select)
 
     async def update(
@@ -604,7 +648,7 @@ class MemoryStore:
         extra = ", privacy_source = 'owner'" if "privacy" in columns else ""
 
         async def change(conn: AsyncConnection) -> MemoryRecord:
-            _, old_level = await self._lock(conn, record_id)
+            _, old_level, _ = await self._lock(conn, record_id)
             record = await self._set(conn, record_id, columns, extra)
             changed = old_level if old_level != record.privacy else None
             event = memory_record_event("memory.updated", _meta(record), old_level=changed)
@@ -633,9 +677,12 @@ class MemoryStore:
         extra = ", status = 'approved', privacy_source = 'owner', approved_at = now()"
 
         async def change(conn: AsyncConnection) -> MemoryRecord:
-            status, _ = await self._lock(conn, record_id)
+            status, _, current_key = await self._lock(conn, record_id)
             if status != "pending":
                 raise NotPending(record_id)
+            key = columns.get("key", current_key)
+            if key is not None:
+                await self._replace_key(conn, record_id, str(key))
             record = await self._set(conn, record_id, columns, extra)
             await write_memory_event(conn, memory_record_event("memory.approved", _meta(record)))
             return record
@@ -646,33 +693,85 @@ class MemoryStore:
         )
         return record
 
+    async def reject(self, record_id: UUID, *, actor: Source) -> None:
+        """Reject a pending record (owner only): a hard delete, ``memory.rejected``."""
+        _require_owner(actor, "reject")
+        _check_id(record_id)
+        sql = f"DELETE FROM {TABLE} WHERE id = :id RETURNING {_META}"  # noqa: S608
+
+        async def remove(conn: AsyncConnection) -> None:
+            status, _, _ = await self._lock(conn, record_id)
+            if status != "pending":
+                raise NotPending(record_id)
+            row = (await conn.execute(text(sql), {"id": record_id})).one()
+            await write_memory_event(conn, memory_record_event("memory.rejected", _row_meta(row)))
+
+        await self._run(remove)
+        logger.info("Memory record rejected", extra={"record_id": str(record_id)})
+
+    async def expire(self) -> int:
+        """Delete every expired record (one ``memory.expired`` event each, in the same
+        transaction); the number deleted. Metadata columns only are read back."""
+        sql = f"DELETE FROM {TABLE} WHERE {_EXPIRED} RETURNING {_META}"  # noqa: S608
+
+        async def remove(conn: AsyncConnection) -> int:
+            rows = list(await conn.execute(text(sql)))
+            for row in rows:
+                event = memory_record_event("memory.expired", _row_meta(row))
+                await write_memory_event(conn, event)
+            return len(rows)
+
+        count = await self._run(remove)
+        self._last_sweep = time.monotonic()
+        if count:
+            logger.info("Expired memory records deleted", extra={"count": count})
+        return count
+
+    async def _sweep(self) -> None:
+        """``expire`` unless it ran in the last ``SWEEP_INTERVAL_S``. Its errors are
+        the caller's: with the database down, the read or write fails too (#80)."""
+        last = self._last_sweep
+        if last is None or time.monotonic() - last >= SWEEP_INTERVAL_S:
+            await self.expire()
+
     async def delete(self, record_id: UUID, *, actor: Source) -> None:
         """Hard delete (owner only), expired or not. No tombstone (ADR-024 §4)."""
         _require_owner(actor, "delete")
         _check_id(record_id)
         # Metadata columns only: the deleted content is never read back.
-        sql = f"DELETE FROM {TABLE} WHERE id = :id RETURNING id, category, source, privacy"  # noqa: S608
+        sql = f"DELETE FROM {TABLE} WHERE id = :id RETURNING {_META}"  # noqa: S608
 
         async def remove(conn: AsyncConnection) -> None:
             row = (await conn.execute(text(sql), {"id": record_id})).one_or_none()
             if row is None:
                 raise RecordNotFound(record_id)
-            meta = MemoryRecordMeta(
-                record_id=row.id, category=row.category, source=row.source, level=row.privacy
-            )
-            await write_memory_event(conn, memory_record_event("memory.deleted", meta))
+            await write_memory_event(conn, memory_record_event("memory.deleted", _row_meta(row)))
 
         await self._run(remove)
         logger.info("Memory record deleted", extra={"record_id": str(record_id)})
 
     @staticmethod
-    async def _lock(conn: AsyncConnection, record_id: UUID) -> tuple[str, PrivacyLevel]:
-        """Lock an unexpired record for this transaction; its status and level."""
-        sql = f"SELECT status, privacy FROM {TABLE} WHERE id = :id AND {_NOT_EXPIRED} FOR UPDATE"  # noqa: S608
+    async def _lock(conn: AsyncConnection, record_id: UUID) -> tuple[str, PrivacyLevel, str | None]:
+        """Lock an unexpired record for this transaction; its status, level and key."""
+        sql = (
+            f"SELECT status, privacy, key FROM {TABLE} WHERE id = :id AND {_NOT_EXPIRED} FOR UPDATE"  # noqa: S608
+        )
         row = (await conn.execute(text(sql), {"id": record_id})).one_or_none()
         if row is None:
             raise RecordNotFound(record_id)
-        return str(row.status), cast(PrivacyLevel, row.privacy)
+        return str(row.status), cast(PrivacyLevel, row.privacy), row.key
+
+    @staticmethod
+    async def _replace_key(conn: AsyncConnection, record_id: UUID, key: str) -> None:
+        """Delete the approved record that holds ``key`` (expired or not: the unique
+        index covers both), with ``memory.deleted``. Approve calls it first."""
+        sql = (
+            f"DELETE FROM {TABLE} WHERE key = :key AND status = 'approved' AND id <> :id"  # noqa: S608
+            f" RETURNING {_META}"
+        )
+        for row in list(await conn.execute(text(sql), {"key": key, "id": record_id})):
+            await write_memory_event(conn, memory_record_event("memory.deleted", _row_meta(row)))
+            logger.info("Memory record replaced by approval", extra={"record_id": str(row.id)})
 
     @staticmethod
     async def _set(

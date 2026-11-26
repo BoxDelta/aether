@@ -242,7 +242,8 @@ event can't be written the change is rolled back (ADR-024 §5, #72).
 Its only caller is the memory API (`core/memory_api.py`, ADR-024 step 6,
 #92): `GET /memory` (filters `status`, `category`, `privacy` only),
 `GET /memory/{id}`, `POST /memory/search` (key and text query in the
-body, never the URL, which the access log records) and `POST /memory`.
+body, never the URL, which the access log records), `POST /memory`, and
+(step 8, #97) `POST /memory/{id}/approve` and `POST /memory/{id}/reject`.
 Every route is behind the bearer token, which means the owner in Phase 2
 (ADR-024 §2), so the API always passes `source="owner"`; the body can't
 set `source`, `status`, `privacy_source` or `source_request_id` (extra
@@ -254,7 +255,21 @@ is not echoed, logged, put in an event or stored (#75). Bodies are capped
 at 16 KiB. With no database configured or reachable (for example the
 encrypted volume locked) every memory route answers 503
 `MemoryUnavailable` with a fixed message, never an empty list, a 404 or
-a write that did nothing (#80). No retrieval for model calls yet.
+a write that did nothing (#80). Approve requires the owner's `privacy`
+(the suggested level is never kept by default) and may correct content,
+category and key; the secret check runs on the corrected text. If
+another approved record has the final key, approving deletes that record
+in the same transaction (`memory.deleted`, then `memory.approved`), so
+the new value replaces the old one. Reject hard-deletes a pending record
+(`memory.rejected`); an approved record is deleted only with `DELETE`
+(step 9). The store holds at most 50 pending records (D8): one more from
+a model or a tool is refused with `PendingLimit`. A pending record
+expires 30 days after it was proposed, any record at its `expires_at`;
+an expired record is never returned, approved or rejected, and the
+clean-up deletes it with one `memory.expired` event, run by the store
+before a list or a create at most once a minute, so an expired record
+can stay on disk until the next list or create. No retrieval for model
+calls yet.
 Limits: a `key` or `query` put in the `GET /memory` URL by mistake is
 refused with 422, but uvicorn's access log has already recorded the URL
 (redacted for secrets only), so the refusal makes the mistake loud, not
