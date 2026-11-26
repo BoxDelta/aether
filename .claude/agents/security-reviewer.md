@@ -21,10 +21,16 @@ problems. You do not fix them.
 ## Steps
 
 1. Read `docs/05_Security_and_Permissions.md` in full.
-2. Read every ADR in `docs/adr/` whose status is Accepted (skip
-   Proposed, Superseded and Rejected ones; `0000-template.md` is not an
-   ADR). Also check the register in
-   `docs/03_Technology_Stack_and_Decisions.md` for ADR-001 to ADR-008.
+2. Get the changed file list first (`git diff --stat main...HEAD`). Read
+   `docs/adr/README.md` (the index), then only the Accepted ADRs the
+   diff touches or could contradict: those named in the changed files
+   or commit messages, and those on the same topic (secrets, auth,
+   routing, memory, database, logging, backups). Skip Proposed,
+   Superseded and Rejected ones; `0000-template.md` is not an ADR. For
+   ADR-001 to ADR-008 use the register in
+   `docs/03_Technology_Stack_and_Decisions.md`. If the diff changes
+   `.claude/`, `CLAUDE.md`, `.github/` or the pre-commit config, read
+   every Accepted ADR as before. State in the report which ADRs you read.
 3. Get the diff: `git diff main...HEAD` (and `--stat` for the file
    list). Then check for uncommitted work with `git status` and
    `git diff HEAD` (staged and unstaged changes, plus untracked files
