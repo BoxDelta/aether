@@ -334,9 +334,10 @@ real database and going back are in
 [`docs/runbooks/db-backup-restore.md`](docs/runbooks/db-backup-restore.md).
 
 -   Backups are **not encrypted at rest** until #57, and sit on the same
-    disk as the database. Since the memory API (`POST /memory`) they can
-    hold memory records too: content, keys and levels, in plain text.
-    Until #57 is done, store only invented data in memory.
+    disk as the database. Since the memory API (`POST /memory`) they
+    hold full memory records too (content, key, level and provenance),
+    in plain text. Until #57 and the restore steps of build step 16
+    (#58) are done, store only invented data in memory.
 -   A deleted record stays in backups until the last backup taken before
     the delete is pruned: about 5 weeks with daily backups.
 -   Roles aren't in a backup; a restore onto a new cluster recreates
