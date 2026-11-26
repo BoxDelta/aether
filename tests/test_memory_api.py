@@ -260,6 +260,19 @@ def test_list_takes_only_fixed_filters_in_the_url(core: tuple[Core, TestClient])
 
 
 @pytest.mark.parametrize(
+    ("name", "value"),
+    [("privacy", "public"), ("status", "approved"), ("key", CANARY_KEY), ("query", CANARY)],
+)
+def test_export_takes_no_filters(core: tuple[Core, TestClient], name: str, value: str) -> None:
+    # The export is always everything (D10): a filter must never look like it worked.
+    c, client = core
+    r = client.get("/memory/export", params={name: value})
+    assert field_errors(r) == [["query", name]]
+    assert_clean(c, r)
+    assert CANARY not in r.text and CANARY_KEY not in r.text
+
+
+@pytest.mark.parametrize(
     ("params", "field"),
     [
         ({"status": "rejected"}, "status"),

@@ -40,11 +40,10 @@ Rules applied here:
 - **Errors** carry the field and the rule, never the value: validation errors go
   through ``core/errors.py`` (no input echoed), store errors name a field and a
   rule only. Logs carry the operation and error type, never content or keys.
-- **Size.** Bodies on ``/memory`` and ``/memory/search`` are capped at
+- **Size.** Bodies on ``/memory`` and every ``/memory/...`` path are capped at
   ``MAX_BODY_BYTES`` before parsing.
 
-Not here yet: export (step 10), retrieval for model calls (steps 11-12), model
-proposals (step 15).
+Not here yet: retrieval for model calls (steps 11-12), model proposals (step 15).
 """
 
 import logging
@@ -116,6 +115,12 @@ def memory_store(settings: Settings, engine: AsyncEngine) -> MemoryStore:
 
 class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class ExportQuery(_Strict):
+    """``GET /memory/export`` takes no filters: the export is always everything (D10).
+    A query string is refused, so ``?privacy=public`` can't look like a filtered file,
+    and a mistaken key or phrase in the URL (which the access log records) is loud."""
 
 
 class CreateMemory(_Strict):
@@ -322,7 +327,9 @@ async def search_memory(body: SearchMemory, request: Request) -> MemoryList | JS
 # Registered before GET /memory/{record_id}, which would otherwise take "export" as
 # an ID (a 422).
 @memory_router.get(EXPORT_PATH, response_model=MemoryExportDocument, responses=_ERRORS)
-async def export_memory(request: Request, response: Response) -> MemoryExportDocument | Response:
+async def export_memory(
+    _params: Annotated[ExportQuery, Query()], request: Request, response: Response
+) -> MemoryExportDocument | Response:
     store = _store(request)
     if store is None:
         return _unavailable()

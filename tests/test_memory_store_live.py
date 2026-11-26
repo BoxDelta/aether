@@ -1071,9 +1071,12 @@ def test_export_has_every_unexpired_record_and_one_event_with_the_count(
     expired = store(lambda s: s.create(owner_record(4)))
     _expire_now(live_owner, expired.id)
     before, after = snapshot(live_owner), last_event_id(live_owner)
+    [db_before] = owner_sql(live_owner, "SELECT now()")
 
     export = store(lambda s: s.export(actor="owner"))
 
+    [db_after] = owner_sql(live_owner, "SELECT now()")
+    assert db_before <= export.exported_at <= db_after  # the database clock, not Python's
     ids = [r.id for r in export.records]
     assert {public.id, sensitive.id, pending.id} <= set(ids)
     assert expired.id not in ids  # left out by the filter ...

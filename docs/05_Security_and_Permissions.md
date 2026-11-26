@@ -296,7 +296,8 @@ with every column of every unexpired record: all levels, Sensitive
 included, and pending records (ADR-024 §4, D10). It is the owner's own
 data on the authenticated route; once downloaded the file is outside
 AETHER's control, so keep it off synced or shared folders. The response is
-`Cache-Control: no-store`. Expired records are left out by the same filter
+`Cache-Control: no-store`. It takes no filters: any query parameter is a
+422, so `?privacy=public` can't pass for a filtered file. Expired records are left out by the same filter
 as the list; the export deletes nothing and runs no clean-up. One
 `memory.exported` event records the count only (no IDs, levels or
 content), in the same transaction as the read: if the event can't be
