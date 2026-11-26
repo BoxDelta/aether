@@ -236,14 +236,16 @@ change writes one metadata-only `memory.*` event (actor `memory`) in the
 same transaction: a proposal (`memory.proposed`), an owner create or an
 approval (`memory.approved`), a correction (`memory.updated`, with the
 old and new level when the level changed) and a delete
-(`memory.deleted`). If the change fails no event is written, and if the
+(`memory.deleted`). If the change fails no event is written (the expiry
+clean-up that may run first is separate, and keeps its own events), and if the
 event can't be written the change is rolled back (ADR-024 §5, #72).
 
 Its only caller is the memory API (`core/memory_api.py`, ADR-024 step 6,
 #92): `GET /memory` (filters `status`, `category`, `privacy` only),
 `GET /memory/{id}`, `POST /memory/search` (key and text query in the
 body, never the URL, which the access log records), `POST /memory`, and
-(step 8, #97) `POST /memory/{id}/approve` and `POST /memory/{id}/reject`.
+(step 8, #97) `POST /memory/{id}/approve` and `POST /memory/{id}/reject`,
+and (step 9, #101) `PATCH /memory/{id}` and `DELETE /memory/{id}`.
 Every route is behind the bearer token, which means the owner in Phase 2
 (ADR-024 §2), so the API always passes `source="owner"`; the body can't
 set `source`, `status`, `privacy_source` or `source_request_id` (extra
@@ -262,13 +264,25 @@ another approved record has the final key, approving deletes that record
 in the same transaction (`memory.deleted`, then `memory.approved`), so
 the new value replaces the old one (two approvals with the same key at
 the same moment: the second gets 409 `KeyConflict`, nothing lost). Reject hard-deletes a pending record
-(`memory.rejected`); an approved record is deleted only with `DELETE`
-(step 9). The store holds at most 50 pending records (D8): one more from
+(`memory.rejected`); an approved record is deleted only with `DELETE`.
+`PATCH` corrects `content`, `category`, `key`, `privacy` or
+`expires_at`, overwriting the old text with no history (D6); the secret
+check runs on the corrected text, a level set there is the owner's, and
+one `memory.updated` event records the old and new level when the level
+changed. Only `key` and `expires_at` may be sent as `null` (to clear
+them); `null` for anything else is a 422, never "unchanged". A key that
+another approved record holds is a 409 (only approve replaces), and an
+expired record can't be corrected (404). `DELETE` hard-deletes any
+record, expired or not, with `memory.deleted` (ADR-024 §4: what remains
+in backups is described in §11 below). Setting a key first deletes
+expired records, so an expired record the owner can't see never blocks
+its key. The store holds at most 50 pending records (D8): one more from
 a model or a tool is refused with `PendingLimit`. A pending record
 expires 30 days after it was proposed, any record at its `expires_at`;
 an expired record is never returned, approved or rejected, and the
 clean-up deletes it with one `memory.expired` event, run by the store
-before a list or a create at most once a minute, so an expired record
+before a list or a create at most once a minute (and, unthrottled,
+before the owner sets a key), so an expired record
 can stay on disk until the next list or create. The clean-up runs as
 part of the read: if it fails, the list or create fails too (503 or
 500), never an empty or stale answer. Not yet handled: records a restore

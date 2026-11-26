@@ -982,14 +982,13 @@ def test_concurrent_proposals_never_pass_the_limit(store: Run[Any], live_owner: 
 
 def test_approve_replaces_an_expired_approved_holder(store: Run[Any], live_owner: Settings) -> None:
     # The unique index covers expired approved records too, so approve must replace
-    # one the clean-up hasn't deleted yet. One store, after its sweep, so nothing
-    # sweeps the expired holder first.
+    # one the clean-up hasn't deleted yet (approve itself doesn't sweep).
     old = store(lambda s: s.create(owner_record(1, key=KEY)))
 
     async def body(s: MemoryStore) -> tuple[int, MemoryRecord]:
-        await s.list()  # this store's sweep; the next one is a minute away
-        await _owner_sql(live_owner, _expire_sql(old.id))
+        # Creating with a key clears expired records, so expire the holder after.
         new = await s.create(proposal(2, key=KEY))
+        await _owner_sql(live_owner, _expire_sql(old.id))
         mark = int((await _owner_sql(live_owner, "SELECT max(id) FROM events"))[0])
         return mark, await s.approve(new.id, Approval("public"), actor="owner")
 

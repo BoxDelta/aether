@@ -13,7 +13,13 @@
   corrected in the same step (``key: null`` clears it). An approved record with the
   same key is replaced (deleted). 409 ``NotPending`` if it isn't pending.
 - ``POST /memory/{id}/reject``: deletes a pending record (204). 409 ``NotPending``
-  for an approved one (deleting those is ``DELETE``, step 9).
+  for an approved one (deleting those is ``DELETE``).
+- ``PATCH /memory/{id}`` (step 9, #101): the owner corrects ``content``,
+  ``category``, ``key``, ``privacy`` or ``expires_at``; the old text is overwritten
+  (D6). ``key`` and ``expires_at`` may be ``null`` (cleared); nothing else may. A
+  level set here is the owner's. 409 ``KeyConflict`` if another approved record
+  has the key (only approve replaces). Expired records: 404.
+- ``DELETE /memory/{id}``: hard delete of any record, expired or not (204).
 
 Rules applied here:
 
@@ -32,12 +38,12 @@ Rules applied here:
 - **Size.** Bodies on ``/memory`` and ``/memory/search`` are capped at
   ``MAX_BODY_BYTES`` before parsing.
 
-Not here yet: ``PATCH`` and ``DELETE`` (step 9), export (step 10), retrieval for
-model calls (steps 11-12), model proposals (step 15).
+Not here yet: export (step 10), retrieval for model calls (steps 11-12), model
+proposals (step 15).
 """
 
 import logging
-from typing import Annotated, Literal
+from typing import Annotated, Any, ClassVar, Literal, Self
 from uuid import UUID
 
 from fastapi import APIRouter, Query, Request, Response
@@ -66,6 +72,7 @@ from memory.store import (
     NotAllowed,
     NotPending,
     PendingLimit,
+    RecordChanges,
     RecordNotFound,
     StoreUnavailable,
 )
@@ -121,14 +128,43 @@ class ListQuery(_Strict):
     offset: Annotated[int, Field(ge=0)] = 0
 
 
-class ApproveMemory(_Strict):
+class _Corrections(_Strict):
+    """Fields left out don't change. Only those in ``NULLABLE`` may be sent as
+    ``null`` (to clear them); ``null`` anywhere else is a 422, never "unchanged"."""
+
+    NULLABLE: ClassVar[frozenset[str]] = frozenset({"key"})
+
+    content: str | None = None
+    category: Category | None = None
+    key: str | None = None
+
+    @model_validator(mode="after")
+    def _no_null_except_clearable(self) -> Self:
+        for name in self.model_fields_set - self.NULLABLE:
+            if getattr(self, name) is None:
+                raise ValueError(f"{name} can't be null")
+        return self
+
+    def given(self, name: str) -> Any:
+        """The value sent for ``name``, or ``UNSET`` if it was left out."""
+        return getattr(self, name) if name in self.model_fields_set else UNSET
+
+
+class ApproveMemory(_Corrections):
     """The owner's approval: the final level, and optional corrections."""
 
     # Required: no record is approved with a level nobody chose (ADR-024 §1).
     privacy: PrivacyLevel
-    content: str | None = None
-    category: Category | None = None
-    key: str | None = None  # sent as null: clear the key; left out: keep it
+
+
+class PatchMemory(_Corrections):
+    """The owner's correction (D6: overwrite). At least one field; the store says
+    "nothing to change" otherwise."""
+
+    NULLABLE: ClassVar[frozenset[str]] = frozenset({"key", "expires_at"})
+
+    privacy: PrivacyLevel | None = None
+    expires_at: AwareDatetime | None = None
 
 
 class SearchMemory(_Strict):
@@ -321,13 +357,12 @@ async def approve_memory(
     store = _store(request)
     if store is None:
         return _unavailable()
-    sent = body.model_fields_set
     try:
         approval = Approval(
             privacy=body.privacy,
-            content=body.content if body.content is not None else UNSET,
-            category=body.category if body.category is not None else UNSET,
-            key=body.key if "key" in sent else UNSET,
+            content=body.given("content"),
+            category=body.given("category"),
+            key=body.given("key"),
         )
         return await store.approve(record_id, approval, actor=OWNER)
     except MemoryStoreError as exc:
@@ -343,4 +378,38 @@ async def reject_memory(record_id: UUID, request: Request) -> Response:
         await store.reject(record_id, actor=OWNER)
     except MemoryStoreError as exc:
         return _store_error(exc, "path", "reject")
+    return Response(status_code=204)
+
+
+@memory_router.patch(
+    MEMORY_PATH + "/{record_id}", response_model=MemoryRecord, responses=_RECORD_ERRORS
+)
+async def patch_memory(
+    record_id: UUID, body: PatchMemory, request: Request
+) -> MemoryRecord | JSONResponse:
+    store = _store(request)
+    if store is None:
+        return _unavailable()
+    try:
+        changes = RecordChanges(
+            content=body.given("content"),
+            category=body.given("category"),
+            key=body.given("key"),
+            privacy=body.given("privacy"),
+            expires_at=body.given("expires_at"),
+        )
+        return await store.update(record_id, changes, actor=OWNER)
+    except MemoryStoreError as exc:
+        return _store_error(exc, "body", "update")
+
+
+@memory_router.delete(MEMORY_PATH + "/{record_id}", status_code=204, responses=_RECORD_ERRORS)
+async def delete_memory(record_id: UUID, request: Request) -> Response:
+    store = _store(request)
+    if store is None:
+        return _unavailable()
+    try:
+        await store.delete(record_id, actor=OWNER)
+    except MemoryStoreError as exc:
+        return _store_error(exc, "path", "delete")
     return Response(status_code=204)

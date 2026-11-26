@@ -12,8 +12,8 @@ the design, follow the ADR numbers into `docs/adr/`.
     "looks like a secret" check `SecretCheck` (`log.py`),
     the shared error format and 422 handler (`errors.py`), the `/chat`
     endpoint (`chat.py`), `/ready` (`ready.py`), the memory routes
-    (`memory_api.py`: list, get, search, owner create, approve and
-    reject), the Postgres
+    (`memory_api.py`: list, get, search, owner create, approve,
+    reject, correct and delete), the Postgres
     engine and its privileged-role check (`db.py`; the app role may update
     and delete only in `memory_records`), the owner-only step
     that sets the app role's password (`db_admin.py`), verified backups
@@ -63,7 +63,8 @@ the design, follow the ADR numbers into `docs/adr/`.
     approved record with the same key; reject deletes a pending one; at
     most 50 pending; expired records (pending after 30 days, or past
     `expires_at`) are hidden, then deleted by `expire`, which `list` and
-    `create` run at most once a minute (step 8). No retrieval yet.
+    `create` run at most once a minute, and unthrottled before the owner
+    sets a key (steps 8 and 9). No retrieval yet.
 -   `scripts/`: the identity continuity run (`identity_continuity.py`), a
     backup copy of the owner's `safemerge` fish function (never sourced),
     the systemd user timer templates for backups (`systemd/`, installed by

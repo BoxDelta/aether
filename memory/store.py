@@ -35,13 +35,16 @@ migration 0004 are the backstop:
   not caught; the owner's approval review is the remaining check.
 - **Content** 1 to ``CONTENT_MAX`` characters of valid text; **key** matches
   ``KEY_PATTERN``; at most one approved record per key, so a clash raises
-  ``KeyConflict`` on create and update (approve replaces instead, below).
+  ``KeyConflict`` on create and update (approve replaces instead, below). Setting a
+  key first deletes expired records (``expire``), so an expired record the owner
+  can't see never blocks its key.
 - **Expiry** (ADR-024 §1, D8): a record past ``expires_at``, and a pending record
   ``PENDING_DAYS`` after it was created, is expired. It is left out of ``get`` and
   ``list`` unless asked for, and can't be updated, approved or rejected; it can
   still be deleted. ``expire`` deletes every expired record, with one
   ``memory.expired`` event each; ``list`` and ``create`` run it first, at most once
-  every ``SWEEP_INTERVAL_S`` per store (no scheduler). Known gap for step 16: a
+  every ``SWEEP_INTERVAL_S`` per store (no scheduler), and an owner create or an
+  update that sets a key runs it unthrottled first. Known gap for step 16: a
   record a restore sets back to ``pending`` keeps its old ``created_at``, so it
   would expire at once; step 16 adds the "restored" marker and exempts it (#67).
 - **Limit** (D8): at most ``PENDING_MAX`` unexpired pending records. One more from
@@ -589,7 +592,9 @@ class MemoryStore:
             await write_memory_event(conn, memory_record_event(kind, _meta(record)))
             return record
 
-        await self._sweep()
+        # Only an approved record can block a key, so only the owner's create needs
+        # the unthrottled clean-up; proposals keep the once-a-minute sweep.
+        await (self.expire() if owner and new.key is not None else self._sweep())
         record = await self._run(insert)
         logger.info(
             "Memory record created", extra={"record_id": str(record.id), "status": record.status}
@@ -649,6 +654,10 @@ class MemoryStore:
         if not columns:
             raise InvalidRecord("changes", "nothing to change")
         self._refuse_secrets(columns, "update")
+        if columns.get("key") is not None:
+            # An expired approved record still holds its key in the unique index, but
+            # the owner can't see it: clear expired records first, not a 409.
+            await self.expire()
         extra = ", privacy_source = 'owner'" if "privacy" in columns else ""
 
         async def change(conn: AsyncConnection) -> MemoryRecord:
