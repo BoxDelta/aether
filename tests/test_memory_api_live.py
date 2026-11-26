@@ -23,6 +23,7 @@ from core.config import Settings
 from core.db import create_engine
 from core.identity import load_identity
 from core.log import SecretCheck
+from core.memory_api import OFFSET_MAX
 from core.request_context import REQUEST_ID_HEADER
 from memory.store import MemoryStore, NewRecord
 from router.routing import Router
@@ -131,6 +132,17 @@ def test_list_filters_and_pages(client: TestClient) -> None:
 
     page = client.get("/memory", params={"limit": 1, "offset": 0}).json()
     assert (page["limit"], page["offset"], len(page["records"])) == (1, 0, 1)
+
+
+def test_the_largest_offset_is_an_empty_page_not_an_error(client: TestClient) -> None:
+    client.post("/memory", json=record(1))
+
+    listed = client.get("/memory", params={"offset": OFFSET_MAX})
+    searched = client.post("/memory/search", json={"query": PREFIX, "offset": OFFSET_MAX})
+
+    for r in (listed, searched):
+        assert r.status_code == 200, r.text
+        assert r.json() == {"records": [], "limit": 50, "offset": OFFSET_MAX}
 
 
 def test_search_by_key_and_by_text(client: TestClient) -> None:
