@@ -236,7 +236,8 @@ change writes one metadata-only `memory.*` event (actor `memory`) in the
 same transaction: a proposal (`memory.proposed`), an owner create or an
 approval (`memory.approved`), a correction (`memory.updated`, with the
 old and new level when the level changed) and a delete
-(`memory.deleted`). If the change fails no event is written, and if the
+(`memory.deleted`). If the change fails no event is written (the expiry
+clean-up that may run first is separate, and keeps its own events), and if the
 event can't be written the change is rolled back (ADR-024 §5, #72).
 
 Its only caller is the memory API (`core/memory_api.py`, ADR-024 step 6,
@@ -280,7 +281,8 @@ a model or a tool is refused with `PendingLimit`. A pending record
 expires 30 days after it was proposed, any record at its `expires_at`;
 an expired record is never returned, approved or rejected, and the
 clean-up deletes it with one `memory.expired` event, run by the store
-before a list or a create at most once a minute, so an expired record
+before a list or a create at most once a minute (and, unthrottled,
+before the owner sets a key), so an expired record
 can stay on disk until the next list or create. The clean-up runs as
 part of the read: if it fails, the list or create fails too (503 or
 500), never an empty or stale answer. Not yet handled: records a restore

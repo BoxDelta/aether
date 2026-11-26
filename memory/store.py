@@ -43,7 +43,8 @@ migration 0004 are the backstop:
   ``list`` unless asked for, and can't be updated, approved or rejected; it can
   still be deleted. ``expire`` deletes every expired record, with one
   ``memory.expired`` event each; ``list`` and ``create`` run it first, at most once
-  every ``SWEEP_INTERVAL_S`` per store (no scheduler). Known gap for step 16: a
+  every ``SWEEP_INTERVAL_S`` per store (no scheduler), and an owner create or an
+  update that sets a key runs it unthrottled first. Known gap for step 16: a
   record a restore sets back to ``pending`` keeps its old ``created_at``, so it
   would expire at once; step 16 adds the "restored" marker and exempts it (#67).
 - **Limit** (D8): at most ``PENDING_MAX`` unexpired pending records. One more from
@@ -591,7 +592,9 @@ class MemoryStore:
             await write_memory_event(conn, memory_record_event(kind, _meta(record)))
             return record
 
-        await (self.expire() if new.key is not None else self._sweep())
+        # Only an approved record can block a key, so only the owner's create needs
+        # the unthrottled clean-up; proposals keep the once-a-minute sweep.
+        await (self.expire() if owner and new.key is not None else self._sweep())
         record = await self._run(insert)
         logger.info(
             "Memory record created", extra={"record_id": str(record.id), "status": record.status}
