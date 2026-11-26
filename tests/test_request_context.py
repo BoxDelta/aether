@@ -153,3 +153,20 @@ def test_context_is_cleared_after_request(client: TestClient) -> None:
 )
 def test_is_safe_id(value: str | None, expected: bool) -> None:
     assert is_safe_id(value) is expected
+
+
+def test_an_id_holding_a_configured_secret_is_replaced(client: TestClient) -> None:
+    # The token is a safe ID by its characters; Core still never adopts it (#75), so
+    # it is not echoed, logged, put in an event or stored with a memory record.
+    response = client.get(
+        "/_test/context",
+        headers={REQUEST_ID_HEADER: TEST_TOKEN, SESSION_ID_HEADER: f"s-{TEST_TOKEN}"},
+    )
+
+    assert response.headers[REQUEST_ID_HEADER] != TEST_TOKEN
+    assert SESSION_ID_HEADER not in response.headers
+    assert response.json() == {
+        "request_id": response.headers[REQUEST_ID_HEADER],
+        "session_id": None,
+    }
+    assert TEST_TOKEN not in response.text

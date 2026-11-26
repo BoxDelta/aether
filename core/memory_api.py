@@ -1,0 +1,270 @@
+"""The memory API, read and owner-create (ADR-024 §2, §4; step 6 of #58, #92).
+
+- ``GET /memory``: list, filtered only by ``status``, ``category`` and ``privacy``
+  (fixed values, not content), paged.
+- ``GET /memory/{id}``: one record.
+- ``POST /memory/search``: by ``key`` and/or a text ``query``, in the body: the
+  uvicorn access log records the query string, and a key or a phrase is content.
+- ``POST /memory``: the owner creates an approved record. ``privacy`` is required
+  (422 without it, never defaulted, Decision D1); ``secret`` and secret-shaped
+  content are refused by the store (docs/05 §7.1).
+
+Rules applied here:
+
+- **Who.** The bearer token means the owner in Phase 2 (ADR-024 §2, ADR-021), so
+  ``source`` is always ``owner``. The body can't set ``source``, ``status`` or
+  ``source_request_id`` (extra fields are refused); ``source_request_id`` is
+  Core's request ID (``core.request_context``).
+- **The store** is built once per app, from Settings, with
+  ``SecretCheck.from_settings`` so the configured values are refused too (#75).
+- **Database down** (#80; ADR-026 §5, proposed in #82): no database configured, or none reachable,
+  is a 503 ``MemoryUnavailable`` with a fixed message: never an empty list, a 404
+  or a write that did nothing.
+- **Errors** carry the field and the rule, never the value: validation errors go
+  through ``core/errors.py`` (no input echoed), store errors name a field and a
+  rule only. Logs carry the operation and error type, never content or keys.
+- **Size.** Bodies on ``/memory`` and ``/memory/search`` are capped at
+  ``MAX_BODY_BYTES`` before parsing.
+
+Not here yet: approve and reject (step 8), ``PATCH`` and ``DELETE`` (step 9),
+export (step 10), retrieval for model calls (steps 11-12).
+"""
+
+import logging
+from typing import Annotated, Literal
+from uuid import UUID
+
+from fastapi import APIRouter, Query, Request
+from fastapi.responses import JSONResponse
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
+from sqlalchemy.ext.asyncio import AsyncEngine
+
+from core.config import Settings
+from core.errors import ErrorResponse, FieldError, error_json
+from core.log import SecretCheck
+from core.request_context import get_request_id
+from memory.store import (
+    LIST_LIMIT_DEFAULT,
+    LIST_LIMIT_MAX,
+    OWNER,
+    QUERY_MAX,
+    InvalidRecord,
+    KeyConflict,
+    ListFilter,
+    MemoryRecord,
+    MemoryStore,
+    MemoryStoreError,
+    NewRecord,
+    NotAllowed,
+    RecordNotFound,
+    StoreUnavailable,
+)
+from memory.types import Category, Status
+from router.contract import PrivacyLevel
+
+logger = logging.getLogger("aether.core.memory_api")
+
+MEMORY_PATH = "/memory"
+SEARCH_PATH = "/memory/search"
+BODY_PATHS = frozenset({MEMORY_PATH, SEARCH_PATH})
+# A record is at most 1000 characters (memory.store.CONTENT_MAX); 16 KiB is plenty
+# even for 4-byte characters escaped in JSON.
+MAX_BODY_BYTES = 16 * 1024
+UNAVAILABLE_MESSAGE = "memory is unavailable: the database can't be reached"
+
+Where = Literal["body", "query", "path"]
+
+
+def memory_store(settings: Settings, engine: AsyncEngine) -> MemoryStore:
+    """The one way Core builds its store: the secret check includes every
+    configured secret value (#75)."""
+    return MemoryStore(engine, SecretCheck.from_settings(settings))
+
+
+# --- request / response shapes ------------------------------------------------------
+
+
+class _Strict(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class CreateMemory(_Strict):
+    """The owner's new record. Content and key limits are the store's own checks."""
+
+    content: str
+    category: Category
+    # Required: no default, so a missing level is a 422 (Decision D1).
+    privacy: PrivacyLevel
+    key: str | None = None
+    expires_at: AwareDatetime | None = None
+
+
+class ListQuery(_Strict):
+    """``GET /memory`` filters: fixed values only. Anything else in the query string
+    (a ``key``, a ``query``) is refused, because the access log records it."""
+
+    status: Status | None = None
+    category: Category | None = None
+    privacy: PrivacyLevel | None = None
+    limit: Annotated[int, Field(ge=1, le=LIST_LIMIT_MAX)] = LIST_LIMIT_DEFAULT
+    offset: Annotated[int, Field(ge=0)] = 0
+
+
+class SearchMemory(_Strict):
+    """Search by exact ``key`` and/or a case-insensitive substring ``query``."""
+
+    key: str | None = None
+    query: Annotated[str, Field(min_length=1, max_length=QUERY_MAX)] | None = None
+    status: Status | None = None
+    category: Category | None = None
+    privacy: PrivacyLevel | None = None
+    limit: Annotated[int, Field(ge=1, le=LIST_LIMIT_MAX)] = LIST_LIMIT_DEFAULT
+    offset: Annotated[int, Field(ge=0)] = 0
+
+    @model_validator(mode="after")
+    def _something_to_find(self) -> "SearchMemory":
+        if self.key is None and self.query is None:
+            raise ValueError("give a key, a query or both")
+        return self
+
+
+class MemoryList(BaseModel):
+    records: list[MemoryRecord]
+    limit: int
+    offset: int
+
+
+# --- errors ---------------------------------------------------------------------------
+
+
+def _store_error(exc: MemoryStoreError, where: Where, operation: str) -> JSONResponse:
+    """A fixed response for a store error. Store messages name a field and a rule
+    (or an error type), never content or keys."""
+    if isinstance(exc, InvalidRecord):
+        loc = ["header", "X-Request-ID"] if exc.field == "source_request_id" else [where, exc.field]
+        return error_json(
+            422, "ValidationError", "invalid request", fields=[FieldError(loc=loc, msg=exc.rule)]
+        )
+    if isinstance(exc, RecordNotFound):
+        return error_json(404, "NotFound", "memory record not found")
+    if isinstance(exc, KeyConflict):
+        return error_json(409, "KeyConflict", str(exc))
+    if isinstance(exc, NotAllowed):  # not reachable: the API always acts as the owner
+        return error_json(403, "NotAllowed", "not allowed")
+    if isinstance(exc, StoreUnavailable):
+        logger.warning(
+            "Memory %s failed: database unavailable",
+            operation,
+            extra={"operation": operation, "error": str(exc)},
+        )
+        return _unavailable()
+    logger.error("Memory %s failed", operation, extra={"operation": operation, "error": str(exc)})
+    return error_json(500, "MemoryStoreFailed", "the memory store failed")
+
+
+def _unavailable() -> JSONResponse:
+    return error_json(503, "MemoryUnavailable", UNAVAILABLE_MESSAGE)
+
+
+def _store(request: Request) -> MemoryStore | None:
+    store: MemoryStore | None = request.app.state.memory
+    if store is None:
+        logger.warning("Memory request refused: no database configured")
+    return store
+
+
+# --- routes ---------------------------------------------------------------------------
+
+_ERRORS: dict[int | str, dict[str, object]] = {
+    401: {"model": ErrorResponse, "description": "Missing or invalid API token"},
+    413: {"model": ErrorResponse, "description": "Request body too large"},
+    422: {"model": ErrorResponse, "description": "Invalid request (input not echoed)"},
+    503: {"model": ErrorResponse, "description": "Database unavailable (MemoryUnavailable)"},
+}
+
+memory_router = APIRouter(tags=["memory"])
+
+
+@memory_router.get(MEMORY_PATH, response_model=MemoryList, responses=_ERRORS)
+async def list_memory(
+    params: Annotated[ListQuery, Query()], request: Request
+) -> MemoryList | JSONResponse:
+    store = _store(request)
+    if store is None:
+        return _unavailable()
+    try:
+        filters = ListFilter(
+            status=params.status,
+            category=params.category,
+            privacy=params.privacy,
+            limit=params.limit,
+            offset=params.offset,
+        )
+        records = await store.list(filters)
+    except MemoryStoreError as exc:
+        return _store_error(exc, "query", "list")
+    return MemoryList(records=records, limit=params.limit, offset=params.offset)
+
+
+@memory_router.post(SEARCH_PATH, response_model=MemoryList, responses=_ERRORS)
+async def search_memory(body: SearchMemory, request: Request) -> MemoryList | JSONResponse:
+    store = _store(request)
+    if store is None:
+        return _unavailable()
+    try:
+        filters = ListFilter(
+            key=body.key,
+            query=body.query,
+            status=body.status,
+            category=body.category,
+            privacy=body.privacy,
+            limit=body.limit,
+            offset=body.offset,
+        )
+        records = await store.list(filters)
+    except MemoryStoreError as exc:
+        return _store_error(exc, "body", "search")
+    return MemoryList(records=records, limit=body.limit, offset=body.offset)
+
+
+@memory_router.get(
+    MEMORY_PATH + "/{record_id}",
+    response_model=MemoryRecord,
+    responses={**_ERRORS, 404: {"model": ErrorResponse, "description": "No such record"}},
+)
+async def get_memory(record_id: UUID, request: Request) -> MemoryRecord | JSONResponse:
+    store = _store(request)
+    if store is None:
+        return _unavailable()
+    try:
+        return await store.get(record_id)
+    except MemoryStoreError as exc:
+        return _store_error(exc, "path", "get")
+
+
+@memory_router.post(
+    MEMORY_PATH,
+    response_model=MemoryRecord,
+    status_code=201,
+    responses={
+        **_ERRORS,
+        409: {"model": ErrorResponse, "description": "Another approved record has this key"},
+    },
+)
+async def create_memory(body: CreateMemory, request: Request) -> MemoryRecord | JSONResponse:
+    store = _store(request)
+    if store is None:
+        return _unavailable()
+    try:
+        new = NewRecord(
+            content=body.content,
+            category=body.category,
+            privacy=body.privacy,
+            source=OWNER,  # the token means the owner (ADR-024 §2), never the body
+            key=body.key,
+            source_request_id=get_request_id(),
+            expires_at=body.expires_at,
+        )
+        return await store.create(new)
+    except MemoryStoreError as exc:
+        return _store_error(exc, "body", "create")

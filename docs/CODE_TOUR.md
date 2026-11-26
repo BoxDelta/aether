@@ -11,7 +11,8 @@ the design, follow the ADR numbers into `docs/adr/`.
     (`request_context.py`), JSON logging, secret redaction and the shared
     "looks like a secret" check `SecretCheck` (`log.py`),
     the shared error format and 422 handler (`errors.py`), the `/chat`
-    endpoint (`chat.py`), `/ready` (`ready.py`), the Postgres
+    endpoint (`chat.py`), `/ready` (`ready.py`), the memory routes
+    (`memory_api.py`: list, get, search and owner create), the Postgres
     engine and its privileged-role check (`db.py`; the app role may update
     and delete only in `memory_records`), the owner-only step
     that sets the app role's password (`db_admin.py`), verified backups
@@ -53,7 +54,10 @@ the design, follow the ADR numbers into `docs/adr/`.
     secret is refused on create, update and approve by `SecretCheck`
     (`core/log.py`: the log redactor's own patterns and configured
     values), which the store takes as a required constructor argument
-    (#70). Nothing calls it yet: no API or retrieval.
+    (#70). Its only caller is the memory API (`core/memory_api.py`, step
+    6), which builds it once with `SecretCheck.from_settings`, always as
+    the owner. With the database down every operation raises
+    `StoreUnavailable` and the API answers 503 (#80). No retrieval yet.
 -   `scripts/`: the identity continuity run (`identity_continuity.py`), a
     backup copy of the owner's `safemerge` fish function (never sourced),
     the systemd user timer templates for backups (`systemd/`, installed by

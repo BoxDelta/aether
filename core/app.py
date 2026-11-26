@@ -24,9 +24,13 @@ from core.db import (
 from core.errors import validation_error_handler
 from core.events import EventRecorder, EventWriter
 from core.identity import Identity, load_identity
-from core.log import Redactor, configure_logging, secrets_from
+from core.log import Redactor, SecretCheck, configure_logging, secrets_from
+from core.memory_api import BODY_PATHS as MEMORY_BODY_PATHS
+from core.memory_api import MAX_BODY_BYTES as MEMORY_MAX_BODY_BYTES
+from core.memory_api import memory_router, memory_store
 from core.ready import ready_router
 from core.request_context import RequestContextMiddleware
+from memory.store import MemoryStore
 from router.routing import Router
 
 logger = logging.getLogger("aether.core.app")
@@ -75,11 +79,17 @@ def create_app(
     *,
     router: Router | None = None,
     events: EventRecorder | None = None,
+    memory: MemoryStore | None = None,
 ) -> FastAPI:
     """Build the Core app. Called by uvicorn with ``--factory`` and by tests.
 
     Tests pass explicit ``settings`` so they never read the developer's ``.env``,
-    and may pass a ``router`` (fake providers) and ``events`` recorder.
+    and may pass a ``router`` (fake providers), an ``events`` recorder and a
+    ``memory`` store. Otherwise the memory store is built once, here, on the same
+    engine as events, with ``SecretCheck.from_settings`` (#75); without a usable
+    ``DATABASE_URL`` there is none and the memory routes answer 503 (#80). It is
+    built only when Core builds its own events engine: with ``events`` injected and
+    no ``memory``, the memory routes answer 503 even if ``DATABASE_URL`` is set.
     Without ``identity``, the default identity file is loaded; an invalid file
     raises ``IdentityError`` so Core fails at startup rather than at the first call.
     An invalid ``AETHER_CLOUD_MAX_OUTPUT_TOKENS`` raises ``ConfigError`` the same way.
@@ -101,6 +111,8 @@ def create_app(
     engine: AsyncEngine | None = None
     if events is None:
         events, engine = _event_recorder(settings, redactor)
+    if memory is None and engine is not None:
+        memory = memory_store(settings, engine)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -123,6 +135,7 @@ def create_app(
     app.state.redactor = redactor
     app.state.router = router if router is not None else Router.from_settings(settings, identity)
     app.state.events = events
+    app.state.memory = memory
     # Shared DB pool (events and /ready); None without DATABASE_URL or with an
     # injected recorder (then /ready makes a short-lived engine).
     app.state.engine = engine
@@ -133,8 +146,10 @@ def create_app(
     # Added last = outermost. Order per request: request IDs, then auth (before any
     # body is read), then the body-size check, then the route.
     app.add_middleware(BodySizeLimit, max_bytes=MAX_BODY_BYTES, paths=frozenset({CHAT_PATH}))
+    app.add_middleware(BodySizeLimit, max_bytes=MEMORY_MAX_BODY_BYTES, paths=MEMORY_BODY_PATHS)
     app.add_middleware(BearerAuth, token=configured_token(settings))
-    app.add_middleware(RequestContextMiddleware)
+    # An incoming request ID holding a configured secret is replaced (#75).
+    app.add_middleware(RequestContextMiddleware, looks_secret=SecretCheck.from_settings(settings))
 
     @app.get("/health", response_model=HealthResponse, tags=["system"])
     async def health() -> HealthResponse:
@@ -142,4 +157,5 @@ def create_app(
 
     app.include_router(chat_router)
     app.include_router(ready_router)
+    app.include_router(memory_router)
     return app

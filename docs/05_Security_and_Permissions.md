@@ -237,8 +237,29 @@ same transaction: a proposal (`memory.proposed`), an owner create or an
 approval (`memory.approved`), a correction (`memory.updated`, with the
 old and new level when the level changed) and a delete
 (`memory.deleted`). If the change fails no event is written, and if the
-event can't be written the change is rolled back (ADR-024 §5, #72). It
-has no caller yet: no API, no retrieval.
+event can't be written the change is rolled back (ADR-024 §5, #72).
+
+Its only caller is the memory API (`core/memory_api.py`, ADR-024 step 6,
+#92): `GET /memory` (filters `status`, `category`, `privacy` only),
+`GET /memory/{id}`, `POST /memory/search` (key and text query in the
+body, never the URL, which the access log records) and `POST /memory`.
+Every route is behind the bearer token, which means the owner in Phase 2
+(ADR-024 §2), so the API always passes `source="owner"`; the body can't
+set `source`, `status`, `privacy_source` or `source_request_id` (extra
+fields are a 422). `POST /memory` requires `privacy` (422 without it,
+never defaulted) and refuses `secret`. `source_request_id` is Core's
+request ID; an incoming `X-Request-ID` or `X-Session-ID` that contains a
+configured secret value is never adopted (a new ID is generated), so it
+is not echoed, logged, put in an event or stored (#75). Bodies are capped
+at 16 KiB. With no database configured or reachable (for example the
+encrypted volume locked) every memory route answers 503
+`MemoryUnavailable` with a fixed message, never an empty list, a 404 or
+a write that did nothing (#80). No retrieval for model calls yet.
+Limits: a `key` or `query` put in the `GET /memory` URL by mistake is
+refused with 422, but uvicorn's access log has already recorded the URL
+(redacted for secrets only), so the refusal makes the mistake loud, not
+unlogged (#93). A 422 names an unknown field in `loc` (its name, never its
+value) back to the sender (#94).
 
 **Secret-shaped content is never stored (ADR-024 §1, #70).** Whatever its
 label, the store refuses content that looks like a secret, on create,

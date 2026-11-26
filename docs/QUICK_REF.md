@@ -13,7 +13,8 @@ are in `docs/adr/`; a longer tour is in `docs/CODE_TOUR.md`.
 ## Key modules
 
 -   `core/`: `app.py` factory, `config.py` settings, `auth.py` bearer
-    token, `chat.py` `/chat`, `ready.py` `/ready`, `db.py` and
+    token, `chat.py` `/chat`, `ready.py` `/ready`, `memory_api.py`
+    `/memory` (list, get, search, owner create), `db.py` and
     `db_admin.py` Postgres, `events.py` append-only event log, `log.py`
     logging, redaction and `SecretCheck`, `identity.py` identity loader,
     `backup.py` verified backups.
