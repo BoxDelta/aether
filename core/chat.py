@@ -124,15 +124,26 @@ class ChatResponse(BaseModel):
 
 
 class BodySizeLimit:
-    """Refuse request bodies over ``max_bytes`` on ``paths`` with 413, before parsing."""
+    """Refuse request bodies over ``max_bytes`` with 413, before parsing, on ``paths``
+    and on every path that starts with one of ``prefixes``."""
 
-    def __init__(self, app: ASGIApp, max_bytes: int, paths: frozenset[str]) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        max_bytes: int,
+        paths: frozenset[str],
+        prefixes: tuple[str, ...] = (),
+    ) -> None:
         self.app = app
         self.max_bytes = max_bytes
         self.paths = paths
+        self.prefixes = prefixes
+
+    def _covers(self, path: str) -> bool:
+        return path in self.paths or path.startswith(self.prefixes)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or scope["path"] not in self.paths:
+        if scope["type"] != "http" or not self._covers(scope["path"]):
             await self.app(scope, receive, send)
             return
         for name, value in scope["headers"]:

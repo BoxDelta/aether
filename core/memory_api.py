@@ -8,6 +8,12 @@
 - ``POST /memory``: the owner creates an approved record. ``privacy`` is required
   (422 without it, never defaulted, Decision D1); ``secret`` and secret-shaped
   content are refused by the store (docs/05 §7.1).
+- ``POST /memory/{id}/approve`` (step 8, #97): the owner approves a pending record
+  with the final ``privacy`` (required); ``content``, ``category`` and ``key`` may be
+  corrected in the same step (``key: null`` clears it). An approved record with the
+  same key is replaced (deleted). 409 ``NotPending`` if it isn't pending.
+- ``POST /memory/{id}/reject``: deletes a pending record (204). 409 ``NotPending``
+  for an approved one (deleting those is ``DELETE``, step 9).
 
 Rules applied here:
 
@@ -26,15 +32,15 @@ Rules applied here:
 - **Size.** Bodies on ``/memory`` and ``/memory/search`` are capped at
   ``MAX_BODY_BYTES`` before parsing.
 
-Not here yet: approve and reject (step 8), ``PATCH`` and ``DELETE`` (step 9),
-export (step 10), retrieval for model calls (steps 11-12).
+Not here yet: ``PATCH`` and ``DELETE`` (step 9), export (step 10), retrieval for
+model calls (steps 11-12), model proposals (step 15).
 """
 
 import logging
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -48,6 +54,8 @@ from memory.store import (
     LIST_LIMIT_MAX,
     OWNER,
     QUERY_MAX,
+    UNSET,
+    Approval,
     InvalidRecord,
     KeyConflict,
     ListFilter,
@@ -56,6 +64,8 @@ from memory.store import (
     MemoryStoreError,
     NewRecord,
     NotAllowed,
+    NotPending,
+    PendingLimit,
     RecordNotFound,
     StoreUnavailable,
 )
@@ -67,6 +77,7 @@ logger = logging.getLogger("aether.core.memory_api")
 MEMORY_PATH = "/memory"
 SEARCH_PATH = "/memory/search"
 BODY_PATHS = frozenset({MEMORY_PATH, SEARCH_PATH})
+BODY_PREFIXES = (MEMORY_PATH + "/",)  # /memory/{id}/approve and the like
 # A record is at most 1000 characters (memory.store.CONTENT_MAX); 16 KiB is plenty
 # even for 4-byte characters escaped in JSON.
 MAX_BODY_BYTES = 16 * 1024
@@ -110,6 +121,16 @@ class ListQuery(_Strict):
     offset: Annotated[int, Field(ge=0)] = 0
 
 
+class ApproveMemory(_Strict):
+    """The owner's approval: the final level, and optional corrections."""
+
+    # Required: no record is approved with a level nobody chose (ADR-024 §1).
+    privacy: PrivacyLevel
+    content: str | None = None
+    category: Category | None = None
+    key: str | None = None  # sent as null: clear the key; left out: keep it
+
+
 class SearchMemory(_Strict):
     """Search by exact ``key`` and/or a case-insensitive substring ``query``."""
 
@@ -137,6 +158,19 @@ class MemoryList(BaseModel):
 # --- errors ---------------------------------------------------------------------------
 
 
+# Store errors with a fixed answer: (status, error type, message). Messages are fixed
+# text or the store's own, which never holds content or keys.
+_FIXED: tuple[tuple[type[MemoryStoreError], int, str, str | None], ...] = (
+    (RecordNotFound, 404, "NotFound", "memory record not found"),
+    (KeyConflict, 409, "KeyConflict", None),
+    (NotPending, 409, "NotPending", "memory record is not pending"),
+    # Not reachable yet: the API creates owner records only (proposals are step 15).
+    (PendingLimit, 409, "PendingLimit", None),
+    # Not reachable: the API always acts as the owner.
+    (NotAllowed, 403, "NotAllowed", "not allowed"),
+)
+
+
 def _store_error(exc: MemoryStoreError, where: Where, operation: str) -> JSONResponse:
     """A fixed response for a store error. Store messages name a field and a rule
     (or an error type), never content or keys."""
@@ -145,20 +179,21 @@ def _store_error(exc: MemoryStoreError, where: Where, operation: str) -> JSONRes
         return error_json(
             422, "ValidationError", "invalid request", fields=[FieldError(loc=loc, msg=exc.rule)]
         )
-    if isinstance(exc, RecordNotFound):
-        return error_json(404, "NotFound", "memory record not found")
-    if isinstance(exc, KeyConflict):
-        return error_json(409, "KeyConflict", str(exc))
-    if isinstance(exc, NotAllowed):  # not reachable: the API always acts as the owner
-        return error_json(403, "NotAllowed", "not allowed")
-    if isinstance(exc, StoreUnavailable):
-        logger.warning(
-            "Memory %s failed: database unavailable",
-            operation,
-            extra={"operation": operation, "error": str(exc)},
-        )
+    for kind, status, error_type, message in _FIXED:
+        if isinstance(exc, kind):
+            return error_json(status, error_type, message if message is not None else str(exc))
+    unavailable = isinstance(exc, StoreUnavailable)
+    level = logging.WARNING if unavailable else logging.ERROR
+    reason = ": database unavailable" if unavailable else ""
+    logger.log(
+        level,
+        "Memory %s failed%s",
+        operation,
+        reason,
+        extra={"operation": operation, "error": str(exc)},
+    )
+    if unavailable:
         return _unavailable()
-    logger.error("Memory %s failed", operation, extra={"operation": operation, "error": str(exc)})
     return error_json(500, "MemoryStoreFailed", "the memory store failed")
 
 
@@ -268,3 +303,44 @@ async def create_memory(body: CreateMemory, request: Request) -> MemoryRecord | 
         return await store.create(new)
     except MemoryStoreError as exc:
         return _store_error(exc, "body", "create")
+
+
+_RECORD_ERRORS: dict[int | str, dict[str, object]] = {
+    **_ERRORS,
+    404: {"model": ErrorResponse, "description": "No such record (or expired)"},
+    409: {"model": ErrorResponse, "description": "NotPending, or KeyConflict"},
+}
+
+
+@memory_router.post(
+    MEMORY_PATH + "/{record_id}/approve", response_model=MemoryRecord, responses=_RECORD_ERRORS
+)
+async def approve_memory(
+    record_id: UUID, body: ApproveMemory, request: Request
+) -> MemoryRecord | JSONResponse:
+    store = _store(request)
+    if store is None:
+        return _unavailable()
+    sent = body.model_fields_set
+    try:
+        approval = Approval(
+            privacy=body.privacy,
+            content=body.content if body.content is not None else UNSET,
+            category=body.category if body.category is not None else UNSET,
+            key=body.key if "key" in sent else UNSET,
+        )
+        return await store.approve(record_id, approval, actor=OWNER)
+    except MemoryStoreError as exc:
+        return _store_error(exc, "body", "approve")
+
+
+@memory_router.post(MEMORY_PATH + "/{record_id}/reject", status_code=204, responses=_RECORD_ERRORS)
+async def reject_memory(record_id: UUID, request: Request) -> Response:
+    store = _store(request)
+    if store is None:
+        return _unavailable()
+    try:
+        await store.reject(record_id, actor=OWNER)
+    except MemoryStoreError as exc:
+        return _store_error(exc, "path", "reject")
+    return Response(status_code=204)

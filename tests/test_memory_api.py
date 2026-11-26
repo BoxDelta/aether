@@ -217,7 +217,7 @@ def test_invalid_records_are_refused_without_echo(
 def test_body_size_is_capped(core: tuple[Core, TestClient]) -> None:
     _, client = core
     big = json.dumps(record(content="x" * (MAX_BODY_BYTES + 1)))
-    for path in ("/memory", "/memory/search"):
+    for path in ("/memory", "/memory/search", f"/memory/{uuid4()}/approve"):
         r = client.post(path, content=big, headers={"content-type": "application/json"})
         assert r.status_code == 413
         assert r.json()["error"]["type"] == "RequestTooLarge"
@@ -231,6 +231,8 @@ def test_memory_routes_need_the_token() -> None:
         ("GET", f"/memory/{uuid4()}", None),
         ("POST", "/memory/search", {"query": "teal"}),
         ("POST", "/memory", record()),
+        ("POST", f"/memory/{uuid4()}/approve", {"privacy": "public"}),
+        ("POST", f"/memory/{uuid4()}/reject", None),
     ]
     for method, path, body in calls:
         r = client.request(method, path, json=body)
@@ -302,6 +304,8 @@ def _every_route(client: TestClient) -> list[Any]:
         client.get(f"/memory/{uuid4()}"),
         client.post("/memory/search", json={"key": CANARY_KEY, "query": CANARY}),
         client.post("/memory", json=record(key=CANARY_KEY)),
+        client.post(f"/memory/{uuid4()}/approve", json={"privacy": "public", "key": CANARY_KEY}),
+        client.post(f"/memory/{uuid4()}/reject"),
     ]
 
 
@@ -325,7 +329,14 @@ def test_unreachable_database_is_503_on_every_route(core: tuple[Core, TestClient
     warnings = [
         json.loads(line) for line in c.log.getvalue().splitlines() if "database unavailable" in line
     ]
-    assert {w["operation"] for w in warnings} == {"list", "get", "search", "create"}
+    assert {w["operation"] for w in warnings} == {
+        "list",
+        "get",
+        "search",
+        "create",
+        "approve",
+        "reject",
+    }
     assert all(w["level"] == "WARNING" for w in warnings)
 
 
@@ -334,3 +345,47 @@ def test_no_database_configured_is_503_on_every_route() -> None:
     assert c.app.state.memory is None
     with TestClient(c.app, client=LOCAL, headers=AUTH, raise_server_exceptions=False) as client:
         _assert_unavailable(c, _every_route(client))
+
+
+# --- approve and reject (step 8, #97): input checks before the database ----------------
+
+
+def _approve(client: TestClient, body: dict[str, Any]) -> Any:
+    return client.post(f"/memory/{uuid4()}/approve", json=body)
+
+
+def test_approve_needs_the_owners_level(core: tuple[Core, TestClient]) -> None:
+    c, client = core
+    r = _approve(client, {"content": CANARY})
+    assert field_errors(r) == [["body", "privacy"]]
+    assert_clean(c, r)
+
+
+@pytest.mark.parametrize(
+    ("body", "field"),
+    [
+        ({"privacy": "secret"}, "privacy"),
+        ({"privacy": "public", "content": f"{CANARY} {TOKEN}"}, "content"),
+        ({"privacy": "public", "key": f"note.{TOKEN}"}, "key"),
+        ({"privacy": "public", "content": ""}, "content"),
+        ({"privacy": "public", "key": "Not A Key"}, "key"),
+        ({"privacy": "public", "category": "diary"}, "category"),
+        ({"privacy": "public", "status": "approved"}, "status"),
+        ({"privacy": "public", "source": "owner"}, "source"),
+        ({"privacy": "public", "expires_at": "2030-01-01T00:00:00+00:00"}, "expires_at"),
+    ],
+)
+def test_approve_input_is_checked_without_echo(
+    core: tuple[Core, TestClient], body: dict[str, Any], field: str
+) -> None:
+    c, client = core
+    r = _approve(client, body)
+    assert field_errors(r) == [["body", field]]
+    assert_clean(c, r, f"note.{TOKEN}")
+
+
+def test_approve_and_reject_need_a_uuid(core: tuple[Core, TestClient]) -> None:
+    _, client = core
+    r = client.post("/memory/not-a-uuid/approve", json={"privacy": "public"})
+    assert field_errors(r) == [["path", "record_id"]]
+    assert field_errors(client.post("/memory/not-a-uuid/reject")) == [["path", "record_id"]]
