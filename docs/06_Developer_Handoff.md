@@ -77,13 +77,16 @@ Create folders only when the phase that needs them starts.
 
 Follow `04_Development_Roadmap.md`. In short:
 
-1.  Phase 0: repository, docs, ADRs, Sentinel secret scan (done or in
-    progress).
+1.  Phase 0: repository, docs, ADRs, Sentinel secret scan. Done
+    (2026-11-14).
 2.  Phase 1: FastAPI Core with health endpoint and request/session IDs,
     identity file, Claude adapter, Ollama adapter, routing with logged
-    reasons, `events` table, tests running in Sentinel.
-3.  Phase 2: Memory.
-4.  Phase 3: web UI, phone access, tools, n8n.
+    reasons, `events` table, tests running in Sentinel. Done (exit check
+    passed 2026-11-14).
+3.  Phase 2: Memory. In progress (build order: ADR-024 §9, #58).
+4.  Phase 3: web UI, phone access, tools, n8n. Not started.
+
+The status line under each phase in `04` is the source of truth.
 
 Do not begin by implementing all subsystems, a complex 3D interface, or
 multiple autonomous agents simultaneously.
@@ -93,13 +96,13 @@ multiple autonomous agents simultaneously.
 Resolved: task tracker (GitHub, ADR-010); database (Postgres, ADR-011);
 Android route (mobile web, ADR-016); backend (Python + FastAPI,
 ADR-017); Python tooling (uv + mypy, ADR-019); orchestration (thin
-AETHER-owned orchestrator, ADR-005); identity name and default tone (`07`).
+AETHER-owned orchestrator, ADR-005); identity name and default tone (`07`);
+privacy levels (`05` section 7.1, confirmed 2026-11-26); monthly cloud
+API cost ceiling ($5 per month in the Anthropic console, `00`).
 
 Still open:
 
--   Confirm the privacy levels in `05` section 7.1.
 -   What tool actions are allowed without confirmation?
--   What is the monthly cost ceiling?
 -   What should continue working when the home PC is off?
 
 ## 7. Definition of an acceptable implementation contribution

@@ -126,10 +126,15 @@ permitted under the current policy.
 
 Responsibilities: - Run deterministic checks such as tests, linting,
 type checks, secret scanning, dependency scanning, and static
-analysis. - Coordinate independent AI review where useful. - Consolidate
-findings with evidence, severity, and confidence. - Preserve review
-history and approval decisions. - Require human approval for critical
-changes.
+analysis. - Consolidate findings with evidence, severity, and
+confidence. - Preserve review history and approval decisions. - Require
+human approval for critical changes.
+
+**Sentinel v1** is deterministic checks in GitHub Actions only: tests,
+lint, type checks and the secret scan; CodeQL also runs on pull
+requests. AI review is not part of Sentinel today. It is manual and
+advisory (the `security-reviewer` subagent, `@codex review` on request),
+and an automated AI reviewer in CI stays Future (docs/04, docs/05 §10).
 
 Sentinel must not be able to silently disable its own required checks or
 approve protected changes solely on its own authority.
@@ -370,13 +375,15 @@ AETHER-owned orchestrator, ADR-005), identity name ("Aether"),
 task tracker (GitHub, ADR-010), database and
 vector approach (one Postgres + pgvector later, ADR-011), event
 persistence (Postgres events table, ADR-011), Android strategy (mobile
-web over Tailscale, ADR-016).
+web over Tailscale, ADR-016), monthly cloud API cost ceiling ($5 per
+month, set in the Anthropic console, docs/00).
 
 Still open and must be recorded when resolved:
 
 -   Desktop automation framework and isolation model.
 -   Hosted versus home-hosted deployment timeline.
--   Provider choices, API privacy terms, and the monthly cost ceiling.
+-   Provider choices beyond Claude and Ollama (OpenRouter: ADR-028,
+    Proposed) and their API privacy terms.
 
 ## 12. Acceptance criteria for architecture baseline
 

@@ -224,8 +224,9 @@ quality.
 
 **Review layers:** 1. Formatting, lint, and type checks. 2. Automated
 tests. 3. Secret and static security scanning. 4. Dependency and
-supply-chain scanning. 5. Independent AI review. 6. Approval gates and
-recovery records.
+supply-chain scanning. 5. Independent AI review (Future in CI; today
+manual and advisory, outside Sentinel: docs/05 §10). 6. Approval gates
+and recovery records.
 
 **Rule:** AI reviewer agreement is not proof of correctness. Findings
 must cite evidence, severity, confidence, and test coverage.
