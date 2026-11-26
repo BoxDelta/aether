@@ -1021,3 +1021,36 @@ def test_a_failed_approve_keeps_the_record_it_would_replace(
 
     assert snapshot(live_owner) == before
     assert events_after(live_owner, after) == []
+
+
+def test_two_approvals_with_one_key_leave_exactly_one_approved_record(
+    store: Run[Any], live_owner: Settings
+) -> None:
+    # The race documented in the store and docs/05: either the second approval hits
+    # the unique index (KeyConflict, nothing changed) or it runs after the first
+    # committed and replaces it. Either way one approved record holds the key, and
+    # every delete is recorded.
+    first = store(lambda s: s.create(proposal(1, key=KEY)))
+    second = store(lambda s: s.create(proposal(2, key=KEY)))
+    after = last_event_id(live_owner)
+
+    async def race(s: MemoryStore) -> list[object]:
+        tries = [
+            s.approve(first.id, Approval("public"), actor="owner"),
+            s.approve(second.id, Approval("public"), actor="owner"),
+        ]
+        return list(await asyncio.gather(*tries, return_exceptions=True))
+
+    results = store(race)
+
+    approved = [r for r in results if isinstance(r, MemoryRecord)]
+    conflicts = [r for r in results if isinstance(r, KeyConflict)]
+    assert len(approved) + len(conflicts) == 2 and approved, results
+    holders = owner_sql(
+        live_owner,
+        f"SELECT count(*) FROM public.memory_records WHERE key = '{KEY}' AND status = 'approved'",  # noqa: S608
+    )
+    assert holders == [1]
+    events = [e["event_type"] for e in events_after(live_owner, after)]
+    assert events.count("memory.approved") == len(approved)
+    assert events.count("memory.deleted") == len(approved) - 1  # a replacement is recorded

@@ -1,4 +1,5 @@
-"""The memory API, read and owner-create (ADR-024 §2, §4; step 6 of #58, #92).
+"""The memory API: list, get, search, owner create, approve, reject, correct and delete
+(ADR-024 §2, §4; steps 6, 8 and 9 of #58).
 
 - ``GET /memory``: list, filtered only by ``status``, ``category`` and ``privacy``
   (fixed values, not content), paged.
@@ -347,12 +348,25 @@ async def create_memory(body: CreateMemory, request: Request) -> MemoryRecord | 
 _RECORD_ERRORS: dict[int | str, dict[str, object]] = {
     **_ERRORS,
     404: {"model": ErrorResponse, "description": "No such record (or expired)"},
-    409: {"model": ErrorResponse, "description": "NotPending, or KeyConflict"},
 }
 
 
+def _conflict(description: str) -> dict[int | str, dict[str, object]]:
+    """The 409 a route can really give, so the OpenAPI schema doesn't promise more."""
+    return {409: {"model": ErrorResponse, "description": description}}
+
+
+_APPROVE_ERRORS = {
+    **_RECORD_ERRORS,
+    **_conflict("NotPending, or KeyConflict (two approvals with one key at the same moment)"),
+}
+_REJECT_ERRORS = {**_RECORD_ERRORS, **_conflict("NotPending: only a pending record is rejected")}
+_PATCH_ERRORS = {**_RECORD_ERRORS, **_conflict("KeyConflict: another approved record has the key")}
+# DELETE has no 409: any record, expired or not, can be deleted.
+
+
 @memory_router.post(
-    MEMORY_PATH + "/{record_id}/approve", response_model=MemoryRecord, responses=_RECORD_ERRORS
+    MEMORY_PATH + "/{record_id}/approve", response_model=MemoryRecord, responses=_APPROVE_ERRORS
 )
 async def approve_memory(
     record_id: UUID, body: ApproveMemory, request: Request
@@ -372,7 +386,7 @@ async def approve_memory(
         return _store_error(exc, "body", "approve")
 
 
-@memory_router.post(MEMORY_PATH + "/{record_id}/reject", status_code=204, responses=_RECORD_ERRORS)
+@memory_router.post(MEMORY_PATH + "/{record_id}/reject", status_code=204, responses=_REJECT_ERRORS)
 async def reject_memory(record_id: UUID, request: Request) -> Response:
     store = _store(request)
     if store is None:
@@ -385,7 +399,7 @@ async def reject_memory(record_id: UUID, request: Request) -> Response:
 
 
 @memory_router.patch(
-    MEMORY_PATH + "/{record_id}", response_model=MemoryRecord, responses=_RECORD_ERRORS
+    MEMORY_PATH + "/{record_id}", response_model=MemoryRecord, responses=_PATCH_ERRORS
 )
 async def patch_memory(
     record_id: UUID, body: PatchMemory, request: Request
