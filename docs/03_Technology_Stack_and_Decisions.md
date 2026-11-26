@@ -30,11 +30,17 @@ looks impressive.
 
   Cloud reasoning   Claude API        Complex reasoning     Candidate; API
                                       and coding tasks      billing separate
-                                                            from subscription
+                                                            from subscription;
+                                                            $5/month spend
+                                                            limit in the
+                                                            Anthropic console
 
   Other model       Gemini, Groq,     Optional adapters /   Optional;
   providers         OpenRouter,       fallbacks             evaluate
-                    Mistral, others                         individually
+                    Mistral, others                         individually;
+                                                            OpenRouter
+                                                            Proposed
+                                                            (ADR-028)
 
   Database          PostgreSQL        Memory, runtime       Accepted
                     (Docker)          tasks, events         (ADR-011)
@@ -159,101 +165,11 @@ ID and title. - Status: Proposed, Accepted, Rejected, Superseded. -
 Context and problem. - Options considered. - Decision and rationale. -
 Consequences and risks. - Date and owners. - Revisit conditions.
 
-### Initial decision register
+### Decision register
 
-  -----------------------------------------------------------------------
-  ID                      Decision                Current status
-  ----------------------- ----------------------- -----------------------
-  ADR-001                 AETHER is a             Accepted project scope
-                          cross-platform software 
-                          platform, not an OS     
-
-  ADR-002                 Start on Arch / GNOME   Accepted initial
-                          with one 8 GB GPU only  baseline
-
-  ADR-003                 Use a provider-neutral  Proposed
-                          routing layer           
-
-  ADR-004                 Keep shared memory      Accepted architectural
-                          independent of model    principle
-                          providers               
-
-  ADR-005                 Thin AETHER-owned       Accepted
-                          orchestrator; revisit   
-                          OpenClaw after v1       
-
-  ADR-006                 Evaluate Plane as task  Superseded by ADR-010
-                          tracker                 
-
-  ADR-007                 Build Neural from       Accepted architectural
-                          observable events, not  principle
-                          simulated activity      
-
-  ADR-008                 Keep Sentinel           Accepted architectural
-                          independent from code   principle
-                          authoring               
-
-  ADR-009                 Reduce v1 scope to      Accepted
-                          Core, Nexus, Memory,    
-                          web UI                  
-
-  ADR-010                 GitHub Issues/Projects  Accepted
-                          for development tasks   
-
-  ADR-011                 One Postgres for        Accepted
-                          memory, tasks, events   
-
-  ADR-012                 Plain code names,       Accepted
-                          branded doc names       
-
-  ADR-013                 Use existing n8n for    Accepted
-                          scheduling/workflows    
-
-  ADR-014                 Merge Pulse into        Accepted
-                          Neural Status view      
-
-  ADR-015                 Vault starts as rules,  Accepted
-                          not a service           
-
-  ADR-016                 Mobile web over         Accepted
-                          Tailscale as Android    
-                          route                   
-
-  ADR-017                 Python + FastAPI        Accepted
-                          backend                 
-
-  ADR-018                 Sentinel v1 in GitHub   Accepted
-                          Actions                 
-
-  ADR-019                 uv for Python tooling,  Accepted
-                          mypy for type checks    
-
-  ADR-020                 Postgres setup: Docker  Accepted
-                          Compose, asyncpg,       
-                          Alembic                 
-
-  ADR-021                 How clients             Accepted
-                          authenticate to Core    
-                          (/chat)                 
-
-  ADR-022                 Go public via a new     Accepted
-                          repo from a clean       
-                          snapshot                
-
-  ADR-023                 Ollama is local only on Accepted
-                          a loopback or private   
-                          host                    
-
-  ADR-024                 Memory design for Phase Accepted (owner,
-                          2                       2026-11-15)
-
-  ADR-025                 Database backups and    Accepted (owner,
-                          restore                 2026-11-16)
-
-  ADR-026                 Encrypted volume for    Proposed
-                          the database and        (2026-11-17)
-                          backups (LUKS2 file)
-  -----------------------------------------------------------------------
+The register, with every ADR and its current status (including ADR-001
+to ADR-008, which have no files of their own), is in
+[`adr/README.md`](adr/README.md). Add new ADRs there, not here.
 
 ## 8. Validation checklist before adopting a dependency
 

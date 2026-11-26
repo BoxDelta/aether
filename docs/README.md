@@ -2,8 +2,9 @@
 
 **Working tagline:** One identity. Many minds. Shared memory.\
 **Document set:** Initial engineering baseline\
-**Status:** Planning / pre-implementation\
-**Last updated:** 2026-11-14 (scope revision, ADR-009 to ADR-018)
+**Status:** Phases 0 and 1 done; Phase 2 (Memory) in progress (see
+`04_Development_Roadmap.md`)\
+**Last updated:** 2026-11-26 (docs refresh, ADR-027 to ADR-029)
 
 ## What is AETHER?
 
@@ -64,9 +65,10 @@ archived as `aether-private-archive`), not to this repository.
 
 ## Important status note
 
-This documentation describes a proposed system. It does not mean the
-components have already been installed, integrated, tested, or
-implemented. Technology choices marked **Candidate** must be validated
+Parts of this documentation describe planned components. Only what
+`04_Development_Roadmap.md` marks as done, and what the code and tests
+show, is implemented; everything else is a plan. Technology choices
+marked **Candidate** must be validated
 against current documentation, compatibility, licensing, privacy terms,
 and project requirements before adoption.
 
