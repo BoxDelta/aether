@@ -87,7 +87,9 @@ def create_app(
     and may pass a ``router`` (fake providers), an ``events`` recorder and a
     ``memory`` store. Otherwise the memory store is built once, here, on the same
     engine as events, with ``SecretCheck.from_settings`` (#75); without a usable
-    ``DATABASE_URL`` there is none and the memory routes answer 503 (#80).
+    ``DATABASE_URL`` there is none and the memory routes answer 503 (#80). It is
+    built only when Core builds its own events engine: with ``events`` injected and
+    no ``memory``, the memory routes answer 503 even if ``DATABASE_URL`` is set.
     Without ``identity``, the default identity file is loaded; an invalid file
     raises ``IdentityError`` so Core fails at startup rather than at the first call.
     An invalid ``AETHER_CLOUD_MAX_OUTPUT_TOKENS`` raises ``ConfigError`` the same way.
