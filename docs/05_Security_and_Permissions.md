@@ -269,8 +269,12 @@ expires 30 days after it was proposed, any record at its `expires_at`;
 an expired record is never returned, approved or rejected, and the
 clean-up deletes it with one `memory.expired` event, run by the store
 before a list or a create at most once a minute, so an expired record
-can stay on disk until the next list or create. No retrieval for model
-calls yet.
+can stay on disk until the next list or create. The clean-up runs as
+part of the read: if it fails, the list or create fails too (503 or
+500), never an empty or stale answer. Not yet handled: records a restore
+sets back to `pending` would expire at once; build step 16 adds their
+"restored" marker and exempts it (#67). No retrieval for model calls
+yet.
 Limits: a `key` or `query` put in the `GET /memory` URL by mistake is
 refused with 422, but uvicorn's access log has already recorded the URL
 (redacted for secrets only), so the refusal makes the mistake loud, not

@@ -48,6 +48,7 @@ from memory.store import (
     RecordChanges,
     RecordNotFound,
     SecretContent,
+    StoreUnavailable,
 )
 from tests.conftest import LIVE_DB
 from tests.fake_secrets import by_family
@@ -420,7 +421,7 @@ def test_key_conflicts_are_store_errors_and_change_nothing(
     attempts: dict[str, Callable[[MemoryStore], Awaitable[Any]]] = {
         "create": lambda s: s.create(owner_record(4, key=KEY)),
         "update": lambda s: s.update(other.id, RecordChanges(key=KEY), actor="owner"),
-        # approve replaces the old record instead (#97): tests/test_memory_approval_live.py
+        # approve replaces the old record instead (#97): see the step 8 tests below
     }
     for name, attempt in attempts.items():
         with pytest.raises(KeyConflict) as info:
@@ -1001,3 +1002,23 @@ def test_approve_replaces_an_expired_approved_holder(store: Run[Any], live_owner
         ("memory.deleted", str(old.id)),
         ("memory.approved", str(approved.id)),
     ]
+
+
+def test_a_failed_approve_keeps_the_record_it_would_replace(
+    store: Run[Any], live_owner: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # _replace_key and the update share one transaction: if anything after the
+    # delete fails, the old record and the event log are as they were.
+    store(lambda s: s.create(owner_record(1, key=KEY)))
+    new = store(lambda s: s.create(proposal(2, key=KEY)))
+    before, after = snapshot(live_owner), last_event_id(live_owner)
+
+    async def broken_set(*_: Any, **__: Any) -> MemoryRecord:
+        raise OSError("connection lost after the delete")
+
+    monkeypatch.setattr(MemoryStore, "_set", staticmethod(broken_set))
+    with pytest.raises(StoreUnavailable):
+        store(lambda s: s.approve(new.id, Approval("public"), actor="owner"))
+
+    assert snapshot(live_owner) == before
+    assert events_after(live_owner, after) == []

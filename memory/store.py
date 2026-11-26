@@ -41,7 +41,9 @@ migration 0004 are the backstop:
   ``list`` unless asked for, and can't be updated, approved or rejected; it can
   still be deleted. ``expire`` deletes every expired record, with one
   ``memory.expired`` event each; ``list`` and ``create`` run it first, at most once
-  every ``SWEEP_INTERVAL_S`` per store (no scheduler).
+  every ``SWEEP_INTERVAL_S`` per store (no scheduler). Known gap for step 16: a
+  record a restore sets back to ``pending`` keeps its old ``created_at``, so it
+  would expire at once; step 16 adds the "restored" marker and exempts it (#67).
 - **Limit** (D8): at most ``PENDING_MAX`` unexpired pending records. One more from
   a model or a tool raises ``PendingLimit``; the proposer drops it and counts.
 - **Approve replaces a key** (ADR-024 §1, #67): if another approved record has the
