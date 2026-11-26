@@ -26,7 +26,7 @@ from core.app import create_app
 from core.config import Settings
 from core.identity import load_identity
 from core.log import configure_logging
-from core.memory_api import MAX_BODY_BYTES, UNAVAILABLE_MESSAGE
+from core.memory_api import MAX_BODY_BYTES, OFFSET_MAX, UNAVAILABLE_MESSAGE
 from core.request_context import REQUEST_ID_HEADER
 from memory.store import QUERY_MAX, MemoryStore
 from router.routing import Router
@@ -267,6 +267,8 @@ def test_list_takes_only_fixed_filters_in_the_url(core: tuple[Core, TestClient])
         ({"limit": "0"}, "limit"),
         ({"limit": "201"}, "limit"),
         ({"offset": "-1"}, "offset"),
+        ({"offset": str(OFFSET_MAX + 1)}, "offset"),
+        ({"offset": "9223372036854775808"}, "offset"),  # one past bigint: was a 500
     ],
 )
 def test_list_filters_are_checked(
@@ -291,6 +293,8 @@ def test_get_needs_a_uuid(core: tuple[Core, TestClient]) -> None:
         ({"key": "Not A Key"}, ["body", "key"]),
         ({"query": "teal", "privacy": "secret"}, ["body", "privacy"]),
         ({"query": "teal", "limit": 0}, ["body", "limit"]),
+        ({"query": "teal", "offset": OFFSET_MAX + 1}, ["body", "offset"]),
+        ({"query": "teal", "offset": 2**63}, ["body", "offset"]),  # was a 500
         ({"query": "teal", "source": "model"}, ["body", "source"]),
     ],
 )

@@ -85,6 +85,9 @@ MEMORY_PATH = "/memory"
 SEARCH_PATH = "/memory/search"
 BODY_PATHS = frozenset({MEMORY_PATH, SEARCH_PATH})
 BODY_PREFIXES = (MEMORY_PATH + "/",)  # /memory/{id}/approve and the like
+# Far more than any owner's memory; keeps OFFSET inside the database's bigint range,
+# so a huge value is a 422 and never a 500 from the driver.
+OFFSET_MAX = 1_000_000
 # A record is at most 1000 characters (memory.store.CONTENT_MAX); 16 KiB is plenty
 # even for 4-byte characters escaped in JSON.
 MAX_BODY_BYTES = 16 * 1024
@@ -125,7 +128,7 @@ class ListQuery(_Strict):
     category: Category | None = None
     privacy: PrivacyLevel | None = None
     limit: Annotated[int, Field(ge=1, le=LIST_LIMIT_MAX)] = LIST_LIMIT_DEFAULT
-    offset: Annotated[int, Field(ge=0)] = 0
+    offset: Annotated[int, Field(ge=0, le=OFFSET_MAX)] = 0
 
 
 class _Corrections(_Strict):
@@ -176,7 +179,7 @@ class SearchMemory(_Strict):
     category: Category | None = None
     privacy: PrivacyLevel | None = None
     limit: Annotated[int, Field(ge=1, le=LIST_LIMIT_MAX)] = LIST_LIMIT_DEFAULT
-    offset: Annotated[int, Field(ge=0)] = 0
+    offset: Annotated[int, Field(ge=0, le=OFFSET_MAX)] = 0
 
     @model_validator(mode="after")
     def _something_to_find(self) -> "SearchMemory":
