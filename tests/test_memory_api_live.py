@@ -406,3 +406,38 @@ def test_an_expired_record_never_blocks_its_key(client: TestClient, live_owner: 
         expired = [e for e in events_after(live_owner, after) if e["memory_record_id"] == holder]
         assert [e["event_type"] for e in expired] == ["memory.expired"], attempt
         client.delete(f"/memory/{r.json()['id']}")
+
+
+# --- step 10 (#122): export --------------------------------------------------------------
+
+
+def test_export_is_one_document_with_every_level_and_pending(
+    client: TestClient, live_app: Settings, live_owner: Settings
+) -> None:
+    sensitive = client.post("/memory", json=record(1, key=KEY, privacy="sensitive")).json()
+    pending = propose(live_app, 2)
+    expired = client.post("/memory", json=record(3)).json()["id"]
+    _expire(live_owner, expired)
+    after = last_event_id(live_owner)
+
+    r = client.get("/memory/export", headers={REQUEST_ID_HEADER: "req-export-1"})
+
+    assert r.status_code == 200, r.text
+    assert r.headers["cache-control"] == "no-store"
+    body = r.json()
+    assert set(body) == {"format", "version", "exported_at", "records"}
+    assert (body["format"], body["version"]) == ("aether-memory", 1)
+    by_id = {rec["id"]: rec for rec in body["records"]}
+    assert by_id[sensitive["id"]] == sensitive  # every column, Sensitive included (D10)
+    assert by_id[pending]["status"] == "pending"
+    assert expired not in by_id
+    assert client.get(f"/memory/{expired}").status_code == 404  # still there, not cleaned
+    assert owner_sql(
+        live_owner,
+        f"SELECT count(*) FROM public.memory_records WHERE id = '{UUID(expired)}'",  # noqa: S608
+    ) == [1]
+    events = events_after(live_owner, after)
+    assert [(e["event_type"], e["memory_export_count"], e["request_id"]) for e in events] == [
+        ("memory.exported", len(body["records"]), "req-export-1")
+    ]
+    assert PREFIX not in json.dumps(events) and KEY not in json.dumps(events)

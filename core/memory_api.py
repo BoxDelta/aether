@@ -1,5 +1,5 @@
-"""The memory API: list, get, search, owner create, approve, reject, correct and delete
-(ADR-024 §2, §4; steps 6, 8 and 9 of #58).
+"""The memory API: list, get, search, owner create, approve, reject, correct, delete and
+export (ADR-024 §2, §4; steps 6, 8, 9 and 10 of #58).
 
 - ``GET /memory``: list, filtered only by ``status``, ``category`` and ``privacy``
   (fixed values, not content), paged.
@@ -21,6 +21,10 @@
   level set here is the owner's. 409 ``KeyConflict`` if another approved record
   has the key (only approve replaces). Expired records: 404.
 - ``DELETE /memory/{id}``: hard delete of any record, expired or not (204).
+- ``GET /memory/export`` (step 10, #122): one JSON document with every unexpired
+  record, every column, all levels and pending ones (D10), plus one
+  ``memory.exported`` event with the count. ``Cache-Control: no-store``. Expired
+  records are left out; the export deletes nothing.
 
 Rules applied here:
 
@@ -44,6 +48,7 @@ proposals (step 15).
 """
 
 import logging
+from datetime import datetime
 from typing import Annotated, Any, ClassVar, Literal, Self
 from uuid import UUID
 
@@ -84,6 +89,9 @@ logger = logging.getLogger("aether.core.memory_api")
 
 MEMORY_PATH = "/memory"
 SEARCH_PATH = "/memory/search"
+EXPORT_PATH = "/memory/export"
+EXPORT_FORMAT: Literal["aether-memory"] = "aether-memory"
+EXPORT_VERSION: Literal[1] = 1
 BODY_PATHS = frozenset({MEMORY_PATH, SEARCH_PATH})
 BODY_PREFIXES = (MEMORY_PATH + "/",)  # /memory/{id}/approve and the like
 # Far more than any owner's memory; keeps OFFSET inside the database's bigint range,
@@ -195,6 +203,15 @@ class MemoryList(BaseModel):
     offset: int
 
 
+class MemoryExportDocument(BaseModel):
+    """The export format (ADR-024 §4). ``version`` changes only with the format."""
+
+    format: Literal["aether-memory"] = EXPORT_FORMAT
+    version: Literal[1] = EXPORT_VERSION
+    exported_at: datetime
+    records: list[MemoryRecord]
+
+
 # --- errors ---------------------------------------------------------------------------
 
 
@@ -300,6 +317,22 @@ async def search_memory(body: SearchMemory, request: Request) -> MemoryList | JS
     except MemoryStoreError as exc:
         return _store_error(exc, "body", "search")
     return MemoryList(records=records, limit=body.limit, offset=body.offset)
+
+
+# Registered before GET /memory/{record_id}, which would otherwise take "export" as
+# an ID (a 422).
+@memory_router.get(EXPORT_PATH, response_model=MemoryExportDocument, responses=_ERRORS)
+async def export_memory(request: Request, response: Response) -> MemoryExportDocument | Response:
+    store = _store(request)
+    if store is None:
+        return _unavailable()
+    try:
+        export = await store.export(actor=OWNER)
+    except MemoryStoreError as exc:
+        return _store_error(exc, "query", "export")
+    # Every level, Sensitive included (D10): never kept by a cache on the way.
+    response.headers["Cache-Control"] = "no-store"
+    return MemoryExportDocument(exported_at=export.exported_at, records=list(export.records))
 
 
 @memory_router.get(

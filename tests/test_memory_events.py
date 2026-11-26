@@ -27,6 +27,7 @@ from core.events import (
     EventType,
     MemoryRecordMeta,
     events_table,
+    memory_exported,
     memory_record_event,
     write_memory_event,
 )
@@ -152,6 +153,20 @@ def test_updated_carries_the_old_level_only_when_it_changed() -> None:
         memory_record_event("memory.updated", meta(level="personal"), old_level="personal")
     with pytest.raises(ValidationError):
         memory_record_event("memory.approved", meta(level="sensitive"), old_level="personal")
+
+
+@pytest.mark.parametrize("count", [0, 1, 2000])
+def test_exported_carries_the_count_and_nothing_about_records(count: int) -> None:
+    event = memory_exported(count)
+    assert (event.event_type, event.actor, event.memory_export_count) == (
+        "memory.exported",
+        "memory",
+        count,
+    )
+    fields = event.model_dump(exclude_none=True)
+    assert not {k for k in fields if k.startswith("memory_")} - {"memory_export_count"}
+    with pytest.raises(ValidationError):
+        memory_exported(-1)
 
 
 def test_restore_actor_allowed_on_memory_events() -> None:

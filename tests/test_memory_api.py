@@ -240,6 +240,7 @@ def test_memory_routes_need_the_token() -> None:
         ("POST", f"/memory/{uuid4()}/reject", None),
         ("PATCH", f"/memory/{uuid4()}", {"content": CANARY}),
         ("DELETE", f"/memory/{uuid4()}", None),
+        ("GET", "/memory/export", None),
     ]
     for method, path, body in calls:
         r = client.request(method, path, json=body)
@@ -319,6 +320,7 @@ def _every_route(client: TestClient) -> list[Any]:
         client.post(f"/memory/{uuid4()}/reject"),
         client.patch(f"/memory/{uuid4()}", json={"content": CANARY, "key": CANARY_KEY}),
         client.delete(f"/memory/{uuid4()}"),
+        client.get("/memory/export"),
     ]
 
 
@@ -363,6 +365,9 @@ class _BrokenStore:
     async def delete(self, *_: Any, **__: Any) -> Any:
         raise self.error
 
+    async def export(self, *_: Any, **__: Any) -> Any:
+        raise self.error
+
 
 def test_an_unexpected_store_error_is_a_fixed_500_without_details(
     core: tuple[Core, TestClient],
@@ -378,6 +383,7 @@ def test_an_unexpected_store_error_is_a_fixed_500_without_details(
         client.post(f"/memory/{uuid4()}/reject"),
         client.patch(f"/memory/{uuid4()}", json={"content": CANARY}),
         client.delete(f"/memory/{uuid4()}"),
+        client.get("/memory/export"),
     ]
 
     for r in responses:
@@ -393,7 +399,7 @@ def test_an_unexpected_store_error_is_a_fixed_500_without_details(
         for line in c.log.getvalue().splitlines()
         if "Memory " in line and " failed" in line
     ]
-    operations = {"list", "get", "create", "approve", "reject", "update", "delete"}
+    operations = {"list", "get", "create", "approve", "reject", "update", "delete", "export"}
     assert {f["operation"] for f in failures} == operations
     for failure in failures:
         assert failure["level"] == "ERROR"
@@ -416,6 +422,7 @@ def test_unreachable_database_is_503_on_every_route(core: tuple[Core, TestClient
         "reject",
         "update",
         "delete",
+        "export",
     }
     assert all(w["level"] == "WARNING" for w in warnings)
 

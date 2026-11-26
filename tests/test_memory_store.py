@@ -195,7 +195,7 @@ def test_bad_list_filters_are_refused(changes: dict[str, Any]) -> None:
 
 
 @pytest.mark.parametrize("actor", ["model", "tool", "Owner", None])
-def test_only_the_owner_may_update_approve_or_delete(actor: Any) -> None:
+def test_only_the_owner_may_update_approve_delete_or_export(actor: Any) -> None:
     store = no_db_store()
     record_id = uuid4()
     error = NotAllowed if actor in ("model", "tool") else InvalidRecord
@@ -205,6 +205,7 @@ def test_only_the_owner_may_update_approve_or_delete(actor: Any) -> None:
     )
     refused(lambda: asyncio.run(store.approve(record_id, Approval("public"), actor=actor)), error)
     refused(lambda: asyncio.run(store.delete(record_id, actor=actor)), error)
+    refused(lambda: asyncio.run(store.export(actor=actor)), error)
 
 
 def test_new_record_requires_a_source() -> None:
