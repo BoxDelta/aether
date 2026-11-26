@@ -33,7 +33,16 @@ def test_blank_means_default(blank: str) -> None:
     assert make(aether_cloud_max_output_tokens=blank).cloud_max_output_tokens == 4096
 
 
-@pytest.mark.parametrize(("raw", "expected"), [("1", 1), ("2048", 2048), (" 8192 ", 8192)])
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("1", 1),
+        ("2048", 2048),
+        (" 8192 ", 8192),
+        ("0512", 512),
+        ("0" * 5000 + "512", 512),  # padding is not an error, however long
+    ],
+)
 def test_valid_values(raw: str, expected: int) -> None:
     assert make(aether_cloud_max_output_tokens=raw).cloud_max_output_tokens == expected
 
@@ -64,6 +73,8 @@ BAD_VALUES = [
     "4_096",
     "32001",
     "99999999999999999999",
+    "9" * 5000,  # over Python's 4,300-digit limit: was a ValueError, not ConfigError (#113)
+    "0" * 5000,  # all zeros, same limit
     "\uff11\uff12",  # full-width digits are not ASCII 0-9
 ]
 

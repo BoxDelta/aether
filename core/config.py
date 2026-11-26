@@ -86,7 +86,12 @@ class Settings(BaseSettings):
         text = raw.strip()
         if not _WHOLE_NUMBER.fullmatch(text):
             raise ConfigError(CLOUD_MAX_OUTPUT_TOKENS_ERROR)
-        value = int(text)
+        # Python refuses to convert more than 4,300 digits (a ValueError, which would
+        # skip our message): longer than the limit's digits is out of range anyway.
+        digits = text.lstrip("0") or "0"
+        if len(digits) > len(str(CLOUD_MAX_OUTPUT_TOKENS_LIMIT)):
+            raise ConfigError(CLOUD_MAX_OUTPUT_TOKENS_ERROR)
+        value = int(digits)
         if not 1 <= value <= CLOUD_MAX_OUTPUT_TOKENS_LIMIT:
             raise ConfigError(CLOUD_MAX_OUTPUT_TOKENS_ERROR)
         return value

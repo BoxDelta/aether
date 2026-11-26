@@ -1,15 +1,18 @@
+import asyncio
 import uuid
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
+from starlette.types import Message, Receive, Scope, Send
 
 from core.app import create_app
 from core.config import Settings
 from core.request_context import (
     REQUEST_ID_HEADER,
     SESSION_ID_HEADER,
+    RequestContextMiddleware,
     get_request_id,
     get_session_id,
     is_safe_id,
@@ -130,6 +133,30 @@ def test_unhandled_error_is_still_raised(client: TestClient) -> None:
     # The exception must reach the server so it is logged, not swallowed.
     with pytest.raises(RuntimeError, match="secret internal detail"):
         client.get("/_test/boom")
+
+
+def test_an_error_after_the_response_started_sends_no_second_response() -> None:
+    # Once the status line is out, a 500 can't be sent: the middleware must send
+    # nothing more and let the error reach the server.
+    sent: list[Message] = []
+
+    async def failing_app(scope: Scope, receive: Receive, send: Send) -> None:
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        raise RuntimeError("midstream failure")
+
+    async def receive() -> Message:
+        return {"type": "http.request"}
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    scope: Scope = {"type": "http", "path": "/x", "headers": []}
+    with pytest.raises(RuntimeError, match="midstream failure"):
+        asyncio.run(RequestContextMiddleware(failing_app)(scope, receive, send))
+
+    assert [m["type"] for m in sent] == ["http.response.start"]
+    assert sent[0]["status"] == 200
+    assert get_request_id() is None  # the context is cleared even so
 
 
 def test_context_is_cleared_after_request(client: TestClient) -> None:
