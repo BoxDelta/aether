@@ -63,3 +63,6 @@ ADR-009 onward have their own files here.
     cloud (#22; amends ADR-023 §5). Accepted (owner, 2026-11-27).
 -   **ADR-033:** How a model proposes memory (`propose_memory`; ADR-024
     D7, step 15). Accepted (owner, 2026-11-27).
+-   **ADR-034:** Phase 3 design and build order (web UI stack, browser
+    sign-in, phone access, tools, cancel, n8n; D1–D7). Proposed
+    (2026-11-27).
