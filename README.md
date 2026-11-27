@@ -17,8 +17,10 @@ Status: early-stage and built by one person on Arch Linux (GNOME).
 Phases 0 and 1 are done: Core (the API), model routing and the identity
 layer work today. Phase 2 (shared memory) is in progress: the memory
 store and its owner API (`/memory`: list, search, create, approve,
-correct, delete and export) exist, and approved memory goes into model
-calls within each provider's privacy limit. A web UI
+correct, delete and export) exist, approved memory goes into model
+calls within each provider's privacy limit, models can propose memory for
+you to approve, and the database and backups are on an encrypted volume.
+The Phase 2 exit check is still to be run. A web UI
 comes in Phase 3. Phase status lines are in
 [`docs/04_Development_Roadmap.md`](docs/04_Development_Roadmap.md). It is
 not production-ready, and it is built for a single user on their own
@@ -250,8 +252,11 @@ Copy `.env.example` to `.env` and fill in values locally. Never commit `.env`.
 ## Database (Postgres)
 
 One Postgres in Docker holds memory, runtime tasks and events (ADR-011,
-ADR-020). It listens on `127.0.0.1:5432` only. Its data lives in the Docker
-volume `aether_pgdata`, not in this repository.
+ADR-020). It listens on `127.0.0.1:5432` only. Its data lives on the
+encrypted volume (`~/.local/share/aether/vault/data`, through the
+`compose.vault.yaml` override that `COMPOSE_FILE` in `.env` loads), not in
+this repository. Without the override, compose still uses the old Docker
+volume `aether_pgdata` until it is removed (#152).
 
 Two roles (ADR-020, #1, #12). The owner `aether` runs migrations only
 (`DATABASE_MIGRATION_URL`). Core connects as `aether_app`
@@ -342,7 +347,8 @@ docker compose exec postgres psql -U aether -d aether -c '\password aether'
 
 `uv run python -m core.backup` makes a verified backup (`pg_dump` inside the
 container, no password used) in `AETHER_BACKUP_DIR` (default
-`~/.local/share/aether/backups`, private, outside the repo) and keeps 7
+`~/.local/share/aether/backups`; with the encrypted volume,
+`~/.local/share/aether/vault/backups`; private, outside the repo) and keeps 7
 daily plus 4 weekly backups (ADR-025). A daily systemd user timer is
 provided as templates in `scripts/systemd/`, installed by hand, and runs
 from a second clone that only ever has `main` checked out
@@ -351,14 +357,14 @@ Install steps, the restore drill into a throwaway database, replacing the
 real database and going back are in
 [`docs/runbooks/db-backup-restore.md`](docs/runbooks/db-backup-restore.md).
 
--   Backups and the database are **not encrypted at rest** until you move
-    them onto the encrypted volume (#57, ADR-026):
-    [`docs/runbooks/encrypted-volume.md`](docs/runbooks/encrypted-volume.md).
-    Since the memory API (`POST /memory`) both hold full memory records
-    (content, key, level and provenance). Until the move, store only
-    invented data in memory. Afterwards both are in one LUKS2 container
-    file, unlocked with `aether-vault open` after each boot, and still on
-    the same disk as each other.
+-   Backups and the database are in one LUKS2 container file (#57,
+    ADR-026, moved on 2026-11-27 with
+    [`docs/runbooks/encrypted-volume.md`](docs/runbooks/encrypted-volume.md)).
+    Run `aether-vault open` after each boot: while the volume is locked,
+    Postgres doesn't start, the nightly backup refuses to run, and Core
+    answers memory routes with 503 and `/chat` without memory. Both still
+    sit on the same disk as each other. The old unencrypted volume and
+    backups are removed in stage 7 (#152).
 -   After a restore, `python -m memory.restore` repairs memory from the
     live database before the swap: records deleted since stay deleted,
     and records changed since come back as `pending` (marked `restored`)

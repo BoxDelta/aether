@@ -1,7 +1,7 @@
 # Code tour
 
 A one-page map for a developer opening AETHER for the first time. It
-describes the code as it is on `main` (Phase 1). For the reasons behind
+describes the code as it is on `main` (Phase 2, Memory). For the reasons behind
 the design, follow the ADR numbers into `docs/adr/`.
 
 ## What each folder does
@@ -58,9 +58,10 @@ the design, follow the ADR numbers into `docs/adr/`.
     secret is refused on create, update and approve by `SecretCheck`
     (`core/log.py`: the log redactor's own patterns and configured
     values), which the store takes as a required constructor argument
-    (#70). Its only caller is the memory API (`core/memory_api.py`, step
-    6), which builds it once with `SecretCheck.from_settings`, always as
-    the owner. With the database down every operation raises
+    (#70). Core builds it once with `SecretCheck.from_settings`. Its
+    callers are the memory API (`core/memory_api.py`, step 6), always as
+    the owner, the retriever (reads only) and `/chat`'s model proposals
+    (`source="model"`, always pending, step 15). With the database down every operation raises
     `StoreUnavailable` and the API answers 503 (#80). Approve replaces an
     approved record with the same key; reject deletes a pending one; at
     most 50 pending; expired records (pending after 30 days, or past
@@ -77,9 +78,9 @@ the design, follow the ADR numbers into `docs/adr/`.
     for `memory_context`; each provider sets `ProviderInfo.memory_limit`
     (step 11). `MemoryRetriever` joins the two as the router's
     `MemorySource` (step 12, below). `proposals.py` builds the model
-proposal call (latest user message only), parses its JSON reply as data
-and stores proposals as pending (ADR-033, step 15). `restore.py` (`python -m
-    memory.restore`) repairs a restored copy from the live database's
+    proposal call (latest user message only), parses its JSON reply as
+    data and stores proposals as pending (ADR-033, step 15). `restore.py`
+    (`python -m memory.restore`) repairs a restored copy from the live database's
     `memory.*` events before the swap (step 16, runbook §4).
 -   `scripts/`: the identity continuity run (`identity_continuity.py`), a
     backup copy of the owner's `safemerge` fish function (never sourced),
@@ -193,8 +194,13 @@ and stores proposals as pending (ADR-033, step 15). `restore.py` (`python -m
     rules in order. `choose_route()` is pure and easy to test.
 4.  `router/contract.py`: the types every layer shares (`ModelRequest`,
     `ModelResponse`, `Provider`, the privacy levels and errors).
-5.  `docs/05_Security_and_Permissions.md` §5 and §7.1: the rules the code
+5.  `memory/store.py` and `memory/retrieval.py`: what memory may hold and
+    which of it one model call may get. Both module docstrings list the
+    rules; `select_memory()` is pure, like `choose_route()`.
+6.  `docs/05_Security_and_Permissions.md` §5 and §7.1: the rules the code
     above enforces.
 
 To see it run: `tests/test_chat.py` drives `/chat` end to end with fake
 providers, and `tests/test_routing.py` has a table of routing cases.
+`tests/test_memory_recall.py` is Phase 2's cross-provider check: a fact
+saved while one provider answered is recalled when the other answers.
