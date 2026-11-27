@@ -227,6 +227,30 @@ class SafeStreamHandler(logging.StreamHandler):  # type: ignore[type-arg]
             sys.stderr.write(line + "\n")
 
 
+# Paths whose query string never reaches the access log (#93): a memory key or a
+# search phrase sent by mistake in a URL is refused with 422, but uvicorn logs the
+# URL first. ``/memory`` and everything under it.
+_NO_QUERY_IN_ACCESS_LOG = "/memory"
+_QUERY_REMOVED = "?<query removed>"
+
+
+class AccessLogQueryFilter(logging.Filter):
+    """Drops the query string from uvicorn access-log records for memory paths.
+
+    uvicorn logs ``'%s - "%s %s HTTP/%s" %d'`` with the path and query as the third
+    argument; that argument is rewritten before the record is formatted."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
+            path, sep, _ = args[2].partition("?")
+            if sep and (
+                path == _NO_QUERY_IN_ACCESS_LOG or path.startswith(_NO_QUERY_IN_ACCESS_LOG + "/")
+            ):
+                record.args = (*args[:2], path + _QUERY_REMOVED, *args[3:])
+        return True
+
+
 def configure_logging(settings: Settings, stream: TextIO | None = None) -> logging.Handler:
     """Install the JSON handler on the root logger. Safe to call more than once."""
     handler = SafeStreamHandler(stream if stream is not None else sys.stdout)
@@ -246,5 +270,9 @@ def configure_logging(settings: Settings, stream: TextIO | None = None) -> loggi
         uvicorn_logger = logging.getLogger(name)
         uvicorn_logger.handlers.clear()
         uvicorn_logger.propagate = True
+
+    access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, AccessLogQueryFilter) for f in access.filters):
+        access.addFilter(AccessLogQueryFilter())
 
     return handler

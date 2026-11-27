@@ -98,7 +98,9 @@ confidence is not a substitute for authorization.
 -   `/chat` error bodies carry only the error type, the routing reason
     and each attempt's provider, error type and scrubbed message. Never
     exception text, `__cause__` or a traceback. Validation errors never
-    echo the submitted input.
+    echo the submitted input, and name an unknown field only if the name
+    is one of the API's own (`source` sent where it isn't allowed);
+    any other name becomes `<unknown field>` (#94).
 -   An unhandled exception answers a generic 500 and is logged with its
     type and stack frames only, never its message, which can hold request
     or response values. The server sees a stand-in
@@ -381,11 +383,14 @@ as the list; the export deletes nothing and runs no clean-up. One
 `memory.exported` event records the count only (no IDs, levels or
 content), in the same transaction as the read: if the event can't be
 written, no export is returned. Logs carry the count only.
-Limits: a `key` or `query` put in the `GET /memory` URL by mistake is
-refused with 422, but uvicorn's access log has already recorded the URL
-(redacted for secrets only), so the refusal makes the mistake loud, not
-unlogged (#93). A 422 names an unknown field in `loc` (its name, never its
-value) back to the sender (#94).
+A `key` or `query` put in the `GET /memory` URL by mistake is refused
+with 422, and the access log drops the query string of requests to
+`/memory` and its sub-paths: it logs `?<query removed>` instead
+(`AccessLogQueryFilter`, `core/log.py`, #93). Limits: text put in the
+path itself (`GET /memory/<text>`) is still logged, as is the query of a
+path that doesn't route to memory (`//memory`, `/MEMORY`, a percent-encoded
+`?`), and any path under a uvicorn `--root-path`, which Core doesn't use
+(#166).
 
 **Secret-shaped content is never stored (ADR-024 §1, #70).** Whatever its
 label, the store refuses content that looks like a secret, on create,
