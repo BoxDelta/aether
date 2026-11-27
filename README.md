@@ -160,8 +160,10 @@ sometimes with empty text if thinking used the whole budget.
 Approved memory is added to each model call within that provider's limit:
 Public and Personal on a trusted Ollama host (loopback, a private address,
 or any host with `AETHER_OLLAMA_TRUST_HOST=true`), Public and Personal for
-Claude (only when the request sets `"allow_cloud": true`), Public only for
-an untrusted host. Sensitive memory is sent only to a trusted
+Claude and for an untrusted Ollama host (only when the request sets
+`"allow_cloud": true`). An untrusted Ollama host is treated like the cloud
+(ADR-032): it takes only requests with `allow_cloud`, and its sends get the
+same secret check. Sensitive memory is sent only to a trusted
 Ollama host, and only when the request sets `"include_sensitive": true`.
 
 ```fish

@@ -102,8 +102,9 @@ storage, or direct unmediated host execution.
 -   `GET /ready` (#59, token required) runs three checks concurrently,
     each limited to 3 s, and returns one status word per component:
     -   `ollama`: `ok` when Ollama answers and the default model is
-        pulled; otherwise `unavailable`, `not_configured`, `timeout` or
-        `error`.
+        pulled; `off_network` when it does but the host is untrusted, so
+        it takes only requests with `allow_cloud` (ADR-032); otherwise
+        `unavailable`, `not_configured`, `timeout` or `error`.
     -   `claude`: `configured` when a key is set. There's no network call,
         so this doesn't prove the key works. Otherwise `not_configured`,
         `timeout` or `error`.
@@ -115,7 +116,8 @@ storage, or direct unmediated host execution.
     -   `ready` (200): everything is `ok` or `configured`.
     -   `degraded` (200): Ollama is fine, so default local-only requests
         work, but cloud isn't configured or events can't be stored.
-    -   `not_ready` (503): Ollama isn't usable.
+    -   `not_ready` (503): Ollama isn't usable for default requests
+        (including `off_network`).
 -   The body never contains hosts, URLs, usernames, keys, model lists or
     exception text. A failed check logs only its component and error
     type.

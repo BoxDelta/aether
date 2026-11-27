@@ -7,7 +7,8 @@ wiring: routing, identity and failover live in ``router/``.
 Safety rules applied here:
 
 - Defaults: ``privacy="personal"`` (docs/05 §7.1: unclassified is Personal),
-  ``allow_cloud=false`` (cloud is opt-in per request).
+  ``allow_cloud=false`` (cloud, and an off-network Ollama host, ADR-032, are
+  opt-in per request).
 - Size: the raw body is capped at ``MAX_BODY_BYTES`` before parsing, and the
   parsed request at ``MAX_MESSAGES`` / ``MAX_MESSAGE_CHARS`` / ``MAX_TOTAL_CHARS``.
 - Output: ``max_tokens`` (optional) may lower the cloud output cap, never raise
@@ -97,6 +98,8 @@ class ChatMessage(_Strict):
 class ChatRequest(_Strict):
     messages: Annotated[list[ChatMessage], Field(min_length=1, max_length=MAX_MESSAGES)]
     privacy: PrivacyLevel = "personal"
+    # Allows the cloud, and an Ollama host off this network (an untrusted
+    # OLLAMA_HOST, ADR-032), which is treated like the cloud for privacy.
     allow_cloud: bool = False
     # Sensitive memory may be included (docs/07 §6). Never sent to the cloud or an
     # untrusted host whatever this says (ADR-024 D2, D4).
@@ -215,7 +218,7 @@ chat_router = APIRouter()
         422: {
             "model": ErrorResponse,
             "description": "Invalid request (input not echoed), or SecretContentRefused: "
-            "the text looks like a secret and was not sent to a cloud provider",
+            "the text looks like a secret and was not sent to a provider off this network",
         },
         502: {"model": ErrorResponse, "description": "Provider(s) failed (RouteFailed)"},
         503: {"model": ErrorResponse, "description": "No provider may take it (NoRoute)"},

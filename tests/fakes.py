@@ -41,6 +41,7 @@ class FakeProvider(Provider):
     - ``usage``: token counts on the response (default none).
     - ``available``: what ``check_available()`` says.
     - ``memory_limit``: ``ProviderInfo.memory_limit`` (default none: no memory).
+    - ``off_network``: a local provider off this network (ADR-032).
 
     ``calls`` counts calls, ``requests`` keeps each request, ``checks`` counts
     availability checks.
@@ -59,14 +60,16 @@ class FakeProvider(Provider):
         available: bool = True,
         delay_s: float = 0.0,
         memory_limit: PrivacyLevel | None = None,
+        off_network: bool = False,
     ) -> None:
         super().__init__(
             ProviderInfo(
                 name=name,
                 kind=kind,
                 default_model=f"{name}-model",
-                max_privacy="sensitive" if kind == "local" else "personal",
+                max_privacy="sensitive" if kind == "local" and not off_network else "personal",
                 memory_limit=memory_limit,
+                off_network=off_network,
             )
         )
         self.error = error

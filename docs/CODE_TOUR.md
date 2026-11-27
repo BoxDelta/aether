@@ -119,7 +119,8 @@ the design, follow the ADR numbers into `docs/adr/`.
     (`memory/retrieval.py`'s `MemoryRetriever`) for this provider's memory,
     after the route is chosen, with `ProviderInfo.memory_limit_for(...)`:
     nothing without a limit (the cloud without `allow_cloud`), up to
-    personal for the cloud, public only for an untrusted Ollama host, up to
+    personal for the cloud and an untrusted (off-network) Ollama host, which
+    need `allow_cloud` (ADR-032), up to
     sensitive (with
     `include_sensitive`) on a trusted one. The selection
     (`router/memory_context.py`'s `MemoryContext`) is reported for the

@@ -14,12 +14,12 @@ text that would be sent (each message and the full system prompt) is checked wit
 ``SecretCheck`` (``core/log.py``: the log redactor's patterns and the configured
 secret values). On a match the call is refused with ``SecretContentRefused``
 (not retryable, so no failover) and nothing is sent, whatever the privacy level
-says. Local providers are not checked (an untrusted ``OLLAMA_HOST`` is still
-``local`` until #22 decides otherwise). Being here, in the one call path, the
-check also covers failover. ``_outgoing_texts`` lists the request's text fields;
-tests/test_cloud_tripwire.py pins ``ModelRequest``'s fields, so a new one must be
-added here or the test fails. Memory goes into the system prompt, so the tripwire
-checks memory text as well.
+says. Local providers on this machine or network are not checked; an untrusted
+``OLLAMA_HOST`` is off-network and is checked like the cloud (ADR-032). Being
+here, in the one call path, the check also covers failover. ``_outgoing_texts``
+lists the request's text fields; tests/test_cloud_tripwire.py pins
+``ModelRequest``'s fields, so a new one must be added here or the test fails.
+Memory goes into the system prompt, so the tripwire checks memory text as well.
 
 **Memory (ADR-024 §3, step 12 of #58).** ``memory`` is the ``MemoryContext`` the
 router selected for this call. It goes only into the ``memory_context`` section of
@@ -117,8 +117,9 @@ async def call_with_identity(  # noqa: PLR0913 - keyword-only options
                 allow_cloud=allow_cloud,
                 include_sensitive=include_sensitive,
             )
-        # Anything not explicitly local is checked, so a new provider kind fails closed.
-        if provider.info.kind != "local" and any(map(secret_check, _outgoing_texts(prepared))):
+        # Cloud and off-network providers are checked (ADR-032); anything not
+        # explicitly local is, so a new provider kind fails closed.
+        if provider.info.needs_allow_cloud and any(map(secret_check, _outgoing_texts(prepared))):
             raise SecretContentRefused(provider.name)
         response = await provider.generate(prepared)
     except ProviderError as exc:

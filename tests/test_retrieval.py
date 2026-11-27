@@ -414,8 +414,8 @@ def test_claude_provider_gets_personal_memory_at_most() -> None:
     [
         ("http://localhost:11434", "sensitive"),
         ("http://192.168.1.20:11434", "sensitive"),
-        ("https://gpu-box.example.org", "public"),
-        ("http://8.8.8.8:11434", "public"),
+        ("https://gpu-box.example.org", "personal"),  # off-network: needs allow_cloud
+        ("http://8.8.8.8:11434", "personal"),
     ],
 )
 def test_ollama_memory_limit_follows_host_trust(host: str, expected: PrivacyLevel) -> None:
@@ -440,7 +440,7 @@ def test_ollama_opt_in_trust_gives_sensitive_memory() -> None:
     [
         ("claude", ClaudeProvider(None, "m").info, "personal"),
         ("ollama-trusted", OllamaProvider("http://localhost:11434", "m").info, "sensitive"),
-        ("ollama-untrusted", OllamaProvider("https://gpu.example.org", "m").info, "public"),
+        ("ollama-untrusted", OllamaProvider("https://gpu.example.org", "m").info, "personal"),
     ],
 )
 def test_provider_limit_into_selection(
@@ -466,6 +466,6 @@ def test_provider_limit_into_selection(
         and limit is not None
         and privacy_rank(level) <= privacy_rank(ceiling)
         and (level != "sensitive" or include_sensitive)
-        and (info.kind == "local" or allow_cloud)
+        and (not info.needs_allow_cloud or allow_cloud)
     )
     assert bool(sel.records) == expected, (name, level, status, include_sensitive, allow_cloud)

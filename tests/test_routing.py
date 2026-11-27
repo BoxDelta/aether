@@ -44,15 +44,22 @@ CLOUD_MAX = PRIVACY_ORDER.index("personal")
 
 
 def cands(
-    privacy: PrivacyLevel, *, local: bool | None = True, cloud: bool | None = True
+    privacy: PrivacyLevel,
+    *,
+    local: bool | None = True,
+    cloud: bool | None = True,
+    off_network: bool = False,
 ) -> list[Candidate]:
-    """local/cloud: True available, False unavailable, None not configured."""
+    """local/cloud: True available, False unavailable, None not configured.
+    off_network: the local provider is an untrusted host (ADR-032)."""
     rank = PRIVACY_ORDER.index(privacy)
     out = []
     if local is not None:
-        out.append(Candidate("ollama", "local", privacy != "secret" and rank <= LOCAL_MAX, local))
+        local_max = min(LOCAL_MAX, PRIVACY_ORDER.index("personal")) if off_network else LOCAL_MAX
+        allows = privacy != "secret" and rank <= local_max
+        out.append(Candidate("ollama", "local", allows, local, needs_allow_cloud=off_network))
     if cloud is not None:
-        out.append(Candidate("claude", "cloud", rank <= CLOUD_MAX, cloud))
+        out.append(Candidate("claude", "cloud", rank <= CLOUD_MAX, cloud, needs_allow_cloud=True))
     return out
 
 

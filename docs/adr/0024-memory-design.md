@@ -214,7 +214,8 @@ function as an explicit input:
     `sensitive` as well. The opt-in is the owner's explicit statement of
     trust, and ADR-023 already treats it that way for requests;
 -   Ollama on any other host: `public`, until #22 is decided
-    (Decision D4).
+    (Decision D4). **Decided by ADR-032:** it needs
+    `allow_cloud`, then gets up to `personal`, like the cloud.
 
 The trust category is not in `ProviderInfo` today (it lives on
 `OllamaProvider.host_category`). PR 11 adds it to `ProviderInfo`
@@ -503,7 +504,8 @@ stated gap, not a guarantee.
         cloud gets `public` memory only.
 -   **Before Personal memory reaches an untrusted Ollama host:**
     -   **#22.** Until it is decided (and ADR-023 amended), an untrusted
-        host gets `public` memory only.
+        host gets `public` memory only. **Decided by ADR-032 (2026-11-27):** it
+        needs `allow_cloud`, then gets up to `personal`.
 -   **Before any client other than the owner gets a token:** revisit
     ADR-021 (section 2).
 
@@ -703,7 +705,9 @@ D1 to D10 are accepted exactly as recommended above. D11 differs.
 -   **D3.** Accepted as recommended: cloud ceiling `public` until #8
     lands, then `personal` for requests with `allow_cloud`.
 -   **D4.** Accepted as recommended: an untrusted Ollama host gets
-    `public` memory only until #22 is decided.
+    `public` memory only until #22 is decided. **Decided by ADR-032
+    (2026-11-27):** it needs `allow_cloud` and then gets up to `personal`,
+    like the cloud.
 -   **D5.** Accepted as recommended: daily backups kept 7 days plus
     weekly backups kept 4 weeks (decided in detail in #3).
 -   **D6.** Accepted as recommended: corrections overwrite, with no

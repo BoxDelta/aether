@@ -1,7 +1,7 @@
 # ADR-032: An untrusted Ollama host needs allow_cloud, like the cloud
 
-**Status:** Proposed (2026-11-27). Amends ADR-023 §5; decides ADR-024 D4's
-follow-up and #22.\
+**Status:** Accepted (owner, 2026-11-27): option A. Amends ADR-023 §5;
+decides ADR-024 D4's follow-up and #22.\
 **Date:** 2026-11-27\
 **Owner:** BoxDelta
 
@@ -58,8 +58,8 @@ The cloud already has the right shape for all three: nothing without
 
 ## Decision
 
-Option A, if the owner accepts it. Implementation is step 13 of #58, one
-PR:
+Option A (accepted by the owner, 2026-11-27). Implemented in step 13 of
+#58, one PR:
 
 1.  `ProviderInfo.off_network: bool = False`; a validator refuses
     `off_network=True` with `kind="cloud"` (it would mean nothing) and
