@@ -18,7 +18,8 @@ memory content, secrets or tracebacks:
   goes through the log ``Redactor`` (configured secrets, key and URL-credential
   patterns), and is blanked if it contains any of the request's own text or the
   memory text sent in its calls (backstop against an adapter echoing the prompt;
-  ``router/echo.py``).
+  ``router/echo.py``). Only then is it cut to ``MAX_TEXT`` characters, so a
+  configured secret that straddles the cut is still masked whole (#115).
 - ``memory.context.retrieved`` (``memory_retrieved``): one per call that could get
   memory, with the provider, counts per level, characters, the effective level of
   the call, the record IDs and how many were left out. Never content.
@@ -26,6 +27,7 @@ memory content, secrets or tracebacks:
 
 import asyncio
 import logging
+import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -116,7 +118,11 @@ Outcome = Literal["ok", "refusal", "error"]
 
 ModelName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9._:/-]{1,200}$")]
 TypeName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")]
-SafeText = Annotated[str, StringConstraints(max_length=MAX_TEXT)]
+# Free text (route reasons, provider error messages) as built, not yet stored:
+# uncapped, because a cap before redaction can cut a configured secret into a prefix
+# that no longer matches by value (#115). ``to_row`` redacts, echo-checks, then caps
+# at MAX_TEXT; the database CHECK on the columns is the backstop.
+RawText = str
 NonNegInt = Annotated[int, Field(ge=0)]
 
 
@@ -127,7 +133,7 @@ class _Frozen(BaseModel):
 class EventAttempt(_Frozen):
     provider: ProviderName
     error_type: TypeName
-    message: SafeText
+    message: RawText
     retryable: bool
 
 
@@ -145,13 +151,13 @@ class Event(_Frozen):
     provider: ProviderName | None = None
     provider_kind: ProviderKind | None = None
     model: ModelName | None = None
-    route_reason: SafeText | None = None
+    route_reason: RawText | None = None
     finish_reason: FinishReason | None = None
     latency_ms: Annotated[float, Field(ge=0.0)] | None = None
     input_tokens: NonNegInt | None = None
     output_tokens: NonNegInt | None = None
     error_type: TypeName | None = None
-    error_message: SafeText | None = None
+    error_message: RawText | None = None
     attempts: Annotated[tuple[EventAttempt, ...], Field(max_length=2)] | None = None
     # Memory events (ADR-024 §5, migration 0005). Never content, keys or queries.
     memory_record_id: UUID | None = None
@@ -305,7 +311,7 @@ def route_selected(decision: RouteDecision, request: ModelRequest, options: Rout
         privacy=request.privacy,
         provider=decision.provider,
         provider_kind=decision.kind,
-        route_reason=_cap(decision.reason),
+        route_reason=decision.reason,
         allow_cloud=options.allow_cloud,
         override=options.override,
         request_id=get_request_id(),
@@ -342,7 +348,7 @@ def _event_attempt(attempt: Attempt) -> EventAttempt:
     return EventAttempt(
         provider=attempt.provider,
         error_type=attempt.error_type,
-        message=_cap(attempt.message),
+        message=attempt.message,
         retryable=attempt.retryable,
     )
 
@@ -359,8 +365,31 @@ def provider_unavailable(
         privacy=request.privacy,
         provider=attempt.provider,
         error_type=attempt.error_type,
-        error_message=_cap(attempt.message),
+        error_message=attempt.message,
         route_reason=route_reason,
+        request_id=get_request_id(),
+        session_id=get_session_id(),
+    )
+
+
+UNEXPECTED_ERROR_REASON = "unexpected error in Core (a bug); the type is in error_type"
+_TYPE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+
+
+def request_crashed(exc: BaseException, request: ModelRequest, options: RouteOptions) -> Event:
+    """``request.failed`` for an exception routing didn't expect (#112): the type name
+    only, never the message, and a fixed reason. Same event type and columns as
+    ``request_failed``, so the schema doesn't change."""
+    name = type(exc).__name__
+    return Event(
+        event_type="request.failed",
+        actor="core",
+        outcome="error",
+        privacy=request.privacy,
+        route_reason=UNEXPECTED_ERROR_REASON,
+        error_type=name if _TYPE_NAME.fullmatch(name) else "Exception",
+        allow_cloud=options.allow_cloud,
+        override=options.override,
         request_id=get_request_id(),
         session_id=get_session_id(),
     )
@@ -375,7 +404,7 @@ def request_failed(
         actor="router",
         outcome="error",
         privacy=request.privacy,
-        route_reason=_cap(exc.reason),
+        route_reason=exc.reason,
         error_type=type(exc).__name__,
         attempts=tuple(_event_attempt(a) for a in attempts) or None,
         allow_cloud=options.allow_cloud,

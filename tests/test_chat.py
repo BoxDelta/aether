@@ -12,16 +12,19 @@ from pydantic import SecretStr
 from core.app import create_app
 from core.chat import MAX_BODY_BYTES, MAX_MESSAGE_CHARS, MAX_MESSAGES, MAX_TOTAL_CHARS
 from core.config import Settings
-from core.events import Event, EventWriter
+from core.events import UNEXPECTED_ERROR_REASON, Event, EventWriter, request_crashed
 from core.identity import load_identity
 from core.request_context import REQUEST_ID_HEADER
+from router.contract import (
+    Message as ModelMessage,
+)
 from router.contract import (
     ModelRequest,
     ProviderError,
     ProviderTimeout,
     ProviderUnavailable,
 )
-from router.routing import Router
+from router.routing import RouteOptions, Router
 from tests.chat_helpers import (
     ANSWER,
     AUTH,
@@ -523,3 +526,58 @@ def test_events_are_recorded_in_the_order_they_happen(
     times = [e["occurred_at"] for e in s.rows]
     assert times == sorted(times)
     assert_no_content(repr(s.rows))
+
+
+def test_an_unexpected_error_still_records_its_events(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A router or adapter bug (#112): background tasks don't run when the handler
+    # raises, so the events are written before the generic 500.
+    s = Setup()
+    router = s.client.app.state.router  # type: ignore[attr-defined]
+
+    async def broken(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError(f"bug near {PROMPT}")
+
+    monkeypatch.setattr(router, "handle", broken)
+    r = s.client.post("/chat", json={"messages": [{"role": "user", "content": PROMPT}]})
+
+    assert r.status_code == 500
+    assert [row["event_type"] for row in s.rows] == ["request.received", "request.failed"]
+    failed = s.rows[-1]
+    assert failed["error_type"] == "RuntimeError"
+    assert failed["actor"] == "core" and failed["outcome"] == "error"
+    assert failed["route_reason"] == UNEXPECTED_ERROR_REASON
+    assert_no_content(json.dumps(s.rows, default=str))
+    assert PROMPT not in r.text
+
+
+def test_a_crash_event_never_carries_an_odd_type_name() -> None:
+    weird = type("Weird-Name", (Exception,), {})
+    request = ModelRequest(messages=(ModelMessage(role="user", content="hi"),))
+    event = request_crashed(weird("x"), request, RouteOptions())
+    assert event.error_type == "Exception"
+
+
+def test_an_error_after_the_call_keeps_the_calls_events(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The model call (maybe a paid cloud call) already happened: its events must
+    # not be lost to a bug further on (#112).
+    import core.chat
+
+    async def broken(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError(f"bug near {PROMPT}")
+
+    s = Setup()
+    monkeypatch.setattr(core.chat, "_propose", broken)
+    r = s.client.post(
+        "/chat",
+        json={"messages": [{"role": "user", "content": PROMPT}], "propose_memory": True},
+    )
+
+    assert r.status_code == 500
+    assert [row["event_type"] for row in s.rows] == [
+        "request.received",
+        "model.route.selected",
+        "model.call.completed",
+        "request.failed",
+    ]
+    assert s.rows[-1]["error_type"] == "RuntimeError"
+    assert_no_content(json.dumps(s.rows, default=str))

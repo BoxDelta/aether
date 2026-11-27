@@ -32,6 +32,8 @@ Failover (#19), in ``Router.handle``:
   non-retryable error (auth, model not found, rejected request, bad response,
   privacy) does not.
 - A manual override never fails over.
+- The timeout (``timeout_s``) is per attempt, so a request that fails over can
+  take up to twice as long before it answers or fails (#121).
 - The fallback is chosen by ``decide()`` again with the failed provider
   excluded, so every rule above applies to it (``allow_cloud``, Sensitive,
   Secret, availability, headroom).
@@ -65,6 +67,8 @@ from core.log import SecretCheck
 from router import hardware
 from router.claude import ClaudeProvider
 from router.contract import (
+    MEMORY_MAX_CHARS,
+    MEMORY_MAX_RECORDS,
     ModelRequest,
     ModelResponse,
     PrivacyLevel,
@@ -115,6 +119,15 @@ class Candidate:
 
     def allowed_by(self, options: "RouteOptions") -> bool:
         return options.allow_cloud or not (self.kind == "cloud" or self.needs_allow_cloud)
+
+
+# Marks a route to a local provider whose data leaves this network (ADR-032), so the
+# route reason (and the events that store it) tells it apart from a local send (#148).
+OFF_NETWORK_MARK = " [off-network host: data leaves this network]"
+
+
+def _net(candidate: Candidate) -> str:
+    return OFF_NETWORK_MARK if candidate.kind == "local" and candidate.needs_allow_cloud else ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,7 +236,7 @@ def _override_route(
     reason = f"manual override: {name}"
     if match.kind == "local" and not (headroom is not None and headroom.ok):
         reason += f" (desktop VRAM reserve not met: {_room_text(headroom)})"
-    return RouteDecision(match.name, match.kind, reason)
+    return RouteDecision(match.name, match.kind, reason + _net(match))
 
 
 def choose_route(
@@ -252,7 +265,9 @@ def choose_route(
     ]
 
     if local and has_room:
-        return RouteDecision(local[0].name, "local", f"local preferred: {_room_text(headroom)}")
+        return RouteDecision(
+            local[0].name, "local", f"local preferred: {_room_text(headroom)}{_net(local[0])}"
+        )
     if cloud:
         why_not_local = (
             f"no local VRAM headroom ({_room_text(headroom)})"
@@ -265,7 +280,8 @@ def choose_route(
         return RouteDecision(
             local[0].name,
             "local",
-            f"local without VRAM headroom ({_room_text(headroom)}); {why_not_cloud}",
+            f"local without VRAM headroom ({_room_text(headroom)}); {why_not_cloud}"
+            f"{_net(local[0])}",
         )
     raise NoRoute(
         f"no provider: {_why_not('local', candidates, privacy, options)}; "
@@ -371,10 +387,20 @@ class Router:
                 and p.allows(privacy)
                 and (not p.info.needs_allow_cloud or options.allow_cloud)
             ]
+            if options.override is not None:
+                # An override is never substituted (rule 2), so nothing else is
+                # checked, and a cloud override runs no GPU probe (#121).
+                eligible = [p for p in eligible if p.name == options.override]
             need_probe = any(p.info.kind == "local" for p in eligible)
             headroom_task = asyncio.ensure_future(self._headroom()) if need_probe else None
-            statuses = await asyncio.gather(*(_available(p) for p in eligible))
-            headroom = await headroom_task if headroom_task is not None else None
+            try:
+                statuses = await asyncio.gather(*(_available(p) for p in eligible))
+                headroom = await headroom_task if headroom_task is not None else None
+            finally:
+                # Cancelled (a client disconnect) or failed: don't leave the probe
+                # task behind unawaited (#121).
+                if headroom_task is not None and not headroom_task.done():
+                    headroom_task.cancel()
 
             available = {p.name: ok for p, ok in zip(eligible, statuses, strict=True)}
             candidates = [
@@ -389,7 +415,8 @@ class Router:
             ]
             decision = choose_route(privacy, options, candidates, headroom)
         except NoRoute as exc:
-            logger.warning("No route", extra={**log_fields, "reason": exc.reason})
+            if not exclude:  # a failover search: the caller logs "No failover" (#121)
+                logger.warning("No route", extra={**log_fields, "reason": exc.reason})
             raise
         logger.info(
             "Route chosen",
@@ -500,10 +527,14 @@ class Router:
             return None
         try:
             async with asyncio.timeout(MEMORY_TIMEOUT_S):
+                info = provider.info
                 return await self._memory.context_for(
                     _search_text(request),
                     limit=fetch_level(limit, include_sensitive=options.include_sensitive),
                     include_sensitive=options.include_sensitive,
+                    # The provider's own lower size limits, if any (#143).
+                    max_records=info.memory_max_records or MEMORY_MAX_RECORDS,
+                    max_chars=info.memory_max_chars or MEMORY_MAX_CHARS,
                 )
         except Exception as exc:  # memory is optional; the call goes ahead without it
             logger.warning(

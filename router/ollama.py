@@ -83,13 +83,15 @@ def classify_host(host_url: str) -> HostCategory:
 
 
 class OllamaProvider(Provider):
-    def __init__(
+    def __init__(  # noqa: PLR0913 - keyword-only settings
         self,
         host: str,
         default_model: str,
         *,
         transport: httpx.AsyncBaseTransport | None = None,
         trust_host: bool = False,
+        memory_max_records: int | None = None,
+        memory_max_chars: int | None = None,
     ) -> None:
         category = classify_host(host)
         trusted = category in TRUSTED_CATEGORIES or trust_host
@@ -107,6 +109,8 @@ class OllamaProvider(Provider):
                 # allow_cloud for requests and memory, and gets up to personal.
                 memory_limit="sensitive" if trusted else "personal",
                 off_network=not trusted,
+                memory_max_records=memory_max_records,
+                memory_max_chars=memory_max_chars,
             )
         )
         self.host_category: HostCategory = category
@@ -142,6 +146,8 @@ class OllamaProvider(Provider):
             host=str(settings.ollama_host),
             default_model=settings.ollama_model,
             trust_host=settings.aether_ollama_trust_host,
+            memory_max_records=settings.aether_ollama_memory_max_records,
+            memory_max_chars=settings.aether_ollama_memory_max_chars,
         )
 
     async def _generate(self, request: ModelRequest) -> ModelResponse:

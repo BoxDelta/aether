@@ -146,6 +146,9 @@ KEY_PATTERN = r"[a-z0-9_.]{1,64}"
 OWNER: Source = "owner"
 LIST_LIMIT_MAX = 200
 LIST_LIMIT_DEFAULT = 50
+# Far more than any owner's memory; keeps OFFSET inside the database's bigint range,
+# so a huge value is refused here (and a 422 in the API), never a driver error (#107).
+LIST_OFFSET_MAX = 1_000_000
 QUERY_MAX = 200
 PENDING_MAX = 50  # D8
 PENDING_DAYS = 30  # D8
@@ -420,8 +423,8 @@ class ListFilter:
             raise InvalidRecord("include_expired", "must be true or false")
         if not _is_int(self.limit) or not 1 <= self.limit <= LIST_LIMIT_MAX:
             raise InvalidRecord("limit", f"must be 1 to {LIST_LIMIT_MAX}")
-        if not _is_int(self.offset) or self.offset < 0:
-            raise InvalidRecord("offset", "must be 0 or more")
+        if not _is_int(self.offset) or not 0 <= self.offset <= LIST_OFFSET_MAX:
+            raise InvalidRecord("offset", f"must be 0 to {LIST_OFFSET_MAX}")
 
 
 def _check_query(value: object) -> None:

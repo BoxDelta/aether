@@ -207,7 +207,9 @@ def back_up(
     )
     printed = capsys.readouterr()
     assert code == 0, printed.out
-    assert [argv[4:6] for argv in started] == [
+    # Each tool under the container's own timeout (#117), then the tool.
+    assert all(argv[4] == "timeout" for argv in started)
+    assert [argv[6:8] for argv in started] == [
         ["pg_dump", "--format=custom"],
         ["pg_restore", "--list"],
         ["pg_restore", "--file=/dev/null"],
@@ -349,6 +351,13 @@ def test_backup_restore_round_trip_keeps_rows_triggers_and_grants(
     assert restore_check(container, user, dst) == "NOT OK: public_database"
     asyncio.run(owner_autocommit(live_owner, f"REVOKE ALL ON DATABASE {dst} FROM PUBLIC"))
     asyncio.run(owner_autocommit(live_owner, f"GRANT CONNECT ON DATABASE {dst} TO aether_app"))
+    assert restore_check(container, user, dst) == "ok"
+
+    # A trigger that exists but is disabled doesn't protect anything (#117).
+    for trigger in ("events_no_update_delete", "events_no_truncate"):
+        asyncio.run(owner_autocommit(dst_owner, f"ALTER TABLE events DISABLE TRIGGER {trigger}"))
+        assert restore_check(container, user, dst) == "NOT OK: triggers", trigger
+        asyncio.run(owner_autocommit(dst_owner, f"ALTER TABLE events ENABLE TRIGGER {trigger}"))
     assert restore_check(container, user, dst) == "ok"
 
     # Triggers: the owner hits them; the app role is refused before them.

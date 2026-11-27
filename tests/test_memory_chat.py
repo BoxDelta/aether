@@ -23,6 +23,7 @@ from router.contract import (
     ModelRequest,
     PrivacyLevel,
     PrivacyNotAllowed,
+    ProviderInfo,
     ProviderUnavailable,
     privacy_rank,
 )
@@ -77,11 +78,19 @@ class FakeSource:
         self.records = records
         self.error = error
         self.asked: list[Asked] = []
+        self.sizes: list[tuple[int, int]] = []
 
     async def context_for(
-        self, request_text: str | None, *, limit: PrivacyLevel, include_sensitive: bool
+        self,
+        request_text: str | None,
+        *,
+        limit: PrivacyLevel,
+        include_sensitive: bool,
+        max_records: int = 20,
+        max_chars: int = 4000,
     ) -> MemoryContext:
         self.asked.append(Asked(request_text, limit, include_sensitive))
+        self.sizes.append((max_records, max_chars))
         if self.error is not None:
             raise self.error
         candidates = [
@@ -95,6 +104,8 @@ class FakeSource:
             include_by_default=("public", "personal"),
             include_sensitive=include_sensitive,
             now=NOW,
+            max_records=max_records,
+            max_chars=max_chars,
         ).to_context()
 
 
@@ -105,7 +116,13 @@ class WrongSource:
         self.memory = memory
 
     async def context_for(
-        self, request_text: str | None, *, limit: PrivacyLevel, include_sensitive: bool
+        self,
+        request_text: str | None,
+        *,
+        limit: PrivacyLevel,
+        include_sensitive: bool,
+        max_records: int = 20,
+        max_chars: int = 4000,
     ) -> MemoryContext:
         return self.memory
 
@@ -191,6 +208,47 @@ def test_include_sensitive_reaches_a_trusted_local_host(identity: Identity) -> N
     assert sent_levels(p) == [["personal", "public", "sensitive"]]
     assert p.requests[0].privacy == "sensitive"
     assert src.asked[0].limit == "sensitive"
+
+
+def test_default_size_limits_reach_the_source(identity: Identity) -> None:
+    src = FakeSource(list(ALL))
+    handle(router([local()], src, identity), request(), RouteOptions(), [])
+    assert src.sizes == [(20, 4000)]
+
+
+def test_a_providers_lower_size_limits_reach_the_selection(identity: Identity) -> None:
+    # A small local model gets fewer records (ADR-024 D9, #143).
+    p = local(memory_max_records=1, memory_max_chars=3000)
+    src = FakeSource(list(ALL))
+    uses: list[MemoryUse] = []
+
+    handle(router([p], src, identity), request(), RouteOptions(include_sensitive=True), uses)
+
+    assert src.sizes == [(1, 3000)]
+    assert len(sent_levels(p)[0]) == 1
+    assert len(uses[0].memory.record_ids) == 1
+    assert uses[0].memory.left_out == 2
+
+
+def test_failover_uses_the_next_providers_own_size_limits(identity: Identity) -> None:
+    small = local(memory_max_records=1, error=ProviderUnavailable("ollama", "down"))
+    big = cloud("personal")
+    src = FakeSource(list(ALL))
+
+    handle(router([small, big], src, identity), request(), RouteOptions(allow_cloud=True), [])
+
+    assert src.sizes == [(1, 4000), (20, 4000)]
+
+
+@pytest.mark.parametrize("field", ["memory_max_records", "memory_max_chars"])
+@pytest.mark.parametrize("value", [0, -1, 10**6])
+def test_provider_size_limits_may_only_be_lowered(field: str, value: int) -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        ProviderInfo.model_validate(
+            {"name": "x", "kind": "local", "default_model": "m", field: value}
+        )
 
 
 def test_a_local_host_limited_to_public_gets_public_only(identity: Identity) -> None:
@@ -469,7 +527,12 @@ def test_a_slow_source_is_given_up_and_the_call_goes_ahead(
 
     class Slow(FakeSource):
         async def context_for(
-            self, request_text: str | None, *, limit: PrivacyLevel, include_sensitive: bool
+            self,
+            request_text: str | None,
+            *,
+            limit: PrivacyLevel,
+            include_sensitive: bool,
+            **_sizes: int,
         ) -> MemoryContext:
             await asyncio.sleep(5)
             raise AssertionError("not reached")

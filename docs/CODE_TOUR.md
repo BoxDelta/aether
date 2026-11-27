@@ -77,7 +77,9 @@ the design, follow the ADR numbers into `docs/adr/`.
     pure function, which of them one call may get (privacy rules,
     ordering, at most 20 records and 4000 characters) and renders them
     for `memory_context`; each provider sets `ProviderInfo.memory_limit`
-    (step 11). `MemoryRetriever` joins the two as the router's
+    (step 11) and may set lower size limits
+    (`memory_max_records`, `memory_max_chars`, #143), which the router
+    passes to `MemorySource.context_for`. `MemoryRetriever` joins the two as the router's
     `MemorySource` (step 12, below). `proposals.py` builds the model
     proposal call (latest user message only), parses its JSON reply as
     data and stores proposals as pending (ADR-033, step 15). `restore.py`
@@ -106,7 +108,7 @@ the design, follow the ADR numbers into `docs/adr/`.
 1.  **Request ID.** `RequestContextMiddleware` (`core/request_context.py`)
     gives the request an ID, which appears in logs, events and the
     response. It also turns any unhandled error into a generic 500 with no
-    details.
+    details, and logs only its type and frames, never its message.
 2.  **Auth.** `BearerAuth` (`core/auth.py`) checks `Authorization: Bearer
     <AETHER_API_TOKEN>` in constant time before any body is read. With no
     valid token configured, every route except `/health` answers 503: Core
@@ -179,7 +181,11 @@ the design, follow the ADR numbers into `docs/adr/`.
     own text. Core writes them as the app role `aether_app`, which can't
     update, delete or truncate them (and Core refuses to start as the
     owner). Without `DATABASE_URL`, events are skipped with one startup
-    warning, and a failed write never affects the request. The events are
+    warning, and a failed write never affects the request. If the handler
+    hits an error it didn't expect (a bug in routing, an adapter or the
+    answer), it writes the events itself,
+    with a `request.failed` that names the error type only, before the
+    generic 500, since background tasks don't run then (#112). The events are
     built by two reporting hooks on `Router.handle()` (`on_decision`,
     `on_attempt_failed`). If building one raises, routing goes on, that one
     event is missing, and a metadata-only "Decision callback failed" or

@@ -54,6 +54,8 @@ def message_body(
 def error_body(status: int, message: str) -> httpx2.Response:
     kinds = {
         400: "invalid_request_error",
+        413: "request_too_large",
+        422: "invalid_request_error",
         401: "authentication_error",
         403: "permission_error",
         404: "not_found_error",
@@ -291,6 +293,8 @@ def test_from_settings_without_key() -> None:
     ("status", "error_type", "retryable", "fragment"),
     [
         (400, ProviderBadResponse, False, "request rejected"),
+        (413, ProviderBadResponse, False, "request rejected"),  # #121
+        (422, ProviderBadResponse, False, "request rejected"),
         (401, ProviderUnavailable, False, "authentication failed"),
         (403, ProviderUnavailable, False, "authentication failed"),
         (404, ProviderUnavailable, False, "model not found"),

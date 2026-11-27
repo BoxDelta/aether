@@ -310,3 +310,46 @@ def test_choose_route_with_an_off_network_candidate(
             choose_route("personal", options, cands, room)
     else:
         assert choose_route("personal", options, cands, room).provider == expected
+
+
+# --- the route reason says the send left the network (#148) -------------------------
+
+
+def test_route_reason_marks_an_off_network_send(identity: Identity) -> None:
+    from router.routing import OFF_NETWORK_MARK
+
+    seen: list[httpx.Request] = []
+    cloud = FakeProvider("claude", "cloud")
+    preferred = asyncio.run(
+        router([ollama(UNTRUSTED, seen), cloud], identity).handle(
+            request(), RouteOptions(allow_cloud=True)
+        )
+    )
+    override = asyncio.run(
+        router([ollama(UNTRUSTED, seen), cloud], identity, free_gib=0.1).handle(
+            request(), RouteOptions(allow_cloud=True, override="ollama")
+        )
+    )
+    no_room = asyncio.run(
+        router([ollama(UNTRUSTED, seen)], identity, free_gib=0.1).handle(
+            request(), RouteOptions(allow_cloud=True)
+        )
+    )
+    for out in (preferred, override, no_room):
+        assert out.decision.provider == "ollama"
+        assert out.decision.reason.endswith(OFF_NETWORK_MARK)
+
+
+@pytest.mark.parametrize("trust_host", [False, True])
+def test_route_reason_is_unmarked_for_a_trusted_host(identity: Identity, trust_host: bool) -> None:
+    from router.routing import OFF_NETWORK_MARK
+
+    seen: list[httpx.Request] = []
+    host = UNTRUSTED if trust_host else TRUSTED
+    out = asyncio.run(
+        router([ollama(host, seen, trust_host=trust_host)], identity).handle(
+            request(), RouteOptions()
+        )
+    )
+    assert OFF_NETWORK_MARK not in out.decision.reason
+    assert "off-network" not in out.decision.reason

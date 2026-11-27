@@ -91,7 +91,7 @@ def _probe_nvml() -> GpuState | None:
 
 def _parse_mib(field: str) -> int | None:
     field = field.strip()
-    return int(field) * MIB if field.isdigit() else None  # "[N/A]" etc.
+    return int(field) * MIB if field.isascii() and field.isdigit() else None  # "[N/A]" etc.
 
 
 def parse_nvidia_smi(output: str) -> GpuState | None:
@@ -107,7 +107,7 @@ def parse_nvidia_smi(output: str) -> GpuState | None:
     if total is None or free is None:
         return None
     util_field = fields[2].strip()
-    utilization = int(util_field) if util_field.isdigit() else None
+    utilization = int(util_field) if util_field.isascii() and util_field.isdigit() else None
     return GpuState("nvidia-smi", total, free, utilization)
 
 
@@ -147,7 +147,7 @@ def parse_meminfo(text: str) -> int | None:
     for line in text.splitlines():
         if line.startswith("MemAvailable:"):
             parts = line.split()
-            if len(parts) >= 2 and parts[1].isdigit():
+            if len(parts) >= 2 and parts[1].isascii() and parts[1].isdigit():
                 return int(parts[1]) * 1024  # value is in kB (KiB)
             return None
     return None

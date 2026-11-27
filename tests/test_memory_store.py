@@ -24,6 +24,7 @@ from memory import types as memory_types
 from memory.store import (
     CONTENT_MAX,
     KEY_PATTERN,
+    LIST_OFFSET_MAX,
     UNSET,
     Approval,
     InvalidRecord,
@@ -184,11 +185,20 @@ def test_bad_fields_are_refused(changes: dict[str, Any], field: str) -> None:
         {"limit": 201},
         {"limit": True},
         {"offset": -1},
+        {"offset": LIST_OFFSET_MAX + 1},
+        {"offset": 2**63},  # past bigint: was a StoreFailed from the driver (#107)
         {"include_expired": "yes"},
     ],
 )
 def test_bad_list_filters_are_refused(changes: dict[str, Any]) -> None:
     refused(lambda: ListFilter(**changes))
+
+
+def test_largest_offset_is_accepted_and_shared_with_the_api() -> None:
+    from core.memory_api import OFFSET_MAX
+
+    assert ListFilter(offset=LIST_OFFSET_MAX).offset == LIST_OFFSET_MAX
+    assert OFFSET_MAX == LIST_OFFSET_MAX
 
 
 # --- who may do what -----------------------------------------------------------------

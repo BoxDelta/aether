@@ -564,3 +564,91 @@ def test_from_settings_builds_local_then_cloud(identity: Identity) -> None:
         ("ollama", "local"),
         ("claude", "cloud"),
     ]
+
+
+# --- #121: override checks only itself; cancellation; one log line on no failover ----
+
+
+def test_cloud_override_runs_no_probe_and_checks_only_the_override(identity: Identity) -> None:
+    probe = Probe(4.0)
+    router, local, cloud = make_router(identity, probe)
+
+    decision = asyncio.run(router.decide(req(), RouteOptions(allow_cloud=True, override="claude")))
+
+    assert decision.provider == "claude"
+    assert probe.threads == []
+    assert local.checks == 0 and cloud.checks == 1
+
+
+def test_local_override_probes_but_checks_only_the_override(identity: Identity) -> None:
+    probe = Probe(4.0)
+    router, local, cloud = make_router(identity, probe)
+
+    decision = asyncio.run(router.decide(req(), RouteOptions(allow_cloud=True, override="ollama")))
+
+    assert decision.provider == "ollama"
+    assert len(probe.threads) == 1
+    assert local.checks == 1 and cloud.checks == 0
+
+
+def test_an_unavailable_override_is_still_refused_not_substituted(identity: Identity) -> None:
+    router, _, cloud = make_router(
+        identity, Probe(4.0), local=FakeProvider("ollama", "local", available=False)
+    )
+    with pytest.raises(NoRoute, match="override 'ollama' is unavailable"):
+        asyncio.run(router.decide(req(), RouteOptions(allow_cloud=True, override="ollama")))
+    assert cloud.checks == 0
+
+
+class _Hanging(FakeProvider):
+    async def check_available(self) -> bool:
+        self.checks += 1
+        await asyncio.Event().wait()  # never set: the client disconnects first
+        return True
+
+
+def test_a_cancelled_decision_leaves_no_probe_task_behind(identity: Identity) -> None:
+    release = threading.Event()
+
+    def slow_probe() -> HardwareSnapshot:
+        release.wait(5)
+        return snapshot(4.0)
+
+    router = Router(
+        [_Hanging("ollama", "local"), FakeProvider("claude", "cloud")],
+        identity,
+        secret_check=CHECK,
+        probe=slow_probe,
+    )
+
+    async def body() -> list[asyncio.Task[object]]:
+        task = asyncio.ensure_future(router.decide(req(), RouteOptions(allow_cloud=True)))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+        left = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        release.set()  # let the probe thread finish before the loop shuts down
+        return left
+
+    try:
+        assert asyncio.run(body()) == []
+    finally:
+        release.set()
+
+
+def test_no_failover_logs_one_line_not_also_no_route(
+    identity: Identity, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="aether.router")
+    router, _, _ = make_router(
+        identity, Probe(4.0), local=FakeProvider("ollama", "local", fail=True)
+    )
+
+    with pytest.raises(RouteFailed):
+        asyncio.run(router.handle(req(), RouteOptions(allow_cloud=False)))
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert "No failover" in messages
+    assert "No route" not in messages
