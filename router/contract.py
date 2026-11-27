@@ -133,9 +133,9 @@ class ProviderInfo(_Frozen):
         return self
 
     @model_validator(mode="after")
-    def _cloud_never_gets_sensitive_by_default(self) -> "ProviderInfo":
-        # docs/05 §7.1: Sensitive is local-only unless the owner approves a specific
-        # request; per-request approval is a routing concern, not provider config.
+    def _cloud_never_gets_sensitive(self) -> "ProviderInfo":
+        # docs/05 §7.1: Sensitive goes to a trusted Ollama host only. There is no
+        # per-request approval that lets a cloud provider take it (#156).
         if self.kind == "cloud" and self.max_privacy == "sensitive":
             raise ValueError("cloud providers may not be configured to accept sensitive")
         return self
