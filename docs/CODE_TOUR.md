@@ -76,7 +76,9 @@ the design, follow the ADR numbers into `docs/adr/`.
     pure function, which of them one call may get (privacy rules,
     ordering, at most 20 records and 4000 characters) and renders them
     for `memory_context`; each provider sets `ProviderInfo.memory_limit`
-    (step 11). `MemoryRetriever` joins the two as the router's
+    (step 11) and may set lower size limits
+    (`memory_max_records`, `memory_max_chars`, #143), which the router
+    passes to `MemorySource.context_for`. `MemoryRetriever` joins the two as the router's
     `MemorySource` (step 12, below). `proposals.py` builds the model
     proposal call (latest user message only), parses its JSON reply as
     data and stores proposals as pending (ADR-033, step 15). `restore.py`

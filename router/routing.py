@@ -67,6 +67,8 @@ from core.log import SecretCheck
 from router import hardware
 from router.claude import ClaudeProvider
 from router.contract import (
+    MEMORY_MAX_CHARS,
+    MEMORY_MAX_RECORDS,
     ModelRequest,
     ModelResponse,
     PrivacyLevel,
@@ -525,10 +527,14 @@ class Router:
             return None
         try:
             async with asyncio.timeout(MEMORY_TIMEOUT_S):
+                info = provider.info
                 return await self._memory.context_for(
                     _search_text(request),
                     limit=fetch_level(limit, include_sensitive=options.include_sensitive),
                     include_sensitive=options.include_sensitive,
+                    # The provider's own lower size limits, if any (#143).
+                    max_records=info.memory_max_records or MEMORY_MAX_RECORDS,
+                    max_chars=info.memory_max_chars or MEMORY_MAX_CHARS,
                 )
         except Exception as exc:  # memory is optional; the call goes ahead without it
             logger.warning(
