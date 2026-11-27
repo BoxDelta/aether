@@ -43,7 +43,11 @@ class FailingWriter(EventWriter):
         self.delay_s = delay_s
 
     async def write_all(
-        self, events: Sequence[Event], *, request: ModelRequest | None = None
+        self,
+        events: Sequence[Event],
+        *,
+        request: ModelRequest | None = None,
+        also_forbidden: Sequence[str] = (),
     ) -> list[int]:
         if self.delay_s:
             await asyncio.sleep(self.delay_s)

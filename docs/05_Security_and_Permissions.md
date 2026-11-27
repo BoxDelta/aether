@@ -296,8 +296,28 @@ can stay on disk until the next list or create. The clean-up runs as
 part of the read: if it fails, the list or create fails too (503 or
 500), never an empty or stale answer. Not yet handled: records a restore
 sets back to `pending` would expire at once; build step 16 adds their
-"restored" marker and exempts it (#67). No retrieval for model calls
-yet.
+"restored" marker and exempts it (#67).
+
+Retrieval for model calls (ADR-024 §3, step 12): each call, the
+failover call included, gets its own selection after its route is
+chosen, for the provider that receives it: approved, unexpired records
+in `include_by_default` (Public, Personal), Sensitive only with the
+request's `include_sensitive`, never Secret, and never above the
+provider's `memory_limit` (the cloud: Public only, and nothing without
+`allow_cloud`; an untrusted Ollama host: Public only; a trusted one: up to
+Sensitive). The request sent carries the effective level (the higher of
+the request's and its memory's). `call_with_identity` checks every
+record again against the provider's own limit and refuses the call
+(`MemoryNotAllowed`, nothing sent) if one doesn't fit. Each call that
+could get memory writes one `memory.context.retrieved` event (counts,
+characters, effective level, record IDs; never content). A provider
+error message that contains a whole text sent in the call (a message,
+the system prompt, a memory record's content or its rendered line) of
+at least 8 characters is replaced before it is logged, stored or
+returned (`router/echo.py`). Partial quotes and shorter texts are not
+caught; adapters still build messages from safe parts only. Not yet
+recorded: `include_sensitive` itself (the per-request approval) is in no
+event; only the count of Sensitive records sent is (#144).
 `GET /memory/export` returns one JSON document
 (`{"format": "aether-memory", "version": 1, "exported_at", "records"}`)
 with every column of every unexpired record: all levels, Sensitive
@@ -363,9 +383,10 @@ is still `local` (ADR-023), and whether it should get this check is part
 of #22. `Router` and `call_with_identity`
 require a `SecretCheck` (type-checked); `Router.from_settings` builds it
 with `SecretCheck.from_settings`. The check covers each message and the
-system prompt; a test pins `ModelRequest`'s fields, so memory context
-(ADR-024 step 12) must be added to the checked texts, or that test fails,
-before it can reach the cloud. The
+system prompt, and memory goes into the system prompt, so the memory
+sent to the cloud is checked as well; a test pins `ModelRequest`'s
+fields, so a new text field must be added to the checked texts, or that
+test fails, before it can reach the cloud. The
 limits below apply to this check as well: it catches known formats and
 configured values, not every secret.
 

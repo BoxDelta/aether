@@ -21,6 +21,10 @@ Safety rules applied here:
   anything is sent (``router/identity_call.py``). It is a 422
   ``SecretContentRefused`` with a fixed message, not a 502: the request, not a
   provider, is the problem. No failover; the text is never echoed.
+- Memory (ADR-024 §3, step 12 of #58): each call gets its own selection inside the
+  router (``include_sensitive`` defaults to false; Sensitive memory needs it), and
+  one ``memory.context.retrieved`` event per call that could get memory. The
+  events echo check covers the memory text sent as well as the request text.
 - Access: bearer token, checked by core.auth before this module sees the request
   (ADR-021, #57).
 - Events: metadata only (core/events.py). A failed event write never fails the
@@ -41,6 +45,7 @@ from core.events import (
     Event,
     EventRecorder,
     call_completed,
+    memory_retrieved,
     provider_unavailable,
     request_failed,
     request_received,
@@ -60,6 +65,7 @@ from router.contract import (
 from router.contract import Message as ModelMessage
 from router.routing import (
     Attempt,
+    MemoryUse,
     NoRoute,
     RouteDecision,
     RouteFailed,
@@ -92,6 +98,9 @@ class ChatRequest(_Strict):
     messages: Annotated[list[ChatMessage], Field(min_length=1, max_length=MAX_MESSAGES)]
     privacy: PrivacyLevel = "personal"
     allow_cloud: bool = False
+    # Sensitive memory may be included (docs/07 §6). Never sent to the cloud or an
+    # untrusted host whatever this says (ADR-024 D2, D4).
+    include_sensitive: bool = False
     override: ProviderName | None = None
     # Optional output token limit for this request (#77). It applies to whichever
     # provider answers; it may lower the cloud cap (AETHER_CLOUD_MAX_OUTPUT_TOKENS)
@@ -239,11 +248,17 @@ async def chat(
         privacy=body.privacy,
         max_tokens=body.max_tokens,
     )
-    options = RouteOptions(allow_cloud=body.allow_cloud, override=body.override)
+    options = RouteOptions(
+        allow_cloud=body.allow_cloud,
+        override=body.override,
+        include_sensitive=body.include_sensitive,
+    )
 
     events: list[Event] = [request_received(request, options)]
-    # Runs after the response is sent; sees every event appended below.
-    background.add_task(recorder.record, events, request)
+    # Memory text sent in this request's calls, for the events echo check.
+    memory_texts: list[str] = []
+    # Runs after the response is sent; sees every event and text appended below.
+    background.add_task(recorder.record, events, request, memory_texts)
 
     # Events are appended as things happen, so the list order and each occurred_at
     # match reality: received, selected, unavailable, selected (fallback), then
@@ -254,9 +269,17 @@ async def chat(
     def on_attempt_failed(attempt: Attempt) -> None:
         events.append(provider_unavailable(attempt, request))
 
+    def on_memory(use: MemoryUse) -> None:
+        memory_texts.extend(use.memory.texts)
+        events.append(memory_retrieved(use))
+
     try:
         routed = await router.handle(
-            request, options, on_decision=on_decision, on_attempt_failed=on_attempt_failed
+            request,
+            options,
+            on_decision=on_decision,
+            on_attempt_failed=on_attempt_failed,
+            on_memory=on_memory,
         )
     except RouteFailed as exc:
         events.append(request_failed(exc, request, options))

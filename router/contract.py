@@ -177,6 +177,17 @@ class PrivacyNotAllowed(ProviderError):
     """The request's privacy level is above what this provider may receive."""
 
 
+class MemoryNotAllowed(PrivacyNotAllowed):
+    """A record selected for this call may not go to this provider (ADR-024 §3, the
+    ``call_with_identity`` backstop). Raised before anything is sent; never
+    retryable. The message is fixed: no record, level or ID."""
+
+    MESSAGE = "memory not allowed for this call; nothing sent"
+
+    def __init__(self, provider: str) -> None:
+        super().__init__(provider, self.MESSAGE, retryable=False)
+
+
 class SecretContentRefused(ProviderError):
     """The text of a cloud send looks like a secret (#8). Raised before anything is
     sent; never retryable, so routing never fails over with it. The message is fixed

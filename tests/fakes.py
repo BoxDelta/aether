@@ -6,12 +6,13 @@ import asyncio
 from collections.abc import Sequence
 from typing import Any
 
-from core.events import Event, EventWriter, request_texts, to_row
+from core.events import Event, EventWriter, forbidden_texts, to_row
 from core.log import Redactor, SecretCheck
 from router.contract import (
     FinishReason,
     ModelRequest,
     ModelResponse,
+    PrivacyLevel,
     Provider,
     ProviderInfo,
     ProviderKind,
@@ -39,6 +40,7 @@ class FakeProvider(Provider):
       ``"answer from <name>"``), or ``""`` when ``finish_reason="refusal"``.
     - ``usage``: token counts on the response (default none).
     - ``available``: what ``check_available()`` says.
+    - ``memory_limit``: ``ProviderInfo.memory_limit`` (default none: no memory).
 
     ``calls`` counts calls, ``requests`` keeps each request, ``checks`` counts
     availability checks.
@@ -56,6 +58,7 @@ class FakeProvider(Provider):
         usage: Usage | None = None,
         available: bool = True,
         delay_s: float = 0.0,
+        memory_limit: PrivacyLevel | None = None,
     ) -> None:
         super().__init__(
             ProviderInfo(
@@ -63,6 +66,7 @@ class FakeProvider(Provider):
                 kind=kind,
                 default_model=f"{name}-model",
                 max_privacy="sensitive" if kind == "local" else "personal",
+                memory_limit=memory_limit,
             )
         )
         self.error = error
@@ -109,8 +113,12 @@ class MemoryWriter(EventWriter):
         self.rows: list[dict[str, Any]] = []
 
     async def write_all(
-        self, events: Sequence[Event], *, request: ModelRequest | None = None
+        self,
+        events: Sequence[Event],
+        *,
+        request: ModelRequest | None = None,
+        also_forbidden: Sequence[str] = (),
     ) -> list[int]:
-        forbidden = request_texts(request) if request is not None else []
+        forbidden = forbidden_texts(request, also_forbidden)
         self.rows.extend(to_row(e, self._redact, forbidden) for e in events)
         return list(range(len(self.rows)))

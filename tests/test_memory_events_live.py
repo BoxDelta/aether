@@ -351,3 +351,42 @@ def test_live_migration_round_trip_0004_0005(live_owner: Settings) -> None:
     assert s["after_refusal"] == at_0005
     assert s["back_at_0004"] == at_0004  # downgrade restores exactly the 0004 state
     assert s["public_after"] == s["public_before"]  # the real schema is untouched
+
+
+def test_live_retrieved_events_from_the_builder_pass_the_checks(live_app: Settings) -> None:
+    """The /chat builder's rows, through Core's EventWriter, pass migration 0005's
+    CHECKs: empty, mixed levels and the full 20 IDs (step 12 of #58)."""
+    from core import request_context
+    from core.db import create_engine
+    from core.events import EventWriter, memory_retrieved
+    from core.log import Redactor
+    from router.memory_context import NO_MEMORY, MemoryContext
+    from router.routing import MemoryUse
+
+    def ctx(levels: tuple[Any, ...]) -> MemoryContext:
+        return MemoryContext(
+            record_ids=tuple(uuid.uuid4() for _ in levels),
+            levels=levels,
+            context="ctx" if levels else None,
+            texts=(),
+            chars=3 * len(levels),
+            left_out=2,
+        )
+
+    uses = [
+        MemoryUse("ollama", NO_MEMORY, "personal"),
+        MemoryUse("ollama", ctx(("public", "personal", "sensitive")), "sensitive"),
+        MemoryUse("claude", ctx(("public",) * 20), "public"),
+    ]
+    token = request_context._request_id.set("req-memlive-step12")
+    try:
+        events = [memory_retrieved(u) for u in uses]
+    finally:
+        request_context._request_id.reset(token)
+    writer = EventWriter(create_engine(live_app), Redactor())
+
+    async def body(conn: AsyncConnection) -> int:
+        await require_events_table(conn)
+        return len([await writer.write_with(conn, e) for e in events])
+
+    assert in_rolled_back_tx(live_app, body) == 3
