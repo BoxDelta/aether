@@ -85,7 +85,8 @@ Follow `04_Development_Roadmap.md`. In short:
     passed 2026-11-14).
 3.  Phase 2: Memory. Done (exit check passed 2026-11-27; build order:
     ADR-024 §9, #58).
-4.  Phase 3: web UI, phone access, tools, n8n. Not started.
+4.  Phase 3: web UI, phone access, tools, n8n. In progress (since
+    2026-11-27; build order to be agreed).
 
 The status line under each phase in `04` is the source of truth.
 
