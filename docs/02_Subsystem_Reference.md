@@ -165,7 +165,8 @@ privacy rules are in `05` §7.1 and the backup rules in `05` §11.
     `include_sensitive`, nothing for the cloud without `allow_cloud`),
     keyed profile and preference records first, then full-text matches,
     at most 20 records and 4000 characters (lower for Ollama if
-    `AETHER_OLLAMA_MEMORY_MAX_RECORDS` or `_MAX_CHARS` is set, for a
+    `AETHER_OLLAMA_MEMORY_MAX_RECORDS` or
+    `AETHER_OLLAMA_MEMORY_MAX_CHARS` is set, for a
     small local model; #143). They go into the system
     prompt's memory section (`07` §4). Structured and full-text search
     only; pgvector is not used.

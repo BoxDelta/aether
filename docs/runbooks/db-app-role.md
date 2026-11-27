@@ -75,7 +75,7 @@ grep -c '^DATABASE_MIGRATION_URL=.' .env   # expect: 1
 
 ```fish
 uv run alembic upgrade head
-uv run alembic current               # expect: 0003 (head)
+uv run alembic current               # expect: … (head), 0003 or later
 ```
 
 `aether_app` now exists with its rights but no password, so it can't log

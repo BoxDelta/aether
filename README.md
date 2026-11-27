@@ -255,8 +255,10 @@ One Postgres in Docker holds memory, runtime tasks and events (ADR-011,
 ADR-020). It listens on `127.0.0.1:5432` only. Its data lives on the
 encrypted volume (`~/.local/share/aether/vault/data`, through the
 `compose.vault.yaml` override that `COMPOSE_FILE` in `.env` loads), not in
-this repository. Without the override, compose still uses the old Docker
-volume `aether_pgdata` until it is removed (#152).
+this repository. Since stage 7 (#152, 2026-11-27) the `aether_pgdata`
+volume is a bind to that same folder, so a compose run without the
+override uses the encrypted data too, and can't start while the volume
+is locked.
 
 Two roles (ADR-020, #1, #12). The owner `aether` runs migrations only
 (`DATABASE_MIGRATION_URL`). Core connects as `aether_app`
@@ -363,11 +365,10 @@ real database and going back are in
     Run `aether-vault open` after each boot: while the volume is locked,
     Postgres doesn't start, the nightly backup refuses to run, and Core
     answers memory routes with 503 and `/chat` without memory. Both still
-    sit on the same disk as each other. Until stage 7 (#152) removes the
-    old unencrypted volume and backups, always run compose from this repo
-    with `COMPOSE_FILE` set in `.env` (or through `aether-vault`): a run
-    without the override starts the old database on the unencrypted disk,
-    and real memory written there can't be wiped.
+    sit on the same disk as each other. The old unencrypted volume and
+    backups were removed in stage 7 (#152, 2026-11-27); keep
+    `COMPOSE_FILE` in `.env` (or use `aether-vault`) so compose also
+    loads the override's checks.
 -   After a restore, `python -m memory.restore` repairs memory from the
     live database before the swap: records deleted since stay deleted,
     and records changed since come back as `pending` (marked `restored`)

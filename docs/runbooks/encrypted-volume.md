@@ -9,10 +9,12 @@ reasons are in ADR-026.
     unencrypted can't be reliably wiped from this disk afterwards (ADR-026
     §7). Stages 0–5 were done on 2026-11-27 (results on #57); at the move
     the database held event metadata and 0 memory records. Stage 7 (#152)
-    is still open: until then, a compose run without the override starts
-    the old unencrypted database, so keep `COMPOSE_FILE` in `.env`. If
-    real memory text was ever written there, treat it as exposed on this
-    disk.
+    was done the same day: the old volume and backups are gone,
+    `aether_pgdata` is a bind to the volume's data folder, the old
+    backup folder is empty and immutable, and the owner removed the old
+    snapper snapshots. Keep `COMPOSE_FILE` in `.env`
+    anyway. If real memory text was ever written to the old data, treat
+    it as exposed on this disk.
 -   Commands are fish, run from the repo root (`~/Projects/aether`) unless a
     step says otherwise.
 -   Lines marked `# expect:` show what you should see. Anything else: stop,
@@ -466,7 +468,7 @@ Then follow R2 to R5 there. `restore_check.sql` must print `ok`.
     rerun by itself; run `systemctl --user start aether-backup.service`
     after `aether-vault open`.
 
-## Stage 7. Clean up the old, unencrypted data (later, only with approval)
+## Stage 7. Clean up the old, unencrypted data (later, only with approval; done 2026-11-27, #152)
 
 Wait until you've run on the volume for a while (at least one week of
 nightly backups and one restore drill), and the old data is clearly not

@@ -98,6 +98,13 @@ the design, follow the ADR numbers into `docs/adr/`.
     `create_host_path: false`, checks the volume's marker, isn't started
     at boot, and keeps rows out of Postgres's error log. The backup command
     itself is `core/backup.py` (`uv run python -m core.backup`, ADR-025).
+-   `dispatch/`: development tooling, not part of AETHER's runtime
+    (ADR-030, prototype). `uv run python -m dispatch triage` sorts the
+    owner's `dispatch:auto` issues into `local` or `claude` and reports
+    the result; it never writes to GitHub. A systemd user timer
+    (`scripts/systemd/aether-dispatch-triage.{service,timer}`) runs it
+    every 15 minutes from a main-only clone. Details and install steps:
+    `dispatch/README.md`.
 -   `tests/`: pytest, one file per module or behaviour (`test_routing.py`,
     `test_chat.py`, …). `conftest.py` clears AETHER's environment variables
     for every test. Live Postgres tests run only with `AETHER_DB_TESTS=1`.
