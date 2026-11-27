@@ -21,6 +21,7 @@ from core.identity import load_identity
 from core.ready import Components, ReadyResponse, migration_head, overall
 from router.contract import ModelRequest, ModelResponse, Provider, ProviderInfo, ProviderKind
 from router.routing import Router
+from tests.fakes import CHECK
 
 TOKEN = "fake-api-token-ready-tests-0123456789abcdef"  # noqa: S105  # gitleaks:allow
 AUTH = {"authorization": f"Bearer {TOKEN}"}
@@ -38,13 +39,15 @@ class Checked(Provider):
         *,
         delay_s: float = 0.0,
         error: Exception | None = None,
+        off_network: bool = False,
     ) -> None:
         super().__init__(
             ProviderInfo(
                 name=name,
                 kind=kind,
                 default_model="m",
-                max_privacy="sensitive" if kind == "local" else "personal",
+                max_privacy="sensitive" if kind == "local" and not off_network else "personal",
+                off_network=off_network,
             )
         )
         self.available = available
@@ -75,7 +78,10 @@ def make_client(
     )
     identity = load_identity()
     app = create_app(
-        settings, identity, router=Router(list(providers), identity), events=EventRecorder(None)
+        settings,
+        identity,
+        router=Router(list(providers), identity, secret_check=CHECK),
+        events=EventRecorder(None),
     )
     return TestClient(app, headers=AUTH, raise_server_exceptions=False)
 
@@ -170,6 +176,15 @@ def test_ollama_down_is_not_ready(down: Provider | None, db_ok: list[Any]) -> No
     assert r.json()["components"]["ollama"] == ("unavailable" if down else "not_configured")
 
 
+def test_off_network_ollama_is_not_ready_for_default_requests(db_ok: list[Any]) -> None:
+    # ADR-032: up, but it answers only requests with allow_cloud.
+    r = make_client(ollama(off_network=True), claude(), database_url=DB_URL).get("/ready")
+
+    assert r.status_code == 503
+    assert r.json()["status"] == "not_ready"
+    assert r.json()["components"]["ollama"] == "off_network"
+
+
 @pytest.mark.parametrize(
     ("ollama_s", "claude_s", "database_s", "expected"),
     [
@@ -179,6 +194,7 @@ def test_ollama_down_is_not_ready(down: Provider | None, db_ok: list[Any]) -> No
         ("ok", "configured", "not_migrated", "degraded"),
         ("ok", "timeout", "ok", "degraded"),
         ("unavailable", "configured", "ok", "not_ready"),
+        ("off_network", "configured", "ok", "not_ready"),
         ("timeout", "configured", "ok", "not_ready"),
         ("error", "configured", "ok", "not_ready"),
     ],

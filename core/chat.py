@@ -7,7 +7,8 @@ wiring: routing, identity and failover live in ``router/``.
 Safety rules applied here:
 
 - Defaults: ``privacy="personal"`` (docs/05 §7.1: unclassified is Personal),
-  ``allow_cloud=false`` (cloud is opt-in per request).
+  ``allow_cloud=false`` (cloud, and an off-network Ollama host, ADR-032, are
+  opt-in per request).
 - Size: the raw body is capped at ``MAX_BODY_BYTES`` before parsing, and the
   parsed request at ``MAX_MESSAGES`` / ``MAX_MESSAGE_CHARS`` / ``MAX_TOTAL_CHARS``.
 - Output: ``max_tokens`` (optional) may lower the cloud output cap, never raise
@@ -17,6 +18,14 @@ Safety rules applied here:
   the error type, the routing reason and each attempt's provider, error type and
   scrubbed message; never ``__cause__``, exception text or a traceback.
   Validation errors never echo the submitted input.
+- Tripwire (#8): a cloud send whose text looks like a secret is refused before
+  anything is sent (``router/identity_call.py``). It is a 422
+  ``SecretContentRefused`` with a fixed message, not a 502: the request, not a
+  provider, is the problem. No failover; the text is never echoed.
+- Memory (ADR-024 §3, step 12 of #58): each call gets its own selection inside the
+  router (``include_sensitive`` defaults to false; Sensitive memory needs it), and
+  one ``memory.context.retrieved`` event per call that could get memory. The
+  events echo check covers the memory text sent as well as the request text.
 - Access: bearer token, checked by core.auth before this module sees the request
   (ADR-021, #57).
 - Events: metadata only (core/events.py). A failed event write never fails the
@@ -37,6 +46,7 @@ from core.events import (
     Event,
     EventRecorder,
     call_completed,
+    memory_retrieved,
     provider_unavailable,
     request_failed,
     request_received,
@@ -51,10 +61,12 @@ from router.contract import (
     ProviderKind,
     ProviderName,
     Role,
+    SecretContentRefused,
 )
 from router.contract import Message as ModelMessage
 from router.routing import (
     Attempt,
+    MemoryUse,
     NoRoute,
     RouteDecision,
     RouteFailed,
@@ -86,7 +98,12 @@ class ChatMessage(_Strict):
 class ChatRequest(_Strict):
     messages: Annotated[list[ChatMessage], Field(min_length=1, max_length=MAX_MESSAGES)]
     privacy: PrivacyLevel = "personal"
+    # Allows the cloud, and an Ollama host off this network (an untrusted
+    # OLLAMA_HOST, ADR-032), which is treated like the cloud for privacy.
     allow_cloud: bool = False
+    # Sensitive memory may be included (docs/07 §6). Never sent to the cloud or an
+    # untrusted host whatever this says (ADR-024 D2, D4).
+    include_sensitive: bool = False
     override: ProviderName | None = None
     # Optional output token limit for this request (#77). It applies to whichever
     # provider answers; it may lower the cloud cap (AETHER_CLOUD_MAX_OUTPUT_TOKENS)
@@ -119,15 +136,26 @@ class ChatResponse(BaseModel):
 
 
 class BodySizeLimit:
-    """Refuse request bodies over ``max_bytes`` on ``paths`` with 413, before parsing."""
+    """Refuse request bodies over ``max_bytes`` with 413, before parsing, on ``paths``
+    and on every path that starts with one of ``prefixes``."""
 
-    def __init__(self, app: ASGIApp, max_bytes: int, paths: frozenset[str]) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        max_bytes: int,
+        paths: frozenset[str],
+        prefixes: tuple[str, ...] = (),
+    ) -> None:
         self.app = app
         self.max_bytes = max_bytes
         self.paths = paths
+        self.prefixes = prefixes
+
+    def _covers(self, path: str) -> bool:
+        return path in self.paths or path.startswith(self.prefixes)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or scope["path"] not in self.paths:
+        if scope["type"] != "http" or not self._covers(scope["path"]):
             await self.app(scope, receive, send)
             return
         for name, value in scope["headers"]:
@@ -187,7 +215,11 @@ chat_router = APIRouter()
     responses={
         401: {"model": ErrorResponse, "description": "Missing or invalid API token"},
         413: {"model": ErrorResponse, "description": "Request body too large"},
-        422: {"model": ErrorResponse, "description": "Invalid request (input not echoed)"},
+        422: {
+            "model": ErrorResponse,
+            "description": "Invalid request (input not echoed), or SecretContentRefused: "
+            "the text looks like a secret and was not sent to a provider off this network",
+        },
         502: {"model": ErrorResponse, "description": "Provider(s) failed (RouteFailed)"},
         503: {"model": ErrorResponse, "description": "No provider may take it (NoRoute)"},
     },
@@ -219,11 +251,17 @@ async def chat(
         privacy=body.privacy,
         max_tokens=body.max_tokens,
     )
-    options = RouteOptions(allow_cloud=body.allow_cloud, override=body.override)
+    options = RouteOptions(
+        allow_cloud=body.allow_cloud,
+        override=body.override,
+        include_sensitive=body.include_sensitive,
+    )
 
     events: list[Event] = [request_received(request, options)]
-    # Runs after the response is sent; sees every event appended below.
-    background.add_task(recorder.record, events, request)
+    # Memory text sent in this request's calls, for the events echo check.
+    memory_texts: list[str] = []
+    # Runs after the response is sent; sees every event and text appended below.
+    background.add_task(recorder.record, events, request, memory_texts)
 
     # Events are appended as things happen, so the list order and each occurred_at
     # match reality: received, selected, unavailable, selected (fallback), then
@@ -234,12 +272,28 @@ async def chat(
     def on_attempt_failed(attempt: Attempt) -> None:
         events.append(provider_unavailable(attempt, request))
 
+    def on_memory(use: MemoryUse) -> None:
+        memory_texts.extend(use.memory.texts)
+        events.append(memory_retrieved(use))
+
     try:
         routed = await router.handle(
-            request, options, on_decision=on_decision, on_attempt_failed=on_attempt_failed
+            request,
+            options,
+            on_decision=on_decision,
+            on_attempt_failed=on_attempt_failed,
+            on_memory=on_memory,
         )
     except RouteFailed as exc:
         events.append(request_failed(exc, request, options))
+        refused = SecretContentRefused.__name__
+        if any(a.error_type == refused for a in exc.attempts):
+            return error_json(
+                422,
+                refused,
+                SecretContentRefused.MESSAGE,
+                attempts=[_attempt_info(a, redact) for a in exc.attempts],
+            )
         return error_json(
             502,
             "RouteFailed",

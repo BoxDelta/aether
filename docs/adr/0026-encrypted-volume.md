@@ -227,9 +227,13 @@ locked, or Postgres is not started). This is unchanged:
 -   **Limit: deleting is not wiping.** On btrfs, on an SSD, deleting the
     old volume and the old backups frees their blocks, but doesn't
     overwrite them, and snapshots may still hold them. That is acceptable
-    only because the move happens before any real memory data exists:
-    today the old volume and backups hold event metadata only. **This is
-    why the volume must be in place before the memory API is turned on.**
+    only because the move happens before any real memory data exists.
+    The memory API is on (ADR-024 step 6), but until the move only
+    invented data may be stored (ADR-024 §7), so the old volume and
+    backups hold event metadata and invented memory records only. **This
+    is why the volume must be in place before real memory data is
+    stored.** Real text stored before the move should be treated as
+    exposed on this disk.
     Data that was ever written unencrypted can't be reliably removed from
     this disk afterwards.
 
@@ -338,7 +342,8 @@ Alternatives considered:
 -   **Risks:**
     -   a forgotten passphrase loses data and backups together;
     -   the backups are still on the same disk as the data;
-    -   data written unencrypted before the move (event metadata only)
+    -   data written unencrypted before the move (event metadata and
+        invented memory records only)
         can't be securely wiped;
     -   if the PC shuts down with Postgres running, the volume may be
         detached under it. Postgres recovers from its WAL, but

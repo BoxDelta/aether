@@ -8,27 +8,96 @@ only through this function.
 
 The log record carries metadata only (provider, model, privacy level, outcome,
 identity version); never prompt or response text.
+
+**Content tripwire for cloud sends (#8).** Before a cloud provider is called, every
+text that would be sent (each message and the full system prompt) is checked with
+``SecretCheck`` (``core/log.py``: the log redactor's patterns and the configured
+secret values). On a match the call is refused with ``SecretContentRefused``
+(not retryable, so no failover) and nothing is sent, whatever the privacy level
+says. Local providers on this machine or network are not checked; an untrusted
+``OLLAMA_HOST`` is off-network and is checked like the cloud (ADR-032). Being
+here, in the one call path, the check also covers failover. ``_outgoing_texts``
+lists the request's text fields; tests/test_cloud_tripwire.py pins
+``ModelRequest``'s fields, so a new one must be added here or the test fails.
+Memory goes into the system prompt, so the tripwire checks memory text as well.
+
+**Memory (ADR-024 §3, step 12 of #58).** ``memory`` is the ``MemoryContext`` the
+router selected for this call. It goes only into the ``memory_context`` section of
+the system prompt, and the request sent carries the effective privacy level (the
+higher of the request's and its memory's). Before anything is sent, ``check_memory``
+checks every record's level against this provider's own memory limit,
+``allow_cloud`` and ``include_sensitive`` (``MemoryNotAllowed`` if one doesn't
+fit); ``Provider.generate()`` then checks the effective level against
+``max_privacy``.
+
+**Echo backstop.** A ``ProviderError`` raised here has its message replaced if it
+contains text sent in this call (``router/echo.py``), before it is logged or
+raised, so the ``Model call failed`` and failover logs, the ``/chat`` error body and
+the events never carry it.
 """
 
 import logging
 import time
 
 from core.identity import Identity, render_system_prompt
-from router.contract import ModelRequest, ModelResponse, Provider, ProviderError
+from core.log import SecretCheck
+from router.contract import (
+    ModelRequest,
+    ModelResponse,
+    Provider,
+    ProviderError,
+    SecretContentRefused,
+)
+from router.echo import echo_free, long_enough, request_texts
+from router.memory_context import MemoryContext, check_memory, effective_privacy
 
 logger = logging.getLogger("aether.router.call")
 
 
-def apply_identity(request: ModelRequest, identity: Identity, provider: str) -> ModelRequest:
-    """Return a copy of ``request`` whose system prompt starts with the identity."""
-    system = render_system_prompt(identity, provider=provider, task=request.system)
-    return request.model_copy(update={"system": system})
+def apply_identity(
+    request: ModelRequest,
+    identity: Identity,
+    provider: str,
+    memory: MemoryContext | None = None,
+) -> ModelRequest:
+    """Return a copy of ``request`` whose system prompt starts with the identity,
+    with ``memory`` in its own section and the effective privacy level."""
+    system = render_system_prompt(
+        identity,
+        provider=provider,
+        memory_context=memory.context if memory is not None else None,
+        task=request.system,
+    )
+    return request.model_copy(
+        update={"system": system, "privacy": effective_privacy(request.privacy, memory)}
+    )
 
 
-async def call_with_identity(
-    provider: Provider, request: ModelRequest, identity: Identity
+def _outgoing_texts(request: ModelRequest) -> list[str]:
+    texts = [m.content for m in request.messages]
+    if request.system is not None:
+        texts.append(request.system)
+    return texts
+
+
+async def call_with_identity(  # noqa: PLR0913 - keyword-only options
+    provider: Provider,
+    request: ModelRequest,
+    identity: Identity,
+    *,
+    secret_check: SecretCheck,
+    memory: MemoryContext | None = None,
+    allow_cloud: bool = False,
+    include_sensitive: bool = False,
 ) -> ModelResponse:
-    prepared = apply_identity(request, identity, provider.name)
+    """Call ``provider`` with the identity and ``memory`` applied. ``secret_check``
+    is required: callers build it with ``SecretCheck.from_settings`` so configured
+    values count. ``allow_cloud`` and ``include_sensitive`` are the request's own
+    options, for the memory backstop; both default to the safe value."""
+    if not isinstance(secret_check, SecretCheck):
+        raise TypeError("secret_check must be a core.log.SecretCheck")
+    prepared = apply_identity(request, identity, provider.name, memory)
+    forbidden = request_texts(request) + long_enough(memory.texts if memory else ())
     fields: dict[str, object] = {
         "identity_name": identity.name,
         "identity_version": identity.version,
@@ -36,11 +105,27 @@ async def call_with_identity(
         "provider_kind": provider.info.kind,
         "model": request.model or provider.info.default_model,
         "privacy": request.privacy,
+        "effective_privacy": prepared.privacy,
+        "memory_records": len(memory.record_ids) if memory is not None else 0,
     }
     started = time.perf_counter()
     try:
+        if memory is not None and memory.record_ids:
+            check_memory(
+                provider.info,
+                memory,
+                allow_cloud=allow_cloud,
+                include_sensitive=include_sensitive,
+            )
+        # Cloud and off-network providers are checked (ADR-032); anything not
+        # explicitly local is, so a new provider kind fails closed.
+        if provider.info.needs_allow_cloud and any(map(secret_check, _outgoing_texts(prepared))):
+            raise SecretContentRefused(provider.name)
         response = await provider.generate(prepared)
     except ProviderError as exc:
+        # Every later use (logs, Attempt, the /chat error body, events) reads this.
+        exc.message = echo_free(exc.message, forbidden)
+        exc.args = (f"{exc.provider}: {exc.message}",)
         logger.warning(
             "Model call failed",
             extra={

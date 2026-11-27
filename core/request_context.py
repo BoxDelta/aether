@@ -6,12 +6,16 @@ stored in context variables so logging (#8) and events (#21) can read it without
 passing it through every call.
 
 Untrusted header values are validated before use so they cannot inject newlines
-or control characters into logs or response headers (docs/05).
+or control characters into logs or response headers (docs/05). With a
+``looks_secret`` check (Core passes ``SecretCheck.from_settings``), an incoming ID
+that contains a configured secret value is replaced too, so it is never echoed,
+logged, put in an event or stored as a memory record's ``source_request_id`` (#75).
 """
 
 import logging
 import re
 import uuid
+from collections.abc import Callable
 from contextvars import ContextVar
 from typing import Annotated, TypeGuard
 
@@ -58,8 +62,16 @@ def new_request_id() -> str:
 class RequestContextMiddleware:
     """Pure ASGI middleware, so the context variables are set in the same task as the endpoint."""
 
-    def __init__(self, app: ASGIApp) -> None:
+    def __init__(self, app: ASGIApp, looks_secret: Callable[[str], bool] | None = None) -> None:
         self.app = app
+        self._looks_secret = looks_secret
+
+    def _accept(self, value: str | None) -> str | None:
+        if not is_safe_id(value):
+            return None
+        if self._looks_secret is not None and self._looks_secret(value):
+            return None
+        return value
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -70,8 +82,8 @@ class RequestContextMiddleware:
         incoming_request_id = headers.get(REQUEST_ID_HEADER)
         incoming_session_id = headers.get(SESSION_ID_HEADER)
 
-        request_id = incoming_request_id if is_safe_id(incoming_request_id) else new_request_id()
-        session_id = incoming_session_id if is_safe_id(incoming_session_id) else None
+        request_id = self._accept(incoming_request_id) or new_request_id()
+        session_id = self._accept(incoming_session_id)
 
         response_started = False
 

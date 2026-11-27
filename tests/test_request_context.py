@@ -1,15 +1,18 @@
+import asyncio
 import uuid
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
+from starlette.types import Message, Receive, Scope, Send
 
 from core.app import create_app
 from core.config import Settings
 from core.request_context import (
     REQUEST_ID_HEADER,
     SESSION_ID_HEADER,
+    RequestContextMiddleware,
     get_request_id,
     get_session_id,
     is_safe_id,
@@ -132,6 +135,30 @@ def test_unhandled_error_is_still_raised(client: TestClient) -> None:
         client.get("/_test/boom")
 
 
+def test_an_error_after_the_response_started_sends_no_second_response() -> None:
+    # Once the status line is out, a 500 can't be sent: the middleware must send
+    # nothing more and let the error reach the server.
+    sent: list[Message] = []
+
+    async def failing_app(scope: Scope, receive: Receive, send: Send) -> None:
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        raise RuntimeError("midstream failure")
+
+    async def receive() -> Message:
+        return {"type": "http.request"}
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    scope: Scope = {"type": "http", "path": "/x", "headers": []}
+    with pytest.raises(RuntimeError, match="midstream failure"):
+        asyncio.run(RequestContextMiddleware(failing_app)(scope, receive, send))
+
+    assert [m["type"] for m in sent] == ["http.response.start"]
+    assert sent[0]["status"] == 200
+    assert get_request_id() is None  # the context is cleared even so
+
+
 def test_context_is_cleared_after_request(client: TestClient) -> None:
     client.get("/_test/context", headers={REQUEST_ID_HEADER: "req-1", SESSION_ID_HEADER: "s-1"})
 
@@ -153,3 +180,20 @@ def test_context_is_cleared_after_request(client: TestClient) -> None:
 )
 def test_is_safe_id(value: str | None, expected: bool) -> None:
     assert is_safe_id(value) is expected
+
+
+def test_an_id_holding_a_configured_secret_is_replaced(client: TestClient) -> None:
+    # The token is a safe ID by its characters; Core still never adopts it (#75), so
+    # it is not echoed, logged, put in an event or stored with a memory record.
+    response = client.get(
+        "/_test/context",
+        headers={REQUEST_ID_HEADER: TEST_TOKEN, SESSION_ID_HEADER: f"s-{TEST_TOKEN}"},
+    )
+
+    assert response.headers[REQUEST_ID_HEADER] != TEST_TOKEN
+    assert SESSION_ID_HEADER not in response.headers
+    assert response.json() == {
+        "request_id": response.headers[REQUEST_ID_HEADER],
+        "session_id": None,
+    }
+    assert TEST_TOKEN not in response.text

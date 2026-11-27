@@ -5,9 +5,12 @@ container file of 20 GB, unlocked with a passphrase only you know. You run
 every step yourself; nothing in the repo does it for you. The design and its
 reasons are in ADR-026.
 
--   **Do it before the memory API is turned on.** Anything ever written
+-   **Do it before real memory data is stored.** Anything ever written
     unencrypted can't be reliably wiped from this disk afterwards (ADR-026
-    §7). Today the database holds event metadata only.
+    §7). Today the database holds event metadata and invented memory
+    records only (the memory API is on, but real data waits for this
+    move). If you ever stored real memory text, treat it as exposed on
+    this disk.
 -   Commands are fish, run from the repo root (`~/Projects/aether`) unless a
     step says otherwise.
 -   Lines marked `# expect:` show what you should see. Anything else: stop,
@@ -72,7 +75,9 @@ Write down the current numbers. You'll compare against them after the move:
 
 ```fish
 docker compose exec -T postgres psql -U aether -d aether -Atc 'SELECT count(*), max(id) FROM events'
-# expect: 14|44 (or more, if Core ran since). Note both numbers.
+# expect: two numbers, e.g. 14|44 (more if Core ran since). Note both.
+docker compose exec -T postgres psql -U aether -d aether -Atc 'SELECT count(*) FROM memory_records'
+# expect: one number (invented test records only). Note it.
 ```
 
 ## Stage 1. The container file (no sudo)
@@ -311,7 +316,9 @@ docker compose exec -T postgres pg_restore -U aether -d aether_restore_check --e
 
 ```fish
 docker compose exec -T postgres psql -U aether -d aether_restore_check -Atc 'SELECT count(*), max(id) FROM events'
-# expect: the numbers from stage 0 (14|44)
+# expect: the numbers from stage 0, unless Core ran between stage 0 and 4a
+docker compose exec -T postgres psql -U aether -d aether_restore_check -Atc 'SELECT count(*) FROM memory_records'
+# expect: the memory count from stage 0
 docker compose exec -T postgres psql -U aether -d aether_restore_check -At < scripts/restore_check.sql
 # expect: ok
 ```
@@ -330,6 +337,11 @@ docker compose exec -T postgres psql -U aether -d aether -At < scripts/restore_c
 ```
 
 Start Core and check `/ready`: database `ok`.
+
+No memory repair (`db-backup-restore.md` §4 step 3b) is needed here: Core
+and the timer were stopped before the `premove` backup, so nothing changed
+after it. Step 3b is for restoring an older backup over a database that
+kept running.
 
 **Rollback (stage 4), at any point before stage 5.**
 
@@ -447,7 +459,7 @@ needed.
 What each step removes, and what it can't:
 
 -   **The old Docker volume** `aether_pgdata`: the database as it was before
-    the move (event metadata only).
+    the move (event metadata and invented memory records only).
     -   After this, the only way back to it is the `premove` backup.
     -   Deleting frees the blocks but doesn't overwrite them. On btrfs and
         an SSD they can't be reliably wiped, and snapshots may still hold

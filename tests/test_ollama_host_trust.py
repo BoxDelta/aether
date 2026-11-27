@@ -20,7 +20,7 @@ from router.contract import (
 )
 from router.ollama import OllamaProvider, classify_host
 from router.routing import NoRoute, RouteOptions, Router
-from tests.fakes import snapshot
+from tests.fakes import CHECK, snapshot
 
 MODEL = "llama3.1:8b"
 UNTRUSTED_HOST_MARKER = "gpu-box.example.org"
@@ -133,7 +133,7 @@ def test_untrusted_host_warning_is_metadata_only(caplog: pytest.LogCaptureFixtur
 
     [record] = caplog.records
     assert record.levelno == logging.WARNING
-    assert "capped at personal" in record.getMessage()
+    assert "treated like the cloud" in record.getMessage()
     assert "host_category" not in record.__dict__  # fixed text, no extra fields
     assert p.host_category == "hostname"
     assert all(UNTRUSTED_HOST_MARKER not in str(r.__dict__) for r in caplog.records)
@@ -244,7 +244,7 @@ def test_default_settings_host_is_trusted() -> None:
 
 
 def router(host: str, seen: list[httpx.Request], identity: Identity) -> Router:
-    return Router([provider(host, seen)], identity, probe=snapshot)
+    return Router([provider(host, seen)], identity, secret_check=CHECK, probe=snapshot)
 
 
 def test_sensitive_is_refused_for_untrusted_host(identity: Identity) -> None:

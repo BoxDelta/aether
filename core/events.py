@@ -16,8 +16,12 @@ memory content, secrets or tracebacks:
   the caller's connection, so it commits or rolls back with the change it records.
 - On write, every free-text field (reason, error message, attempt messages)
   goes through the log ``Redactor`` (configured secrets, key and URL-credential
-  patterns), and is blanked if it contains any of the request's own text
-  (backstop against an adapter echoing the prompt).
+  patterns), and is blanked if it contains any of the request's own text or the
+  memory text sent in its calls (backstop against an adapter echoing the prompt;
+  ``router/echo.py``).
+- ``memory.context.retrieved`` (``memory_retrieved``): one per call that could get
+  memory, with the provider, counts per level, characters, the effective level of
+  the call, the record IDs and how many were left out. Never content.
 """
 
 import asyncio
@@ -60,7 +64,13 @@ from router.contract import (
     ProviderName,
     privacy_rank,
 )
-from router.routing import Attempt, NoRoute, RouteDecision, RouteFailed, RouteOptions
+
+# The echo backstop's constants and request_texts live in router/echo.py; re-exported.
+from router.echo import MIN_ECHO_LENGTH as MIN_ECHO_LENGTH
+from router.echo import REMOVED_ECHO as REMOVED_ECHO
+from router.echo import long_enough
+from router.echo import request_texts as request_texts
+from router.routing import Attempt, MemoryUse, NoRoute, RouteDecision, RouteFailed, RouteOptions
 
 logger = logging.getLogger("aether.core.events")
 
@@ -69,10 +79,6 @@ SCHEMA_VERSION = 1
 # database must not hold anything up for longer than this.
 WRITE_TIMEOUT_S = 3.0
 MAX_TEXT = 500
-# Request texts shorter than this are not used for the echo backstop: blanking
-# every field that contains "hi" would destroy ordinary reasons.
-MIN_ECHO_LENGTH = 8
-REMOVED_ECHO = "[REMOVED: contained request text]"
 
 MemoryRecordEventType = Literal[
     "memory.proposed",
@@ -403,6 +409,39 @@ def memory_record_event(
     )
 
 
+def memory_exported(count: int, *, actor: MemoryActor = "memory") -> Event:
+    """The owner exported memory (ADR-024 §4, §5): the number of records only, never
+    their IDs, levels or content."""
+    return Event(
+        event_type="memory.exported",
+        actor=actor,
+        memory_export_count=count,
+        request_id=get_request_id(),
+        session_id=get_session_id(),
+    )
+
+
+def memory_retrieved(use: MemoryUse) -> Event:
+    """The memory selected for one call (ADR-024 §5): counts, characters, the
+    effective level, record IDs and how many were left out. Never content."""
+    memory = use.memory
+    counts = memory.count_by_level()
+    return Event(
+        event_type="memory.context.retrieved",
+        actor="memory",
+        provider=use.provider,
+        memory_count_public=counts["public"],
+        memory_count_personal=counts["personal"],
+        memory_count_sensitive=counts["sensitive"],
+        memory_chars=memory.chars,
+        memory_effective_level=use.effective_privacy,
+        memory_record_ids=memory.record_ids,
+        memory_left_out=memory.left_out,
+        request_id=get_request_id(),
+        session_id=get_session_id(),
+    )
+
+
 # --- writing ----------------------------------------------------------------------
 
 
@@ -422,12 +461,10 @@ async def write_memory_event(conn: AsyncConnection, event: Event) -> int:
     return int(result.scalar_one())
 
 
-def request_texts(request: ModelRequest) -> list[str]:
-    """The request's own text, for the echo backstop (never stored)."""
-    texts = [m.content for m in request.messages]
-    if request.system:
-        texts.append(request.system)
-    return [t for t in texts if len(t) >= MIN_ECHO_LENGTH]
+def forbidden_texts(request: ModelRequest | None, also: Iterable[str] = ()) -> list[str]:
+    """Every sent text the echo check looks for: the request's and ``also``."""
+    texts = request_texts(request) if request is not None else []
+    return texts + long_enough(also)
 
 
 def _clean(text: str | None, redact: Redactor, forbidden: Sequence[str]) -> str | None:
@@ -465,20 +502,33 @@ class EventWriter:
             return await self.write_with(conn, event, request=request)
 
     async def write_with(
-        self, conn: AsyncConnection, event: Event, *, request: ModelRequest | None = None
+        self,
+        conn: AsyncConnection,
+        event: Event,
+        *,
+        request: ModelRequest | None = None,
+        also_forbidden: Sequence[str] = (),
     ) -> int:
-        """Insert on a connection the caller manages (and may roll back)."""
-        forbidden = request_texts(request) if request is not None else []
+        """Insert on a connection the caller manages (and may roll back).
+        ``also_forbidden``: more sent text for the echo check (memory text)."""
+        forbidden = forbidden_texts(request, also_forbidden)
         row = to_row(event, self._redact, forbidden)
         result = await conn.execute(insert(events_table).values(**row).returning(events_table.c.id))
         return int(result.scalar_one())
 
     async def write_all(
-        self, events: Sequence[Event], *, request: ModelRequest | None = None
+        self,
+        events: Sequence[Event],
+        *,
+        request: ModelRequest | None = None,
+        also_forbidden: Sequence[str] = (),
     ) -> list[int]:
         """Insert several events in one transaction (all or none)."""
         async with self._engine.begin() as conn:
-            return [await self.write_with(conn, e, request=request) for e in events]
+            return [
+                await self.write_with(conn, e, request=request, also_forbidden=also_forbidden)
+                for e in events
+            ]
 
 
 class EventRecorder:
@@ -498,12 +548,21 @@ class EventRecorder:
     def enabled(self) -> bool:
         return self._writer is not None
 
-    async def record(self, events: Sequence[Event], request: ModelRequest | None = None) -> None:
+    async def record(
+        self,
+        events: Sequence[Event],
+        request: ModelRequest | None = None,
+        also_forbidden: Sequence[str] = (),
+    ) -> None:
+        """``also_forbidden``: memory text sent in the request's calls (echo check);
+        read when the write runs, so a list filled during the request works."""
         if self._writer is None or not events:
             return
         try:
             async with asyncio.timeout(self._timeout_s):
-                await self._writer.write_all(events, request=request)
+                await self._writer.write_all(
+                    events, request=request, also_forbidden=tuple(also_forbidden)
+                )
         except Exception as exc:
             logger.warning(
                 "Event write failed",

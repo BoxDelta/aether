@@ -1,5 +1,6 @@
 """Bearer-token authentication (ADR-021, #57)."""
 
+import asyncio
 import hmac
 import io
 import json
@@ -11,10 +12,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from starlette.routing import Route
+from starlette.types import Message, Receive, Scope, Send
 from starlette.websockets import WebSocketDisconnect
 
 from core.app import create_app
-from core.auth import MIN_TOKEN_LENGTH, check_authorization
+from core.auth import MIN_TOKEN_LENGTH, BearerAuth, check_authorization
 from core.config import Settings
 from core.events import EventRecorder
 from core.identity import load_identity
@@ -23,7 +25,7 @@ from core.request_context import REQUEST_ID_HEADER
 from router.contract import ProviderUnavailable
 from router.routing import Router
 from tests.chat_helpers import ANSWER, PROMPT, USAGE
-from tests.fakes import FakeProvider, MemoryWriter, snapshot
+from tests.fakes import CHECK, FakeProvider, MemoryWriter, snapshot
 
 TOKEN = "fake-api-token-auth-tests-0123456789abcdef"  # noqa: S105  # gitleaks:allow
 WRONG = "fake-api-token-auth-WRONG-0123456789abcdef"  # gitleaks:allow
@@ -44,7 +46,7 @@ class App:
         self.app = create_app(
             self.settings,
             identity,
-            router=Router([self.local], identity, probe=lambda: snapshot(4.0)),
+            router=Router([self.local], identity, secret_check=CHECK, probe=lambda: snapshot(4.0)),
             events=EventRecorder(self.writer),
         )
         configure_logging(self.settings, stream=self.log)  # create_app reset it to stdout
@@ -368,3 +370,37 @@ def test_token_never_in_events_on_success() -> None:
 def test_token_not_in_settings_repr() -> None:
     settings = Settings(_env_file=None, aether_api_token=SecretStr(TOKEN))
     assert TOKEN not in repr(settings) and TOKEN not in str(settings.model_dump())
+
+
+def _through_auth(headers: list[tuple[bytes, bytes]]) -> tuple[bool, list[Message]]:
+    """Run one request with exactly these raw headers through ``BearerAuth``. Returns
+    whether the app behind it was reached, and what was sent."""
+    reached = False
+    sent: list[Message] = []
+
+    async def inner(scope: Scope, receive: Receive, send: Send) -> None:
+        nonlocal reached
+        reached = True
+
+    async def receive() -> Message:
+        return {"type": "http.request"}
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    scope: Scope = {"type": "http", "method": "POST", "path": "/chat", "headers": headers}
+    asyncio.run(BearerAuth(inner, token=TOKEN.encode())(scope, receive, send))
+    return reached, sent
+
+
+def test_only_the_first_authorization_header_counts() -> None:
+    good = (b"authorization", f"Bearer {TOKEN}".encode())
+    bad = (b"authorization", b"Bearer not-the-token")
+
+    reached, sent = _through_auth([good, bad])
+    assert reached is True
+
+    # A valid second header must not rescue an invalid first one.
+    reached, sent = _through_auth([bad, good])
+    assert reached is False
+    assert sent[0]["status"] == 401

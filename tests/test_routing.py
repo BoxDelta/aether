@@ -31,7 +31,7 @@ from router.routing import (
     Router,
     choose_route,
 )
-from tests.fakes import snapshot
+from tests.fakes import CHECK, snapshot
 
 ROOM = Headroom(True, "free VRAM 4096 MiB meets reserve 1536 MiB")
 NO_ROOM = Headroom(False, "free VRAM 512 MiB below reserve 1536 MiB")
@@ -44,15 +44,22 @@ CLOUD_MAX = PRIVACY_ORDER.index("personal")
 
 
 def cands(
-    privacy: PrivacyLevel, *, local: bool | None = True, cloud: bool | None = True
+    privacy: PrivacyLevel,
+    *,
+    local: bool | None = True,
+    cloud: bool | None = True,
+    off_network: bool = False,
 ) -> list[Candidate]:
-    """local/cloud: True available, False unavailable, None not configured."""
+    """local/cloud: True available, False unavailable, None not configured.
+    off_network: the local provider is an untrusted host (ADR-032)."""
     rank = PRIVACY_ORDER.index(privacy)
     out = []
     if local is not None:
-        out.append(Candidate("ollama", "local", privacy != "secret" and rank <= LOCAL_MAX, local))
+        local_max = min(LOCAL_MAX, PRIVACY_ORDER.index("personal")) if off_network else LOCAL_MAX
+        allows = privacy != "secret" and rank <= local_max
+        out.append(Candidate("ollama", "local", allows, local, needs_allow_cloud=off_network))
     if cloud is not None:
-        out.append(Candidate("claude", "cloud", rank <= CLOUD_MAX, cloud))
+        out.append(Candidate("claude", "cloud", rank <= CLOUD_MAX, cloud, needs_allow_cloud=True))
     return out
 
 
@@ -417,7 +424,7 @@ def make_router(
 ) -> tuple[Router, FakeProvider, FakeProvider]:
     local = kw.get("local") or FakeProvider("ollama", "local")
     cloud = kw.get("cloud") or FakeProvider("claude", "cloud")
-    return Router([local, cloud], identity, probe=probe), local, cloud
+    return Router([local, cloud], identity, secret_check=CHECK, probe=probe), local, cloud
 
 
 def test_handle_calls_local_with_identity(
@@ -545,7 +552,9 @@ def test_override_cloud_needs_allow_cloud(identity: Identity) -> None:
 
 def test_duplicate_provider_names_rejected(identity: Identity) -> None:
     with pytest.raises(ValueError, match="unique"):
-        Router([FakeProvider("x", "local"), FakeProvider("x", "cloud")], identity)
+        Router(
+            [FakeProvider("x", "local"), FakeProvider("x", "cloud")], identity, secret_check=CHECK
+        )
 
 
 def test_from_settings_builds_local_then_cloud(identity: Identity) -> None:

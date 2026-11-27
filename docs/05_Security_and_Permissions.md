@@ -25,7 +25,15 @@ Client channels into the development PC belong to domain 1. Besides the
 terminal, that includes the Telegram channel into the Claude Code session
 (ADR-027, Proposed): Telegram is not end-to-end encrypted, its pairing
 allowlist holds only the owner, and its bot token is a credential kept
-outside the repository.
+outside the repository. The dispatcher's Discord webhook (ADR-030) posts
+to a channel in a private server where only the owner is a member. Until
+step 4d it is outbound only: it posts dry-run results (issue number and
+link, route, step, a reason of at most 200 characters, mentions off) and
+reads nothing back. The reason is model text and may quote the issue.
+The dry-run timer runs from a main-only clone (`~/Projects/aether-dispatch`),
+so only merged, reviewed code runs with the dispatcher's credentials.
+Discord is not end-to-end encrypted. The webhook URL
+is a credential, kept in `~/.config/aether-dispatch/dispatch.env`.
 
 Content returned by a model, website, repository, document, or plugin is
 data, not trusted policy. It must not override AETHER's system
@@ -236,9 +244,99 @@ change writes one metadata-only `memory.*` event (actor `memory`) in the
 same transaction: a proposal (`memory.proposed`), an owner create or an
 approval (`memory.approved`), a correction (`memory.updated`, with the
 old and new level when the level changed) and a delete
-(`memory.deleted`). If the change fails no event is written, and if the
-event can't be written the change is rolled back (ADR-024 §5, #72). It
-has no caller yet: no API, no retrieval.
+(`memory.deleted`). If the change fails no event is written (the expiry
+clean-up that may run first is separate, and keeps its own events), and if the
+event can't be written the change is rolled back (ADR-024 §5, #72).
+
+Its only caller is the memory API (`core/memory_api.py`, ADR-024 step 6,
+#92): `GET /memory` (filters `status`, `category`, `privacy` only),
+`GET /memory/{id}`, `POST /memory/search` (key and text query in the
+body, never the URL, which the access log records), `POST /memory`, and
+(step 8, #97) `POST /memory/{id}/approve` and `POST /memory/{id}/reject`,
+and (step 9, #101) `PATCH /memory/{id}` and `DELETE /memory/{id}`, and
+(step 10, #122) `GET /memory/export`.
+Every route is behind the bearer token, which means the owner in Phase 2
+(ADR-024 §2), so the API always passes `source="owner"`; the body can't
+set `source`, `status`, `privacy_source` or `source_request_id` (extra
+fields are a 422). `POST /memory` requires `privacy` (422 without it,
+never defaulted) and refuses `secret`. `source_request_id` is Core's
+request ID; an incoming `X-Request-ID` or `X-Session-ID` that contains a
+configured secret value is never adopted (a new ID is generated), so it
+is not echoed, logged, put in an event or stored (#75). Bodies are capped
+at 16 KiB. With no database configured or reachable (for example the
+encrypted volume locked) every memory route answers 503
+`MemoryUnavailable` with a fixed message, never an empty list, a 404 or
+a write that did nothing (#80). Approve requires the owner's `privacy`
+(the suggested level is never kept by default) and may correct content,
+category and key; the secret check runs on the corrected text. If
+another approved record has the final key, approving deletes that record
+in the same transaction (`memory.deleted`, then `memory.approved`), so
+the new value replaces the old one (two approvals with the same key at
+the same moment: the second gets 409 `KeyConflict`, nothing lost). Reject hard-deletes a pending record
+(`memory.rejected`); an approved record is deleted only with `DELETE`.
+`PATCH` corrects `content`, `category`, `key`, `privacy` or
+`expires_at`, overwriting the old text with no history (D6); the secret
+check runs on the corrected text, a level set there is the owner's, and
+one `memory.updated` event records the old and new level when the level
+changed. Only `key` and `expires_at` may be sent as `null` (to clear
+them); `null` for anything else is a 422, never "unchanged". A key that
+another approved record holds is a 409 (only approve replaces), and an
+expired record can't be corrected (404). `DELETE` hard-deletes any
+record, expired or not, with `memory.deleted` (ADR-024 §4: what remains
+in backups is described in §11 below). Setting a key first deletes
+expired records, so an expired record the owner can't see never blocks
+its key. The store holds at most 50 pending records (D8): one more from
+a model or a tool is refused with `PendingLimit`. A pending record
+expires 30 days after it was proposed, any record at its `expires_at`;
+an expired record is never returned, approved or rejected, and the
+clean-up deletes it with one `memory.expired` event, run by the store
+before a list or a create at most once a minute (and, unthrottled,
+before the owner sets a key), so an expired record
+can stay on disk until the next list or create. The clean-up runs as
+part of the read: if it fails, the list or create fails too (503 or
+500), never an empty or stale answer. Not yet handled: records a restore
+sets back to `pending` would expire at once; build step 16 adds their
+"restored" marker and exempts it (#67).
+
+Retrieval for model calls (ADR-024 §3, step 12): each call, the
+failover call included, gets its own selection after its route is
+chosen, for the provider that receives it: approved, unexpired records
+in `include_by_default` (Public, Personal), Sensitive only with the
+request's `include_sensitive`, never Secret, and never above the
+provider's `memory_limit` (the cloud: up to Personal, since the
+content tripwire (#8) checks memory text too, and nothing without
+`allow_cloud`; an untrusted Ollama host: the same as the cloud
+(ADR-032); a trusted one: up to
+Sensitive). The request sent carries the effective level (the higher of
+the request's and its memory's). `call_with_identity` checks every
+record again against the provider's own limit and refuses the call
+(`MemoryNotAllowed`, nothing sent) if one doesn't fit. Each call that
+could get memory writes one `memory.context.retrieved` event (counts,
+characters, effective level, record IDs; never content). A provider
+error message that contains a whole text sent in the call (a message,
+the system prompt, a memory record's content or its rendered line) of
+at least 8 characters is replaced before it is logged, stored or
+returned (`router/echo.py`). Partial quotes and shorter texts are not
+caught; adapters still build messages from safe parts only. Not yet
+recorded: `include_sensitive` itself (the per-request approval) is in no
+event; only the count of Sensitive records sent is (#144).
+`GET /memory/export` returns one JSON document
+(`{"format": "aether-memory", "version": 1, "exported_at", "records"}`)
+with every column of every unexpired record: all levels, Sensitive
+included, and pending records (ADR-024 §4, D10). It is the owner's own
+data on the authenticated route; once downloaded the file is outside
+AETHER's control, so keep it off synced or shared folders. The response is
+`Cache-Control: no-store`. It takes no filters: any query parameter is a
+422, so `?privacy=public` can't pass for a filtered file. Expired records are left out by the same filter
+as the list; the export deletes nothing and runs no clean-up. One
+`memory.exported` event records the count only (no IDs, levels or
+content), in the same transaction as the read: if the event can't be
+written, no export is returned. Logs carry the count only.
+Limits: a `key` or `query` put in the `GET /memory` URL by mistake is
+refused with 422, but uvicorn's access log has already recorded the URL
+(redacted for secrets only), so the refusal makes the mistake loud, not
+unlogged (#93). A 422 names an unknown field in `loc` (its name, never its
+value) back to the sender (#94).
 
 **Secret-shaped content is never stored (ADR-024 §1, #70).** Whatever its
 label, the store refuses content that looks like a secret, on create,
@@ -266,8 +364,32 @@ chained and nothing logged but the operation and field name. Reads are
 not checked. `MemoryStore` requires a `SecretCheck` as a constructor
 argument, so no store exists without one; the store checks only the
 type, so callers must build it with `SecretCheck.from_settings` to
-include the configured values. #8 will reuse the same check for cloud
-sends.
+include the configured values.
+
+**Content tripwire for cloud sends (#8).** The privacy level is whatever
+the caller says; this is the check on the text itself. Before any cloud
+provider is called, `call_with_identity` (`router/identity_call.py`,
+the one function every model call goes through) runs the same
+`SecretCheck` on every message and on the full system prompt. On a
+match nothing is sent, whatever the label: the call raises
+`SecretContentRefused`, which is not retryable, so routing never fails
+over with it, and `/chat` answers 422 `SecretContentRefused` with a fixed
+message that never says which text, pattern or value matched. The
+attempt, its error type and the `request.failed` event are recorded,
+metadata only. A manual override to the cloud and a failover from local
+to the cloud are refused the same way. Any provider kind other than
+`local` is checked, so a new kind fails closed, and so is an untrusted
+`OLLAMA_HOST` (off-network, ADR-032). Sends to a trusted Ollama host are
+not checked, including one trusted with `AETHER_OLLAMA_TRUST_HOST`, which
+may be on another machine: the opt-in is the owner's statement of trust. `Router` and `call_with_identity`
+require a `SecretCheck` (type-checked); `Router.from_settings` builds it
+with `SecretCheck.from_settings`. The check covers each message and the
+system prompt, and memory goes into the system prompt, so the memory
+sent to the cloud is checked as well; a test pins `ModelRequest`'s
+fields, so a new text field must be added to the checked texts, or that
+test fails, before it can reach the cloud. The
+limits below apply to this check as well: it catches known formats and
+configured values, not every secret.
 
 Limit: the check knows only these formats and values, on the literal
 text. A secret in any other format (an account number, a password typed
@@ -286,17 +408,20 @@ proxy environment variables, so it only talks to the host it checked:
     127.0.0.0/8, ::1, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 and
     link-local (169.254.0.0/16, fe80::/10).
 -   Any other host (a name, a public IP, an overlay or CGNAT address,
-    IPv6 unique-local): Ollama is capped at `personal`, Sensitive
-    requests are refused, and Core logs one fixed-text startup warning
-    that carries no host or other value.
+    IPv6 unique-local) is **off-network** and treated like the cloud for
+    privacy (ADR-032, #22): it takes only requests with `allow_cloud`, at
+    most `personal` (Sensitive requests are refused), gets memory only
+    with `allow_cloud` and up to Personal, and its sends get the content
+    tripwire. It stays `kind="local"`, so with `allow_cloud` it is still
+    preferred over the cloud when it has headroom. Core logs one
+    fixed-text startup warning that carries no host or other value.
 -   `AETHER_OLLAMA_TRUST_HOST=true` (off by default) trusts such a host
     deliberately, for example a private overlay network; Core then logs
     that the opt-in is active.
 -   Known limitations: a private-range address is trusted even on a
     network the owner doesn't control; the opt-in is not checked
-    further; and an untrusted Ollama host still receives Personal
-    requests without `allow_cloud`, because it stays `kind="local"`
-    (#22); and an https `OLLAMA_HOST` signed by a private CA is not
+    further; `allow_cloud` also covers an off-network Ollama host, which
+    its name doesn't say; and an https `OLLAMA_HOST` signed by a private CA is not
     trusted, because the client ignores `SSL_CERT_FILE`/`SSL_CERT_DIR`
     and verifies against the certifi bundle, not the system trust store
     (#24).
@@ -575,8 +700,11 @@ shapes only; they cannot recognise personal data.
     unlocked only by a passphrase the owner types. It is never in `.env`,
     a keyfile on this disk, compose, a script or a unit. The owner carries
     the move out by hand (`docs/runbooks/encrypted-volume.md`); until then,
-    the database and the backups are **not encrypted at rest**. The move
-    must happen before real memory data is stored.
+    the database and the backups are **not encrypted at rest**. Both hold
+    the events and, since the memory API (`POST /memory`, ADR-024 step 6),
+    full memory records (content, key, level and provenance). The move
+    must happen before real memory data is stored; until then only
+    invented data belongs in memory (ADR-024 §4, §7).
     -   **Fails closed, with the override loaded** (`compose.vault.yaml`,
         through `COMPOSE_FILE` in `.env` or `aether-vault`). With the volume
         locked or not mounted, Docker refuses to start Postgres: the bind
@@ -599,7 +727,8 @@ shapes only; they cannot recognise personal data.
         -   memory text typed into shell commands (shell history);
         -   data written before the move (old volume, old backups,
             snapshots). Deleting it is not wiping it on btrfs or an SSD,
-            which is acceptable only because it holds event metadata.
+            which is acceptable only because, before the move, it holds
+            event metadata and invented memory data only.
     -   Postgres's error log lives in Docker's log on the unencrypted
         disk. With the volume's override it no longer carries DETAIL
         lines (rows, keys) or the failing statement

@@ -91,6 +91,10 @@ class ClaudeProvider(Provider):
                 # docs/05 §7.1: cloud gets Public and Personal; Sensitive needs per-request
                 # owner approval (not modelled yet); Secret never.
                 max_privacy="personal",
+                # ADR-024 D3: personal memory, now that the content tripwire (#8)
+                # checks every cloud send, memory included (step 14 of #58). Only
+                # with allow_cloud (ProviderInfo.memory_limit_for). Never sensitive.
+                memory_limit="personal",
             )
         )
         if max_output_tokens < 1:

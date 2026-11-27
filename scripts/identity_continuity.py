@@ -30,7 +30,7 @@ import yaml
 
 from core.config import CLOUD_MAX_OUTPUT_TOKENS_LIMIT, Settings, get_settings
 from core.identity import Identity, load_identity
-from core.log import Redactor, secrets_from
+from core.log import Redactor, SecretCheck, secrets_from
 from router.claude import ClaudeProvider
 from router.contract import Message, ModelRequest, Provider, ProviderError
 from router.identity_call import call_with_identity
@@ -58,6 +58,8 @@ async def run(
     identity: Identity,
     prompts: list[dict[str, Any]],
     max_tokens: int | None = None,
+    *,
+    secret_check: SecretCheck,
 ) -> list[dict[str, Any]]:
     results = []
     for prompt in prompts:
@@ -69,7 +71,9 @@ async def run(
         )
         start = time.monotonic()
         try:
-            response = await call_with_identity(provider, request, identity)
+            response = await call_with_identity(
+                provider, request, identity, secret_check=secret_check
+            )
             answer, model, finish = response.text, response.model, response.finish_reason
             usage = response.usage
             error = None
@@ -166,7 +170,13 @@ def main(argv: list[str] | None = None) -> int:
         try:
             if not await provider.check_available():
                 return []
-            return await run(provider, identity, load_prompts(), args.max_tokens)
+            return await run(
+                provider,
+                identity,
+                load_prompts(),
+                args.max_tokens,
+                secret_check=SecretCheck.from_settings(settings),
+            )
         finally:
             await provider.aclose()
 

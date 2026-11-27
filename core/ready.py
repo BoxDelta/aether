@@ -14,8 +14,10 @@ Overall status:
   is configured, and Postgres is reachable and migrated to head.
 - ``degraded`` (200): Ollama is fine, so default (local-only) requests work,
   but cloud isn't configured or the database (events) is down.
-- ``not_ready`` (503): Ollama isn't usable. Default requests have
-  ``allow_cloud=false``, so they would fail.
+- ``not_ready`` (503): Ollama isn't usable for default requests. Default
+  requests have ``allow_cloud=false``, so they would fail. That includes an
+  Ollama host that is up but off-network (``ollama: "off_network"``, ADR-032):
+  it answers only requests with ``allow_cloud``.
 
 Every check runs concurrently under ``CHECK_TIMEOUT_S``, so ``/ready`` answers
 within about that time even if something hangs.
@@ -48,7 +50,7 @@ CHECK_TIMEOUT_S = 3.0
 ALEMBIC_INI = Path(__file__).resolve().parent.parent / "alembic.ini"
 
 CheckFailure = Literal["timeout", "error"]
-OllamaStatus = Literal["ok", "unavailable", "not_configured"] | CheckFailure
+OllamaStatus = Literal["ok", "off_network", "unavailable", "not_configured"] | CheckFailure
 # No network call: "configured" means a key is set, not that the API accepted it.
 ClaudeStatus = Literal["configured", "not_configured"] | CheckFailure
 DatabaseStatus = Problem | Literal["not_migrated"] | CheckFailure
@@ -93,7 +95,10 @@ async def _bounded[T](name: str, check: Awaitable[T], timeout_s: float) -> T | C
 async def _ollama(provider: Provider | None) -> OllamaStatus:
     if provider is None:
         return "not_configured"
-    return "ok" if await provider.check_available() else "unavailable"
+    if not await provider.check_available():
+        return "unavailable"
+    # Up, but only for requests with allow_cloud (ADR-032): not usable by default.
+    return "off_network" if provider.info.off_network else "ok"
 
 
 async def _claude(provider: Provider | None) -> ClaudeStatus:

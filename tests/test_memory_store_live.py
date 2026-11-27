@@ -16,8 +16,10 @@ Run (fish):  env AETHER_DB_TESTS=1 uv run pytest -m db
 import asyncio
 import json
 import logging
-from collections.abc import Awaitable, Callable, Iterator
+import time
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import Any, TypeVar
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
@@ -29,6 +31,9 @@ from core.config import Settings
 from core.db import create_engine, create_migration_engine
 from core.log import SecretCheck
 from memory.store import (
+    PENDING_DAYS,
+    PENDING_MAX,
+    SWEEP_INTERVAL_S,
     Approval,
     InvalidRecord,
     KeyConflict,
@@ -39,9 +44,12 @@ from memory.store import (
     NewRecord,
     NotAllowed,
     NotPending,
+    PendingLimit,
     RecordChanges,
     RecordNotFound,
     SecretContent,
+    SecretRefused,
+    StoreUnavailable,
 )
 from tests.conftest import LIVE_DB
 from tests.fake_secrets import by_family
@@ -409,12 +417,12 @@ def test_key_conflicts_are_store_errors_and_change_nothing(
 ) -> None:
     first = store(lambda s: s.create(owner_record(1, key=KEY)))
     other = store(lambda s: s.create(owner_record(2, key=OTHER_KEY)))
-    pending = store(lambda s: s.create(proposal(3, key=KEY)))  # pending may share a key
+    store(lambda s: s.create(proposal(3, key=KEY)))  # pending may share a key
     before = snapshot(live_owner)
     attempts: dict[str, Callable[[MemoryStore], Awaitable[Any]]] = {
         "create": lambda s: s.create(owner_record(4, key=KEY)),
         "update": lambda s: s.update(other.id, RecordChanges(key=KEY), actor="owner"),
-        "approve": lambda s: s.approve(pending.id, Approval("public"), actor="owner"),
+        # approve replaces the old record instead (#97): see the step 8 tests below
     }
     for name, attempt in attempts.items():
         with pytest.raises(KeyConflict) as info:
@@ -530,6 +538,7 @@ def test_no_content_or_key_in_logs_errors_or_events(
         await s.list(ListFilter(key=KEY))
         await s.update(a.id, RecordChanges(content=content(3), key=OTHER_KEY), actor="owner")
         await s.approve(b.id, Approval("personal", content=content(4)), actor="owner")
+        await s.export(actor="owner")
         for failing in (
             s.create(owner_record(5, key=KEY)),  # key conflict
             s.update(b.id, RecordChanges(key=OTHER_KEY), actor="owner"),  # key conflict
@@ -553,20 +562,22 @@ def test_no_content_or_key_in_logs_errors_or_events(
         "Memory record created",
         "Memory record updated",
         "Memory record approved",
+        "Memory exported",
         "Memory record deleted",
         "Memory record deleted",
     ]
     rendered = errors + [f"{r.getMessage()} {vars(r)!r} {r.exc_text or ''}" for r in caplog.records]
     for line in rendered:
         assert PREFIX not in line and KEY not in line and OTHER_KEY not in line, line
-    # One event per successful change (2 creates, update, approve, 2 deletes), none for
-    # the failures; no column of any of them holds content or a key.
+    # One event per successful change (2 creates, update, approve, 2 deletes) and the
+    # export, none for the failures; no column of any of them holds content or a key.
     written = events_after(live_owner, events_before)
     assert [e["event_type"] for e in written] == [
         "memory.approved",
         "memory.proposed",
         "memory.updated",
         "memory.approved",
+        "memory.exported",
         "memory.deleted",
         "memory.deleted",
     ]
@@ -756,3 +767,531 @@ def test_a_refused_event_rolls_the_memory_change_back(
     assert events_after(live_owner, start) == []
     assert snapshot(live_owner) == before
     assert store(lambda s: s.get(made.id)).content == content(1)
+
+
+# --- step 8 (#97): approve replaces a key, reject, the pending limit, expiry -------------
+
+
+async def _reject_as(record_id: UUID, who: Any, s: MemoryStore) -> None:
+    await s.reject(record_id, actor=who)
+
+
+async def _create(new: NewRecord, s: MemoryStore) -> MemoryRecord:
+    return await s.create(new)
+
+
+async def _get(record_id: UUID, include_expired: bool, s: MemoryStore) -> MemoryRecord:
+    return await s.get(record_id, include_expired=include_expired)
+
+
+def _ids(events: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    return [(e["event_type"], e["memory_record_id"]) for e in events]
+
+
+def test_approve_replaces_the_approved_record_with_that_key(
+    store: Run[Any], live_owner: Settings
+) -> None:
+    old = store(lambda s: s.create(owner_record(1, key=KEY)))
+    new = store(lambda s: s.create(proposal(2, key=KEY)))
+    after = last_event_id(live_owner)
+
+    approved = store(lambda s: s.approve(new.id, Approval("personal"), actor="owner"))
+
+    assert approved.status == "approved" and approved.key == KEY
+    with pytest.raises(RecordNotFound):
+        store(lambda s: s.get(old.id, include_expired=True))
+    assert _ids(events_after(live_owner, after)) == [
+        ("memory.deleted", str(old.id)),
+        ("memory.approved", str(new.id)),
+    ]
+
+
+def test_approve_with_a_corrected_key_replaces_that_key(store: Run[Any]) -> None:
+    old = store(lambda s: s.create(owner_record(1, key=OTHER_KEY)))
+    keep = store(lambda s: s.create(owner_record(2, key=KEY)))
+    new = store(lambda s: s.create(proposal(3, key=KEY)))
+
+    approval = Approval("public", key=OTHER_KEY)
+    assert store(lambda s: s.approve(new.id, approval, actor="owner")).key == OTHER_KEY
+
+    with pytest.raises(RecordNotFound):
+        store(lambda s: s.get(old.id))
+    assert store(lambda s: s.get(keep.id)).key == KEY  # its old key was not the final one
+
+
+def test_approve_with_the_key_cleared_replaces_nothing(store: Run[Any]) -> None:
+    old = store(lambda s: s.create(owner_record(1, key=KEY)))
+    new = store(lambda s: s.create(proposal(2, key=KEY)))
+    approved = store(lambda s: s.approve(new.id, Approval("public", key=None), actor="owner"))
+    assert approved.key is None
+    assert store(lambda s: s.get(old.id)).key == KEY
+
+
+def test_reject_deletes_a_pending_record(store: Run[Any], live_owner: Settings) -> None:
+    pending = store(lambda s: s.create(proposal(1)))
+    after = last_event_id(live_owner)
+
+    store(lambda s: s.reject(pending.id, actor="owner"))
+
+    with pytest.raises(RecordNotFound):
+        store(lambda s: s.get(pending.id, include_expired=True))
+    events = events_after(live_owner, after)
+    assert _ids(events) == [("memory.rejected", str(pending.id))]
+    assert events[0]["actor"] == "memory" and events[0]["memory_source"] == "model"
+    assert PREFIX not in json.dumps(events)
+
+
+def test_reject_refuses_what_is_not_a_pending_record(store: Run[Any], live_owner: Settings) -> None:
+    approved = store(lambda s: s.create(owner_record(1)))
+    pending = store(lambda s: s.create(proposal(2)))
+    before, after = snapshot(live_owner), last_event_id(live_owner)
+
+    with pytest.raises(NotPending):
+        store(lambda s: s.reject(approved.id, actor="owner"))
+    with pytest.raises(RecordNotFound):
+        store(lambda s: s.reject(uuid4(), actor="owner"))
+    for source in ("model", "tool"):
+        with pytest.raises(NotAllowed):
+            store(partial(_reject_as, pending.id, source))
+
+    assert snapshot(live_owner) == before
+    assert events_after(live_owner, after) == []
+
+
+def _pending_count(owner: Settings) -> int:
+    sql = (
+        "SELECT count(*) FROM public.memory_records WHERE status = 'pending'"  # noqa: S608
+        " AND (expires_at IS NULL OR expires_at > now())"
+        f" AND created_at > now() - interval '{PENDING_DAYS} days'"
+    )
+    return int(owner_sql(owner, sql)[0])
+
+
+def test_at_most_fifty_pending_records(store: Run[Any], live_owner: Settings) -> None:
+    room = PENDING_MAX - _pending_count(live_owner)
+    assert room > 0, "the test database already holds the maximum of pending records"
+
+    async def fill(s: MemoryStore) -> None:
+        for n in range(room):
+            await s.create(proposal(f"fill-{n}"))
+
+    store(fill)
+    before, after = snapshot(live_owner), last_event_id(live_owner)
+
+    for source in ("model", "tool"):
+        with pytest.raises(PendingLimit) as info:
+            store(partial(_create, proposal("one too many", source=source)))
+        assert PREFIX not in str(info.value) and info.value.__cause__ is None
+    assert snapshot(live_owner) == before
+    assert events_after(live_owner, after) == []
+
+    # The owner's own records are not proposals: the limit doesn't apply.
+    assert store(lambda s: s.create(owner_record("owner"))).status == "approved"
+
+
+def _age_sql(record_id: UUID, days: int) -> str:
+    return (
+        "UPDATE public.memory_records SET created_at = now() - interval"  # noqa: S608
+        f" '{int(days)} days', updated_at = now() WHERE id = '{UUID(str(record_id))}'"
+    )
+
+
+def _expire_sql(record_id: UUID) -> str:
+    return (
+        "UPDATE public.memory_records SET expires_at = now() - interval '1 second'"  # noqa: S608
+        f" WHERE id = '{UUID(str(record_id))}'"
+    )
+
+
+def _expire_now(owner: Settings, record_id: UUID) -> None:
+    owner_sql(owner, _expire_sql(record_id))
+
+
+def _age(owner: Settings, record_id: UUID, days: int) -> None:
+    owner_sql(owner, _age_sql(record_id, days))
+
+
+def test_expired_records_are_hidden_then_deleted_with_events(
+    store: Run[Any], live_owner: Settings
+) -> None:
+    old_pending = store(lambda s: s.create(proposal(1)))
+    young_pending = store(lambda s: s.create(proposal(2)))
+    timed = store(lambda s: s.create(owner_record(3)))
+    approved_old = store(lambda s: s.create(owner_record(4)))
+    _age(live_owner, old_pending.id, PENDING_DAYS + 1)
+    _age(live_owner, young_pending.id, PENDING_DAYS - 1)
+    _age(live_owner, approved_old.id, PENDING_DAYS + 100)  # only pending ages out
+    _expire_now(live_owner, timed.id)
+
+    expired = {old_pending.id, timed.id}
+    for record_id in expired:
+        with pytest.raises(RecordNotFound):
+            store(partial(_get, record_id, False))
+        assert store(partial(_get, record_id, True)).id == record_id
+    with pytest.raises(RecordNotFound):  # nor can it be approved or rejected
+        store(lambda s: s.approve(old_pending.id, Approval("public"), actor="owner"))
+
+    after = last_event_id(live_owner)
+    assert store(lambda s: s.expire()) >= 2
+
+    for record_id in expired:
+        with pytest.raises(RecordNotFound):
+            store(partial(_get, record_id, True))
+    events = [e for e in events_after(live_owner, after) if UUID(e["memory_record_id"]) in expired]
+    assert sorted(e["event_type"] for e in events) == ["memory.expired"] * 2
+    assert PREFIX not in json.dumps(events)
+    assert store(lambda s: s.get(young_pending.id)).status == "pending"
+    assert store(lambda s: s.get(approved_old.id)).status == "approved"
+
+
+def test_list_and_create_sweep_at_most_once_a_minute(store: Run[Any], live_owner: Settings) -> None:
+    first = store(lambda s: s.create(proposal(1)))
+    second = store(lambda s: s.create(proposal(2)))
+    _age(live_owner, first.id, PENDING_DAYS + 1)
+
+    async def exists(record_id: UUID) -> bool:
+        sql = f"SELECT count(*) FROM public.memory_records WHERE id = '{record_id}'"  # noqa: S608
+        return await _owner_sql(live_owner, sql) == [1]
+
+    async def body(s: MemoryStore) -> list[bool]:
+        seen = []
+        await s.list()  # a new store sweeps on its first list
+        seen.append(await exists(first.id))
+        await _owner_sql(live_owner, _age_sql(second.id, PENDING_DAYS + 1))
+        await s.list()  # within the minute: no sweep
+        seen.append(await exists(second.id))
+        s._last_sweep = time.monotonic() - SWEEP_INTERVAL_S
+        await s.create(owner_record(3))  # create sweeps too, once the minute is up
+        seen.append(await exists(second.id))
+        return seen
+
+    assert store(body) == [False, True, False]
+
+
+def test_concurrent_proposals_never_pass_the_limit(store: Run[Any], live_owner: Settings) -> None:
+    # The advisory lock is what makes the count safe: fire more proposals than there
+    # is room for, all at once, and exactly the room is used.
+    room = PENDING_MAX - _pending_count(live_owner)
+    assert room > 0
+
+    async def flood(s: MemoryStore) -> list[object]:
+        tries = [s.create(proposal(f"flood-{n}")) for n in range(room + 5)]
+        return list(await asyncio.gather(*tries, return_exceptions=True))
+
+    results = store(flood)
+    assert sum(isinstance(r, MemoryRecord) for r in results) == room
+    assert sum(isinstance(r, PendingLimit) for r in results) == 5
+    assert _pending_count(live_owner) == PENDING_MAX
+
+
+def test_approve_replaces_an_expired_approved_holder(store: Run[Any], live_owner: Settings) -> None:
+    # The unique index covers expired approved records too, so approve must replace
+    # one the clean-up hasn't deleted yet (approve itself doesn't sweep).
+    old = store(lambda s: s.create(owner_record(1, key=KEY)))
+
+    async def body(s: MemoryStore) -> tuple[int, MemoryRecord]:
+        # Creating with a key clears expired records, so expire the holder after.
+        new = await s.create(proposal(2, key=KEY))
+        await _owner_sql(live_owner, _expire_sql(old.id))
+        mark = int((await _owner_sql(live_owner, "SELECT max(id) FROM events"))[0])
+        return mark, await s.approve(new.id, Approval("public"), actor="owner")
+
+    after, approved = store(body)
+
+    assert approved.key == KEY
+    with pytest.raises(RecordNotFound):
+        store(lambda s: s.get(old.id, include_expired=True))
+    assert _ids(events_after(live_owner, after)) == [
+        ("memory.deleted", str(old.id)),
+        ("memory.approved", str(approved.id)),
+    ]
+
+
+def test_a_failed_approve_keeps_the_record_it_would_replace(
+    store: Run[Any], live_owner: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # _replace_key and the update share one transaction: if anything after the
+    # delete fails, the old record and the event log are as they were.
+    store(lambda s: s.create(owner_record(1, key=KEY)))
+    new = store(lambda s: s.create(proposal(2, key=KEY)))
+    before, after = snapshot(live_owner), last_event_id(live_owner)
+
+    async def broken_set(*_: Any, **__: Any) -> MemoryRecord:
+        raise OSError("connection lost after the delete")
+
+    monkeypatch.setattr(MemoryStore, "_set", staticmethod(broken_set))
+    with pytest.raises(StoreUnavailable):
+        store(lambda s: s.approve(new.id, Approval("public"), actor="owner"))
+
+    assert snapshot(live_owner) == before
+    assert events_after(live_owner, after) == []
+
+
+def test_two_approvals_with_one_key_leave_exactly_one_approved_record(
+    store: Run[Any], live_owner: Settings
+) -> None:
+    # The race documented in the store and docs/05: either the second approval hits
+    # the unique index (KeyConflict, nothing changed) or it runs after the first
+    # committed and replaces it. Either way one approved record holds the key, and
+    # every delete is recorded.
+    first = store(lambda s: s.create(proposal(1, key=KEY)))
+    second = store(lambda s: s.create(proposal(2, key=KEY)))
+    after = last_event_id(live_owner)
+
+    async def race(s: MemoryStore) -> list[object]:
+        tries = [
+            s.approve(first.id, Approval("public"), actor="owner"),
+            s.approve(second.id, Approval("public"), actor="owner"),
+        ]
+        return list(await asyncio.gather(*tries, return_exceptions=True))
+
+    results = store(race)
+
+    approved = [r for r in results if isinstance(r, MemoryRecord)]
+    conflicts = [r for r in results if isinstance(r, KeyConflict)]
+    assert len(approved) + len(conflicts) == 2 and approved, results
+    holders = owner_sql(
+        live_owner,
+        f"SELECT count(*) FROM public.memory_records WHERE key = '{KEY}' AND status = 'approved'",  # noqa: S608
+    )
+    assert holders == [1]
+    events = [e["event_type"] for e in events_after(live_owner, after)]
+    assert events.count("memory.approved") == len(approved)
+    assert events.count("memory.deleted") == len(approved) - 1  # a replacement is recorded
+
+
+# --- step 10 (#122): export --------------------------------------------------------------
+
+
+def test_export_has_every_unexpired_record_and_one_event_with_the_count(
+    store: Run[Any], live_owner: Settings
+) -> None:
+    public = store(lambda s: s.create(owner_record(1, key=KEY)))
+    sensitive = store(lambda s: s.create(owner_record(2, privacy="sensitive")))
+    pending = store(lambda s: s.create(proposal(3)))
+    expired = store(lambda s: s.create(owner_record(4)))
+    _expire_now(live_owner, expired.id)
+    before, after = snapshot(live_owner), last_event_id(live_owner)
+    [db_before] = owner_sql(live_owner, "SELECT now()")
+
+    export = store(lambda s: s.export(actor="owner"))
+
+    [db_after] = owner_sql(live_owner, "SELECT now()")
+    assert db_before <= export.exported_at <= db_after  # the database clock, not Python's
+    ids = [r.id for r in export.records]
+    assert {public.id, sensitive.id, pending.id} <= set(ids)
+    assert expired.id not in ids  # left out by the filter ...
+    assert snapshot(live_owner) == before  # ... and not deleted: the table is unchanged
+    assert len(ids) == len(set(ids))
+    assert [(r.created_at, str(r.id)) for r in export.records] == sorted(
+        (r.created_at, str(r.id)) for r in export.records
+    )
+    by_id = {r.id: r for r in export.records}
+    assert by_id[public.id] == public  # every column, as stored
+    assert by_id[sensitive.id].privacy == "sensitive"
+    assert by_id[pending.id].status == "pending"
+    assert by_id[pending.id].privacy_source == "suggested"
+    # The time of the read, after every record in it was created.
+    assert export.exported_at >= max(r.created_at for r in export.records)
+
+    events = events_after(live_owner, after)
+    assert len(events) == 1, events  # no memory.expired: the export runs no clean-up
+    event = events[0]
+    assert (event["event_type"], event["actor"]) == ("memory.exported", "memory")
+    assert event["memory_export_count"] == len(export.records)
+    described = {k: v for k, v in event.items() if k.startswith("memory_") and v is not None}
+    assert described == {"memory_export_count": len(export.records)}
+    assert PREFIX not in json.dumps(event) and KEY not in json.dumps(event)
+
+
+def test_an_export_whose_event_fails_returns_nothing(
+    store: Run[Any], live_owner: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import memory.store as store_module
+
+    store(lambda s: s.create(owner_record(1)))
+
+    async def lost(*_: Any, **__: Any) -> int:
+        raise OSError("connection lost while recording the export")
+
+    monkeypatch.setattr(store_module, "write_memory_event", lost)
+    start = last_event_id(live_owner)
+
+    with pytest.raises(StoreUnavailable):
+        store(lambda s: s.export(actor="owner"))
+
+    assert events_after(live_owner, start) == []
+
+
+# --- step 11 (#139): retrieval candidates ---------------------------------------------
+
+
+def _candidates(text_: str | None, level: Any, s: MemoryStore) -> Any:
+    return s.retrieval_candidates(text_, max_level=level)
+
+
+def test_candidates_are_keyed_preferences_and_full_text_matches(store: Run[Any]) -> None:
+    async def body(s: MemoryStore) -> dict[str, Any]:
+        keyed = await s.create(owner_record("k", content=f"{PREFIX} owner name is Zed", key=KEY))
+        match = await s.create(
+            owner_record("m", category="project", content=f"{PREFIX} editor is Helix")
+        )
+        await s.create(owner_record("x", category="project", content=f"{PREFIX} unrelated cat"))
+        # Keyed but not profile/preference: not always relevant.
+        await s.create(
+            owner_record("n", category="project", content=f"{PREFIX} note", key=OTHER_KEY)
+        )
+        found = [c for c in await s.retrieval_candidates("which editor?", max_level="sensitive")]
+        mine = [c for c in found if c.record.content.startswith(PREFIX)]
+        return {"keyed": keyed.id, "match": match.id, "found": mine}
+
+    out = store(body)
+    found = out["found"]
+
+    assert [c.record.id for c in found] == [out["keyed"], out["match"]]
+    assert found[0].keyed and found[0].match_rank == 0.0
+    assert not found[1].keyed and found[1].match_rank > 0.0
+
+
+def test_candidates_with_no_words_are_only_the_keyed_ones(store: Run[Any]) -> None:
+    async def body(s: MemoryStore) -> Sequence[Any]:
+        await s.create(owner_record("k", key=KEY))
+        await s.create(owner_record("p", category="project"))
+        return await s.retrieval_candidates(None, max_level="sensitive")
+
+    mine = [c for c in store(body) if c.record.content.startswith(PREFIX)]
+
+    assert [c.record.key for c in mine] == [KEY]
+
+
+def test_candidates_respect_level_status_and_expiry(store: Run[Any]) -> None:
+    async def body(s: MemoryStore) -> dict[str, list[str]]:
+        await s.create(owner_record("pub", content=f"{PREFIX} zebra public"))
+        await s.create(owner_record("per", content=f"{PREFIX} zebra personal", privacy="personal"))
+        await s.create(
+            owner_record("sen", content=f"{PREFIX} zebra sensitive", privacy="sensitive")
+        )
+        await s.create(proposal("pend", content=f"{PREFIX} zebra pending"))
+        await s.create(
+            owner_record(
+                "exp",
+                content=f"{PREFIX} zebra expired",
+                expires_at=datetime.now(UTC) + timedelta(seconds=1),
+            )
+        )
+        await asyncio.sleep(1.5)
+        result = {}
+        for level in ("public", "personal", "sensitive", None):
+            got = await s.retrieval_candidates("zebra", max_level=level)
+            result[str(level)] = sorted(
+                c.record.content.removeprefix(PREFIX + " zebra ")
+                for c in got
+                if c.record.content.startswith(PREFIX)
+            )
+        return result
+
+    assert store(body) == {
+        "public": ["public"],
+        "personal": ["personal", "public"],
+        "sensitive": ["personal", "public", "sensitive"],
+        "None": [],
+    }
+
+
+def test_candidates_stemming_and_best_rank_first(store: Run[Any]) -> None:
+    async def body(s: MemoryStore) -> list[str]:
+        await s.create(owner_record("a", category="project", content=f"{PREFIX} prefers tea"))
+        await s.create(
+            owner_record("b", category="project", content=f"{PREFIX} prefers tea and likes jazz")
+        )
+        got = await s.retrieval_candidates("preference jazz tea", max_level="public")
+        return [c.record.content for c in got if c.record.content.startswith(PREFIX)]
+
+    got = store(body)
+
+    assert got == [f"{PREFIX} prefers tea and likes jazz", f"{PREFIX} prefers tea"]
+
+
+def test_candidates_treat_operators_in_the_request_as_plain_words(store: Run[Any]) -> None:
+    async def body(s: MemoryStore) -> int:
+        await s.create(owner_record("a", category="project", content=f"{PREFIX} yak"))
+        hostile = '\'; DROP TABLE memory_records; -- "yak" -yak & | ! ( ) :*'
+        got = await s.retrieval_candidates(hostile, max_level="public")
+        return len([c for c in got if c.record.content.startswith(PREFIX)])
+
+    assert store(body) == 1
+
+
+def test_candidates_are_capped(store: Run[Any]) -> None:
+    from memory.store import CANDIDATE_MAX
+
+    async def body(s: MemoryStore) -> int:
+        for i in range(CANDIDATE_MAX + 3):
+            await s.create(owner_record(i, category="project", content=f"{PREFIX} lynx {i}"))
+        return len(await s.retrieval_candidates("lynx", max_level="public"))
+
+    assert store(body) == CANDIDATE_MAX
+
+
+def test_candidates_write_nothing_and_log_no_text(
+    store: Run[Any], live_owner: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    async def make(s: MemoryStore) -> None:
+        await s.create(owner_record("a", content=f"{PREFIX} ibis"))
+
+    store(make)
+    before_events, before_rows = last_event_id(live_owner), snapshot(live_owner)
+
+    with caplog.at_level(logging.DEBUG):
+        store(partial(_candidates, f"{PREFIX}-request-text ibis", "public"))
+
+    assert last_event_id(live_owner) == before_events
+    assert snapshot(live_owner) == before_rows
+    assert f"{PREFIX}-request-text" not in caplog.text
+
+
+def test_candidates_refuse_secret_and_unknown_levels(store: Run[Any]) -> None:
+    async def secret(s: MemoryStore) -> None:
+        await s.retrieval_candidates("x", max_level="secret")
+
+    async def unknown(s: MemoryStore) -> None:
+        await s.retrieval_candidates("x", max_level="top")  # type: ignore[arg-type]
+
+    with pytest.raises(SecretRefused):
+        store(secret)
+    with pytest.raises(InvalidRecord):
+        store(unknown)
+
+
+def test_retriever_reads_and_selects_for_one_call(store: Run[Any]) -> None:
+    from memory.retrieval import MemoryRetriever
+
+    async def body(s: MemoryStore) -> dict[str, Any]:
+        pub = await s.create(owner_record("rp", category="project", content=f"{PREFIX} okapi pub"))
+        per = await s.create(
+            owner_record(
+                "rr", category="project", content=f"{PREFIX} okapi per", privacy="personal"
+            )
+        )
+        await s.create(
+            owner_record(
+                "rs", category="project", content=f"{PREFIX} okapi sen", privacy="sensitive"
+            )
+        )
+        retriever = MemoryRetriever(s, ("public", "personal"))
+        got = await retriever.context_for("okapi", limit="personal", include_sensitive=False)
+        mine = [i for i in got.record_ids if i in {pub.id, per.id}]
+        return {"ids": set(mine), "want": {pub.id, per.id}, "ctx": got.context or ""}
+
+    out = store(body)
+
+    assert out["ids"] == out["want"]
+    assert f"{PREFIX} okapi sen" not in out["ctx"]
+    assert f"{PREFIX} okapi pub" in out["ctx"]
+
+
+def test_retriever_needs_a_store() -> None:
+    from memory.retrieval import MemoryRetriever
+
+    with pytest.raises(TypeError):
+        MemoryRetriever(object(), ("public",))  # type: ignore[arg-type]

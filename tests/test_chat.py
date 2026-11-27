@@ -34,7 +34,7 @@ from tests.chat_helpers import (
     assert_no_content,
     error_with_key_cause,
 )
-from tests.fakes import FakeProvider, snapshot
+from tests.fakes import CHECK, FakeProvider, snapshot
 
 
 class FailingWriter(EventWriter):
@@ -43,7 +43,11 @@ class FailingWriter(EventWriter):
         self.delay_s = delay_s
 
     async def write_all(
-        self, events: Sequence[Event], *, request: ModelRequest | None = None
+        self,
+        events: Sequence[Event],
+        *,
+        request: ModelRequest | None = None,
+        also_forbidden: Sequence[str] = (),
     ) -> list[int]:
         if self.delay_s:
             await asyncio.sleep(self.delay_s)
@@ -423,7 +427,7 @@ def test_real_writer_with_unreachable_database_still_answers(
     url = "postgresql+asyncpg://aether:not-a-real-pw-456@127.0.0.1:1/aether"
     identity = load_identity()
     local = FakeProvider("ollama", "local", answer=ANSWER, usage=USAGE)
-    router = Router([local], identity, probe=lambda: snapshot(4.0))
+    router = Router([local], identity, secret_check=CHECK, probe=lambda: snapshot(4.0))
     app = create_app(
         Settings(_env_file=None, database_url=SecretStr(url), aether_api_token=SecretStr(TOKEN)),
         identity,

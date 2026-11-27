@@ -6,7 +6,7 @@ import re
 import pytest
 
 from core.identity import load_identity
-from core.log import REDACTED, Redactor
+from core.log import REDACTED, Redactor, SecretCheck
 from router.contract import (
     ModelRequest,
     ModelResponse,
@@ -53,7 +53,9 @@ def test_ten_generic_prompts_with_checks() -> None:
 
 def test_every_prompt_goes_through_identity_as_public() -> None:
     provider = Echo()
-    results = asyncio.run(run(provider, load_identity(), load_prompts()))
+    results = asyncio.run(
+        run(provider, load_identity(), load_prompts(), secret_check=SecretCheck())
+    )
 
     assert len(provider.requests) == 10
     for request in provider.requests:
@@ -63,7 +65,9 @@ def test_every_prompt_goes_through_identity_as_public() -> None:
 
 
 def test_provider_error_recorded_not_raised() -> None:
-    results = asyncio.run(run(Echo(fail_on="API"), load_identity(), load_prompts()))
+    results = asyncio.run(
+        run(Echo(fail_on="API"), load_identity(), load_prompts(), secret_check=SecretCheck())
+    )
     [failed] = [r for r in results if r["error"]]
     assert failed["id"] == "explain"
     assert failed["error"] == "ProviderTimeout: Ollama did not respond in time"
@@ -71,7 +75,9 @@ def test_provider_error_recorded_not_raised() -> None:
 
 @pytest.mark.parametrize("fail_on", [None, "API"])
 def test_render_redacts_and_has_review_boxes(fail_on: str | None) -> None:
-    results = asyncio.run(run(Echo(fail_on), load_identity(), load_prompts()))
+    results = asyncio.run(
+        run(Echo(fail_on), load_identity(), load_prompts(), secret_check=SecretCheck())
+    )
     text = render("ollama", load_identity(), results, Redactor([FAKE_KEY]))
 
     assert FAKE_KEY not in text and REDACTED in text
@@ -104,20 +110,24 @@ class Counting(Echo):
 
 def test_no_limit_by_default() -> None:
     provider = Echo()
-    asyncio.run(run(provider, load_identity(), load_prompts()))
+    asyncio.run(run(provider, load_identity(), load_prompts(), secret_check=SecretCheck()))
 
     assert all(r.max_tokens is None for r in provider.requests)
 
 
 def test_max_tokens_reaches_every_request() -> None:
     provider = Echo()
-    asyncio.run(run(provider, load_identity(), load_prompts(), max_tokens=256))
+    asyncio.run(
+        run(provider, load_identity(), load_prompts(), max_tokens=256, secret_check=SecretCheck())
+    )
 
     assert [r.max_tokens for r in provider.requests] == [256] * 10
 
 
 def test_summary_has_token_totals_and_cut_off_count() -> None:
-    results = asyncio.run(run(Counting(cut_on="API"), load_identity(), load_prompts()))
+    results = asyncio.run(
+        run(Counting(cut_on="API"), load_identity(), load_prompts(), secret_check=SecretCheck())
+    )
 
     line = summary(results)
 
@@ -126,13 +136,17 @@ def test_summary_has_token_totals_and_cut_off_count() -> None:
 
 
 def test_summary_without_usage_says_n_a() -> None:
-    results = asyncio.run(run(Echo(fail_on="API"), load_identity(), load_prompts()))
+    results = asyncio.run(
+        run(Echo(fail_on="API"), load_identity(), load_prompts(), secret_check=SecretCheck())
+    )
 
     assert summary(results) == "10 prompts, 1 errors, 0 cut off, tokens: n/a input / n/a output"
 
 
 def test_render_shows_tokens_and_finish_reason() -> None:
-    results = asyncio.run(run(Counting(cut_on="API"), load_identity(), load_prompts()))
+    results = asyncio.run(
+        run(Counting(cut_on="API"), load_identity(), load_prompts(), secret_check=SecretCheck())
+    )
     text = render("ollama", load_identity(), results, Redactor([]))
 
     assert "finish: length, 100 / 20 tokens" in text

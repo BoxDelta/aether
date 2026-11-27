@@ -13,17 +13,26 @@ are in `docs/adr/`; a longer tour is in `docs/CODE_TOUR.md`.
 ## Key modules
 
 -   `core/`: `app.py` factory, `config.py` settings, `auth.py` bearer
-    token, `chat.py` `/chat`, `ready.py` `/ready`, `db.py` and
+    token, `chat.py` `/chat`, `ready.py` `/ready`, `memory_api.py`
+    `/memory` (list, get, search, owner create, approve, reject, correct,
+    delete, export), `db.py` and
     `db_admin.py` Postgres, `events.py` append-only event log, `log.py`
     logging, redaction and `SecretCheck`, `identity.py` identity loader,
     `backup.py` verified backups.
 -   `router/` (Nexus): `contract.py` provider contract and privacy
     levels, `routing.py` rules and failover, `identity_call.py` the one
     function every model call goes through, `ollama.py` (local),
-    `claude.py` (cloud), `hardware.py` GPU/RAM probe.
--   `memory/`: `store.py` the memory store, `types.py` its types.
+    `claude.py` (cloud), `hardware.py` GPU/RAM probe,
+    `memory_context.py` the memory a call gets and its backstop,
+    `echo.py` the echo backstop.
+-   `memory/`: `store.py` the memory store, `retrieval.py` which memory
+    one model call may get, `types.py` its types.
 -   `identity/aether.yaml`: the single AETHER identity.
--   `scripts/`: `safemerge.fish`, `identity_continuity.py`, systemd units.
+-   `dispatch/`: dispatcher prototype (ADR-030, dev tooling, not Core):
+    `config.py`, `github.py` (read-only), `rules.py` (always-Claude list),
+    `classify.py`, `gpu.py`, `notify.py` (Discord), `__main__.py`. See `dispatch/README.md`.
+-   `scripts/`: `safemerge.fish`, `identity_continuity.py`, systemd units
+    (backup, dispatcher triage).
 
 ## Tests
 

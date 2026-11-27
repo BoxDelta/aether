@@ -1,8 +1,9 @@
 """The memory store (ADR-024 §1, §2, §4; step 4 of #58): ``public.memory_records``.
 
-A Python API only: no HTTP route and no retrieval for model calls yet (ADR-024 §9,
-steps 6 and 11). It uses Core's app engine (``core.db.create_engine``,
-the ``aether_app`` role) and changes nothing about its privileges.
+Its HTTP routes are in ``core/memory_api.py`` (step 6). ``retrieval_candidates``
+(step 11) reads the records that may go into a model call; the privacy rules and
+size limits for that are in ``memory/retrieval.py``. It uses Core's app engine
+(``core.db.create_engine``, the ``aether_app`` role) and changes nothing about its privileges.
 
 Rules, checked here before anything reaches the database; the CHECK constraints of
 migration 0004 are the backstop:
@@ -35,10 +36,26 @@ migration 0004 are the backstop:
   not caught; the owner's approval review is the remaining check.
 - **Content** 1 to ``CONTENT_MAX`` characters of valid text; **key** matches
   ``KEY_PATTERN``; at most one approved record per key, so a clash raises
-  ``KeyConflict`` (approve does not yet replace the old record: step 8, #67).
-- **Expiry**: a record past ``expires_at`` is left out of ``get`` and ``list`` unless
-  asked for, and can't be updated or approved; it can still be deleted. Nothing
-  deletes expired records yet (the clean-up is step 8).
+  ``KeyConflict`` on create and update (approve replaces instead, below). Setting a
+  key first deletes expired records (``expire``), so an expired record the owner
+  can't see never blocks its key.
+- **Expiry** (ADR-024 §1, D8): a record past ``expires_at``, and a pending record
+  ``PENDING_DAYS`` after it was created, is expired. It is left out of ``get`` and
+  ``list`` unless asked for, and can't be updated, approved or rejected; it can
+  still be deleted. ``expire`` deletes every expired record, with one
+  ``memory.expired`` event each; ``list`` and ``create`` run it first, at most once
+  every ``SWEEP_INTERVAL_S`` per store (no scheduler), and an owner create or an
+  update that sets a key runs it unthrottled first. Known gap for step 16: a
+  record a restore sets back to ``pending`` keeps its old ``created_at``, so it
+  would expire at once; step 16 adds the "restored" marker and exempts it (#67).
+- **Limit** (D8): at most ``PENDING_MAX`` unexpired pending records. One more from
+  a model or a tool raises ``PendingLimit``; the proposer drops it and counts.
+- **Approve replaces a key** (ADR-024 §1, #67): if another approved record has the
+  key the approved record ends up with, that record is deleted in the same
+  transaction (``memory.deleted``), so the new value replaces the old one. Two
+  approvals of different records with the same key at the same moment can both
+  find nothing to replace; the second then hits the unique index: ``KeyConflict``.
+- **Reject** deletes a pending record (owner only), with ``memory.rejected``.
 - **Delete** is a hard delete: the row is gone, no tombstone (ADR-024 §4).
 
 What never leaves the store: memory content and keys never appear in log records,
@@ -49,6 +66,11 @@ chained. Logs carry the record ID and status only.
 
 Every operation runs in one transaction: if it fails, nothing is changed.
 
+**Database down** (#80; ADR-026 §5, proposed in #82): if no connection can be made, or the
+connection is lost during an operation, the store raises ``StoreUnavailable``,
+never an empty list, "not found" or a write that did nothing. Its message names
+the error type only.
+
 **Events** (ADR-024 §5, step 5): every change writes exactly one metadata-only event
 in the *same* transaction, with actor ``memory``, so the change and its event commit
 or roll back together. A failed operation writes no event, and a failed event write
@@ -57,29 +79,39 @@ undoes the change:
 - create by a model or a tool (``pending``): ``memory.proposed``;
 - create by the owner (approved at once, D1) and ``approve``: ``memory.approved``;
 - ``update``: ``memory.updated``, with the old level as well when the level changed;
-- ``delete``: ``memory.deleted``.
+- ``delete``, and the old record a key replacement removes: ``memory.deleted``;
+- ``reject``: ``memory.rejected``; the clean-up: ``memory.expired``.
 
 An event holds the record's ID, category, source and level (``MemoryRecordMeta``),
 never content, a key or corrected text. Reads (``get``, ``list``) write no event.
+
+**Export** (step 10, #122; ADR-024 §4, D10): ``export`` reads every unexpired record,
+all levels and pending ones included, and writes one ``memory.exported`` event with
+the count in the same transaction, so no export happens unrecorded. Expired records
+are left out by the same filter as ``list``; the export deletes nothing and runs no
+clean-up, so a read never changes the table.
 """
 
+import contextlib
 import enum
 import logging
 import re
-from collections.abc import Awaitable, Callable, Mapping
+import time
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, TypeVar, cast
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.exc import DBAPIError, StatementError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from core.events import (
     MemoryRecordEventType,
     MemoryRecordMeta,
+    memory_exported,
     memory_record_event,
     write_memory_event,
 )
@@ -113,7 +145,22 @@ KEY_PATTERN = r"[a-z0-9_.]{1,64}"
 OWNER: Source = "owner"
 LIST_LIMIT_MAX = 200
 LIST_LIMIT_DEFAULT = 50
+QUERY_MAX = 200
+PENDING_MAX = 50  # D8
+PENDING_DAYS = 30  # D8
+SWEEP_INTERVAL_S = 60.0
+# pg_advisory_xact_lock key that serialises the pending-limit check (any fixed number).
+_PENDING_LOCK = 0x4D454D50  # "MEMP"
 
+# Retrieval (step 11, #139; ADR-024 §3): full-text search, built into Postgres.
+FTS_CONFIG = "english"  # stemming, so "prefers" matches "preference"
+CANDIDATE_MAX = 100  # rows read per call; selection keeps at most retrieval.MAX_RECORDS
+SEARCH_TERMS_MAX = 32
+SEARCH_TERM_LEN_MAX = 64
+# Keyed records in these categories are always candidates (the owner's name, say).
+KEYED_CATEGORIES: tuple[Category, ...] = ("profile", "preference")
+
+_WORD = re.compile(r"\w+")
 _KEY = re.compile(KEY_PATTERN)
 _PROVIDER = re.compile(PROVIDER_NAME_PATTERN)
 _REQUEST_ID = re.compile(SAFE_ID_PATTERN)
@@ -168,6 +215,11 @@ class NotPending(MemoryStoreError):
         self.record_id = record_id
 
 
+class PendingLimit(MemoryStoreError):
+    def __init__(self) -> None:
+        super().__init__(f"at most {PENDING_MAX} pending memory records")
+
+
 class KeyConflict(MemoryStoreError):
     def __init__(self) -> None:
         super().__init__("another approved memory record already uses this key")
@@ -175,6 +227,11 @@ class KeyConflict(MemoryStoreError):
 
 class StoreFailed(MemoryStoreError):
     """Any other database error, described by its SQLSTATE or type name only."""
+
+
+class StoreUnavailable(StoreFailed):
+    """The database can't be reached (no connection, or the connection was lost).
+    Callers answer 503, never an empty result (#80). Type name only."""
 
 
 # --- checks ----------------------------------------------------------------------------
@@ -342,6 +399,9 @@ class ListFilter:
     privacy: PrivacyLevel | None = None
     category: Category | None = None
     key: str | None = field(default=None, repr=False)
+    # A case-insensitive substring of the content (owner inspection, ADR-024 §4).
+    # Content too: never in a URL or a log. Not retrieval (retrieval_candidates).
+    query: str | None = field(default=None, repr=False)
     include_expired: bool = False
     limit: int = LIST_LIMIT_DEFAULT
     offset: int = 0
@@ -354,12 +414,22 @@ class ListFilter:
         if self.category is not None:
             _check_choice("category", self.category, CATEGORIES)
         _check_key(self.key)
+        _check_query(self.query)
         if not isinstance(self.include_expired, bool):
             raise InvalidRecord("include_expired", "must be true or false")
         if not _is_int(self.limit) or not 1 <= self.limit <= LIST_LIMIT_MAX:
             raise InvalidRecord("limit", f"must be 1 to {LIST_LIMIT_MAX}")
         if not _is_int(self.offset) or self.offset < 0:
             raise InvalidRecord("offset", "must be 0 or more")
+
+
+def _check_query(value: object) -> None:
+    if value is None:
+        return
+    if not isinstance(value, str) or not 1 <= len(value) <= QUERY_MAX:
+        raise InvalidRecord("query", f"must be 1 to {QUERY_MAX} characters of text")
+    if "\x00" in value or (not value.isascii() and not _encodes(value)):
+        raise InvalidRecord("query", "must be valid Unicode text without NUL characters")
 
 
 def _is_int(value: object) -> bool:
@@ -390,9 +460,55 @@ class MemoryRecord(BaseModel):
     expires_at: datetime | None
 
 
+class MemoryExport(BaseModel):
+    """Every unexpired record at one moment. ``exported_at`` is the database time of
+    the read, the same clock the expiry filter used."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    exported_at: datetime
+    records: tuple[MemoryRecord, ...]
+
+
 _COLUMNS = ", ".join(MemoryRecord.model_fields)
-_NOT_EXPIRED = "(expires_at IS NULL OR expires_at > now())"
+_EXPIRED = (
+    "((expires_at IS NOT NULL AND expires_at <= now())"
+    f" OR (status = 'pending' AND created_at <= now() - interval '{PENDING_DAYS} days'))"
+)
+_NOT_EXPIRED = f"NOT {_EXPIRED}"
+_META = "id, category, source, privacy"  # the columns an event may describe
 T = TypeVar("T")
+
+
+@dataclass(frozen=True, slots=True)
+class Candidate:
+    """A record that may be relevant to a request (``retrieval_candidates``)."""
+
+    record: MemoryRecord
+    keyed: bool  # has a key and is in KEYED_CATEGORIES: always relevant
+    match_rank: float  # full-text rank of the request's words; 0.0 for no match
+
+
+def search_terms(request_text: str | None) -> str | None:
+    """The request's words as a ``websearch_to_tsquery`` string that matches *any*
+    of them (``a or b or c``), or ``None`` if there are none.
+
+    A plain ``websearch_to_tsquery`` of the whole text needs *every* word to match,
+    so "what is my preferred editor" would miss "the owner uses Helix as editor".
+    Words are ``\\w+`` runs, so the quotes and ``-`` that websearch reads as
+    operators never reach it; the word ``or`` is dropped for the same reason.
+    At most ``SEARCH_TERMS_MAX`` distinct words of at most ``SEARCH_TERM_LEN_MAX``
+    characters each, first seen first. Stop words are removed by Postgres."""
+    if not request_text:
+        return None
+    terms: list[str] = []
+    for word in _WORD.findall(request_text.lower()):
+        if word == "or" or len(word) > SEARCH_TERM_LEN_MAX or word in terms:
+            continue
+        terms.append(word)
+        if len(terms) == SEARCH_TERMS_MAX:
+            break
+    return " or ".join(terms) or None
 
 
 def _record(row: Any) -> MemoryRecord:
@@ -402,6 +518,13 @@ def _record(row: Any) -> MemoryRecord:
 def _meta(record: MemoryRecord) -> MemoryRecordMeta:
     return MemoryRecordMeta(
         record_id=record.id, category=record.category, source=record.source, level=record.privacy
+    )
+
+
+def _row_meta(row: Any) -> MemoryRecordMeta:
+    """Event metadata from a ``RETURNING {_META}`` row (a deleted record)."""
+    return MemoryRecordMeta(
+        record_id=row.id, category=row.category, source=row.source, level=row.privacy
     )
 
 
@@ -436,6 +559,7 @@ class MemoryStore:
             raise TypeError("secret_check must be a core.log.SecretCheck")
         self._engine = engine
         self._looks_secret = secret_check
+        self._last_sweep: float | None = None  # time.monotonic() of the last clean-up
 
     def _refuse_secrets(self, columns: Mapping[str, object], operation: str) -> None:
         """Raise ``SecretContent`` if a free-text column looks like a secret. Called
@@ -452,17 +576,37 @@ class MemoryStore:
                 raise SecretContent(name)
 
     async def _run(self, operation: Callable[[AsyncConnection], Awaitable[T]]) -> T:
-        """Run ``operation`` in one transaction (rolled back if it raises)."""
+        """Run ``operation`` in one transaction (rolled back if it raises).
+
+        Connecting is a separate step, so every failure to get a connection
+        (refused, timeout, login refused, privileged role) is ``StoreUnavailable``,
+        as is a connection lost during the operation (#80)."""
         failure: MemoryStoreError
+        conn = self._engine.connect()
         try:
-            async with self._engine.begin() as conn:
-                return await operation(conn)
-        except DBAPIError as exc:
-            failure = _failure(exc)
-        except (StatementError, ValidationError) as exc:
-            # Not a database refusal: a statement that couldn't be built or a row that
-            # doesn't fit MemoryRecord. Type name only.
-            failure = StoreFailed(f"store error ({type(exc).__name__})")
+            await conn.start()
+        except Exception as exc:  # every way of not getting a connection
+            failure = StoreUnavailable(f"database unavailable ({type(exc).__name__})")
+        else:
+            try:
+                async with conn.begin():
+                    return await operation(conn)
+            except DBAPIError as exc:
+                failure = (
+                    StoreUnavailable(f"database connection lost ({type(exc.orig).__name__})")
+                    if exc.connection_invalidated
+                    else _failure(exc)
+                )
+            except (OSError, TimeoutError) as exc:
+                failure = StoreUnavailable(f"database connection lost ({type(exc).__name__})")
+            except (StatementError, ValidationError) as exc:
+                # Not a database refusal: a statement that couldn't be built or a row
+                # that doesn't fit MemoryRecord. Type name only.
+                failure = StoreFailed(f"store error ({type(exc).__name__})")
+            finally:
+                # Closing a lost connection can fail too; that changes nothing above.
+                with contextlib.suppress(Exception):
+                    await conn.close()
         # Raised here, outside the except block, so the driver error isn't chained.
         raise failure
 
@@ -491,6 +635,14 @@ class MemoryStore:
         )
 
         async def insert(conn: AsyncConnection) -> MemoryRecord:
+            if not owner:
+                # Serialise proposals so two can't both pass the count at 49.
+                await conn.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _PENDING_LOCK})
+                count_sql = (
+                    f"SELECT count(*) FROM {TABLE} WHERE status = 'pending' AND {_NOT_EXPIRED}"  # noqa: S608
+                )
+                if (await conn.scalar(text(count_sql)) or 0) >= PENDING_MAX:
+                    raise PendingLimit
             record = _record((await conn.execute(text(sql), values)).one())
             kind: MemoryRecordEventType = (
                 "memory.approved" if record.status == "approved" else "memory.proposed"
@@ -498,6 +650,9 @@ class MemoryStore:
             await write_memory_event(conn, memory_record_event(kind, _meta(record)))
             return record
 
+        # Only an approved record can block a key, so only the owner's create needs
+        # the unthrottled clean-up; proposals keep the once-a-minute sweep.
+        await (self.expire() if owner and new.key is not None else self._sweep())
         record = await self._run(insert)
         logger.info(
             "Memory record created", extra={"record_id": str(record.id), "status": record.status}
@@ -529,6 +684,10 @@ class MemoryStore:
             if value is not None:
                 conditions.append(f"{name} = :{name}")
                 params[name] = value
+        if filters.query is not None:
+            # strpos, not LIKE: '%' and '_' in the query are plain characters.
+            conditions.append("strpos(lower(content), lower(:query)) > 0")
+            params["query"] = filters.query
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         sql = (
             f"SELECT {_COLUMNS} FROM {TABLE}{where}"  # noqa: S608 - fixed names only
@@ -538,6 +697,7 @@ class MemoryStore:
         async def select(conn: AsyncConnection) -> list[MemoryRecord]:
             return [_record(row) for row in await conn.execute(text(sql), params)]
 
+        await self._sweep()
         return await self._run(select)
 
     async def update(
@@ -552,10 +712,14 @@ class MemoryStore:
         if not columns:
             raise InvalidRecord("changes", "nothing to change")
         self._refuse_secrets(columns, "update")
+        if columns.get("key") is not None:
+            # An expired approved record still holds its key in the unique index, but
+            # the owner can't see it: clear expired records first, not a 409.
+            await self.expire()
         extra = ", privacy_source = 'owner'" if "privacy" in columns else ""
 
         async def change(conn: AsyncConnection) -> MemoryRecord:
-            _, old_level = await self._lock(conn, record_id)
+            _, old_level, _ = await self._lock(conn, record_id)
             record = await self._set(conn, record_id, columns, extra)
             changed = old_level if old_level != record.privacy else None
             event = memory_record_event("memory.updated", _meta(record), old_level=changed)
@@ -584,9 +748,12 @@ class MemoryStore:
         extra = ", status = 'approved', privacy_source = 'owner', approved_at = now()"
 
         async def change(conn: AsyncConnection) -> MemoryRecord:
-            status, _ = await self._lock(conn, record_id)
+            status, _, current_key = await self._lock(conn, record_id)
             if status != "pending":
                 raise NotPending(record_id)
+            key = columns.get("key", current_key)
+            if key is not None:
+                await self._replace_key(conn, record_id, str(key))
             record = await self._set(conn, record_id, columns, extra)
             await write_memory_event(conn, memory_record_event("memory.approved", _meta(record)))
             return record
@@ -597,33 +764,162 @@ class MemoryStore:
         )
         return record
 
+    async def reject(self, record_id: UUID, *, actor: Source) -> None:
+        """Reject a pending record (owner only): a hard delete, ``memory.rejected``."""
+        _require_owner(actor, "reject")
+        _check_id(record_id)
+        sql = f"DELETE FROM {TABLE} WHERE id = :id RETURNING {_META}"  # noqa: S608
+
+        async def remove(conn: AsyncConnection) -> None:
+            status, _, _ = await self._lock(conn, record_id)
+            if status != "pending":
+                raise NotPending(record_id)
+            row = (await conn.execute(text(sql), {"id": record_id})).one()
+            await write_memory_event(conn, memory_record_event("memory.rejected", _row_meta(row)))
+
+        await self._run(remove)
+        logger.info("Memory record rejected", extra={"record_id": str(record_id)})
+
+    async def export(self, *, actor: Source) -> MemoryExport:
+        """Every unexpired record (owner only), oldest first, with one
+        ``memory.exported`` event (the count) in the same transaction. If the event
+        can't be written, nothing is returned."""
+        _require_owner(actor, "export")
+        sql = (
+            f"SELECT {_COLUMNS} FROM {TABLE} WHERE {_NOT_EXPIRED}"  # noqa: S608 - fixed names
+            " ORDER BY created_at, id"
+        )
+
+        async def read(conn: AsyncConnection) -> MemoryExport:
+            # now() is fixed for the transaction: the time the filter used.
+            exported_at = (await conn.execute(text("SELECT now()"))).scalar_one()
+            records = tuple(_record(row) for row in await conn.execute(text(sql)))
+            await write_memory_event(conn, memory_exported(len(records)))
+            return MemoryExport(exported_at=exported_at, records=records)
+
+        export = await self._run(read)
+        logger.info("Memory exported", extra={"count": len(export.records)})
+        return export
+
+    async def expire(self) -> int:
+        """Delete every expired record (one ``memory.expired`` event each, in the same
+        transaction); the number deleted. Metadata columns only are read back."""
+        sql = f"DELETE FROM {TABLE} WHERE {_EXPIRED} RETURNING {_META}"  # noqa: S608
+
+        async def remove(conn: AsyncConnection) -> int:
+            rows = list(await conn.execute(text(sql)))
+            for row in rows:
+                event = memory_record_event("memory.expired", _row_meta(row))
+                await write_memory_event(conn, event)
+            return len(rows)
+
+        count = await self._run(remove)
+        self._last_sweep = time.monotonic()
+        if count:
+            logger.info("Expired memory records deleted", extra={"count": count})
+        return count
+
+    async def _sweep(self) -> None:
+        """``expire`` unless it ran in the last ``SWEEP_INTERVAL_S``. Its errors are
+        the caller's: with the database down, the read or write fails too (#80)."""
+        last = self._last_sweep
+        if last is None or time.monotonic() - last >= SWEEP_INTERVAL_S:
+            await self.expire()
+
     async def delete(self, record_id: UUID, *, actor: Source) -> None:
         """Hard delete (owner only), expired or not. No tombstone (ADR-024 §4)."""
         _require_owner(actor, "delete")
         _check_id(record_id)
         # Metadata columns only: the deleted content is never read back.
-        sql = f"DELETE FROM {TABLE} WHERE id = :id RETURNING id, category, source, privacy"  # noqa: S608
+        sql = f"DELETE FROM {TABLE} WHERE id = :id RETURNING {_META}"  # noqa: S608
 
         async def remove(conn: AsyncConnection) -> None:
             row = (await conn.execute(text(sql), {"id": record_id})).one_or_none()
             if row is None:
                 raise RecordNotFound(record_id)
-            meta = MemoryRecordMeta(
-                record_id=row.id, category=row.category, source=row.source, level=row.privacy
-            )
-            await write_memory_event(conn, memory_record_event("memory.deleted", meta))
+            await write_memory_event(conn, memory_record_event("memory.deleted", _row_meta(row)))
 
         await self._run(remove)
         logger.info("Memory record deleted", extra={"record_id": str(record_id)})
 
+    async def retrieval_candidates(
+        self, request_text: str | None, *, max_level: PrivacyLevel | None
+    ) -> Sequence[Candidate]:
+        """Approved, unexpired records that may be relevant to ``request_text``, at or
+        below ``max_level`` (ADR-024 §3, step 11, #139), best first, at most
+        ``CANDIDATE_MAX``.
+
+        A candidate is a keyed ``profile`` or ``preference`` record (always
+        relevant), or a full-text match of the request's words (``search_terms``).
+        This is a pre-filter only: ``memory.retrieval.select_memory`` applies the
+        privacy rules and the size limits again on what comes back, so a bug here
+        can't widen what a model gets. ``max_level=None`` (no memory for this call)
+        reads nothing. A read: no clean-up, no event; the request text is a query
+        parameter only, never logged."""
+        if max_level is None:
+            return []
+        _check_level(max_level)
+        levels = list(NON_SECRET_LEVELS[: NON_SECRET_LEVELS.index(max_level) + 1])
+        terms = search_terms(request_text)
+        keyed = "(key IS NOT NULL AND category IN :keyed_categories)"
+        params: dict[str, object] = {
+            "levels": levels,
+            "keyed_categories": list(KEYED_CATEGORIES),
+            "limit": CANDIDATE_MAX,
+        }
+        if terms is None:
+            match_rank, wanted = "0.0", keyed
+        else:
+            document = f"to_tsvector('{FTS_CONFIG}', content)"
+            query = f"websearch_to_tsquery('{FTS_CONFIG}', :terms)"
+            match_rank = (
+                f"CASE WHEN {document} @@ {query} THEN ts_rank({document}, {query}) ELSE 0.0 END"
+            )
+            wanted = f"({keyed} OR {document} @@ {query})"
+            params["terms"] = terms
+        sql = text(
+            f"SELECT {_COLUMNS}, {keyed} AS candidate_keyed,"  # noqa: S608 - fixed names only
+            f" ({match_rank})::float8 AS candidate_rank FROM {TABLE}"
+            f" WHERE status = 'approved' AND {_NOT_EXPIRED} AND privacy IN :levels AND {wanted}"
+            " ORDER BY candidate_keyed DESC, candidate_rank DESC, updated_at DESC, id"
+            " LIMIT :limit"
+        ).bindparams(
+            bindparam("levels", expanding=True), bindparam("keyed_categories", expanding=True)
+        )
+
+        async def select(conn: AsyncConnection) -> list[Candidate]:
+            found = []
+            for row in await conn.execute(sql, params):
+                values = dict(row._mapping)
+                keyed_value = bool(values.pop("candidate_keyed"))
+                rank = float(values.pop("candidate_rank"))
+                found.append(Candidate(MemoryRecord.model_validate(values), keyed_value, rank))
+            return found
+
+        return await self._run(select)
+
     @staticmethod
-    async def _lock(conn: AsyncConnection, record_id: UUID) -> tuple[str, PrivacyLevel]:
-        """Lock an unexpired record for this transaction; its status and level."""
-        sql = f"SELECT status, privacy FROM {TABLE} WHERE id = :id AND {_NOT_EXPIRED} FOR UPDATE"  # noqa: S608
+    async def _lock(conn: AsyncConnection, record_id: UUID) -> tuple[str, PrivacyLevel, str | None]:
+        """Lock an unexpired record for this transaction; its status, level and key."""
+        sql = (
+            f"SELECT status, privacy, key FROM {TABLE} WHERE id = :id AND {_NOT_EXPIRED} FOR UPDATE"  # noqa: S608
+        )
         row = (await conn.execute(text(sql), {"id": record_id})).one_or_none()
         if row is None:
             raise RecordNotFound(record_id)
-        return str(row.status), cast(PrivacyLevel, row.privacy)
+        return str(row.status), cast(PrivacyLevel, row.privacy), row.key
+
+    @staticmethod
+    async def _replace_key(conn: AsyncConnection, record_id: UUID, key: str) -> None:
+        """Delete the approved record that holds ``key`` (expired or not: the unique
+        index covers both), with ``memory.deleted``. Approve calls it first."""
+        sql = (
+            f"DELETE FROM {TABLE} WHERE key = :key AND status = 'approved' AND id <> :id"  # noqa: S608
+            f" RETURNING {_META}"
+        )
+        for row in list(await conn.execute(text(sql), {"key": key, "id": record_id})):
+            await write_memory_event(conn, memory_record_event("memory.deleted", _row_meta(row)))
+            logger.info("Memory record replaced by approval", extra={"record_id": str(row.id)})
 
     @staticmethod
     async def _set(

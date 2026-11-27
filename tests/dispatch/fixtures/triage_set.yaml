@@ -1,0 +1,57 @@
+# Triage eval set (ADR-030 step 4a). Closed issues from this repository.
+# expected: "claude" if the owner labelled the issue model:opus, or the merged PR
+# that closed it touched an always-Claude path (dispatch/rules.py); else "local".
+# deciding_files: for claude, the listed paths that PR touched (or every file, when
+# deciding_label decides); for local, every file it touched.
+issues:
+  # Local: the closing PR touched no always-Claude path.
+  - issue: 28  # PR #29
+    expected: local
+    deciding_files: [docs/CODE_TOUR.md, docs/README.md]
+  - issue: 37  # PR #53
+    expected: local
+    deciding_files:
+      - tests/chat_helpers.py
+      - tests/conftest.py
+      - tests/fakes.py
+      - tests/test_auth.py
+      - tests/test_chat.py
+      - tests/test_chat_output_cap.py
+      - tests/test_db_live.py
+      - tests/test_error_bodies.py
+      - tests/test_events_live.py
+      - tests/test_failover.py
+      - tests/test_hardware.py
+      - tests/test_ollama_host_trust.py
+      - tests/test_routing.py
+  # Claude: the owner labelled it model:opus, or the closing PR touched an
+  # always-Claude path.
+  - issue: 38  # PR #41
+    expected: claude
+    deciding_label: model:opus
+    deciding_files: [tests/conftest.py, tests/test_env_isolation.py]
+  - issue: 42  # PR #51
+    expected: claude
+    deciding_label: model:opus
+    deciding_files: [core/log.py, tests/test_auth.py, tests/test_log_redaction_docs.py]
+  - issue: 113  # PR #118
+    expected: claude
+    deciding_files: [core/config.py]
+  - issue: 106  # PR #108
+    expected: claude
+    deciding_files: [core/memory_api.py]
+  - issue: 48  # PR #50
+    expected: claude
+    deciding_files: [router/routing.py]
+  - issue: 84  # PR #86
+    expected: claude
+    deciding_files: [.claude/agents/reviewer.md, CLAUDE.md]
+  - issue: 26  # PR #27
+    expected: claude
+    deciding_files: [pyproject.toml, router/claude.py, router/routing.py, core/chat.py]
+  - issue: 126  # PR #127
+    expected: claude
+    deciding_files: [docs/adr/0030-dispatcher-prototype.md, docs/adr/0031-plane-github-sync.md]
+  - issue: 17  # PR #20
+    expected: claude
+    deciding_files: [docs/05_Security_and_Permissions.md]

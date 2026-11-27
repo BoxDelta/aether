@@ -11,7 +11,9 @@ the design, follow the ADR numbers into `docs/adr/`.
     (`request_context.py`), JSON logging, secret redaction and the shared
     "looks like a secret" check `SecretCheck` (`log.py`),
     the shared error format and 422 handler (`errors.py`), the `/chat`
-    endpoint (`chat.py`), `/ready` (`ready.py`), the Postgres
+    endpoint (`chat.py`), `/ready` (`ready.py`), the memory routes
+    (`memory_api.py`: list, get, search, owner create, approve,
+    reject, correct, delete and export), the Postgres
     engine and its privileged-role check (`db.py`; the app role may update
     and delete only in `memory_records`), the owner-only step
     that sets the app role's password (`db_admin.py`), verified backups
@@ -22,7 +24,8 @@ the design, follow the ADR numbers into `docs/adr/`.
 -   `router/`: "Nexus", which picks a model and calls it. The provider
     contract and privacy levels (`contract.py`), the routing rules and
     failover (`routing.py`), the GPU/RAM probe (`hardware.py`), the one
-    function every model call goes through (`identity_call.py`), and the two
+    function every model call goes through (`identity_call.py`, which also
+    refuses a cloud send whose text looks like a secret, #8), and the two
     adapters: `ollama.py` (local) and `claude.py` (cloud).
 -   `identity/`: `aether.yaml`, the single AETHER identity (name, voice,
     rules) that is applied to every model call (docs/07).
@@ -53,7 +56,25 @@ the design, follow the ADR numbers into `docs/adr/`.
     secret is refused on create, update and approve by `SecretCheck`
     (`core/log.py`: the log redactor's own patterns and configured
     values), which the store takes as a required constructor argument
-    (#70). Nothing calls it yet: no API or retrieval.
+    (#70). Its only caller is the memory API (`core/memory_api.py`, step
+    6), which builds it once with `SecretCheck.from_settings`, always as
+    the owner. With the database down every operation raises
+    `StoreUnavailable` and the API answers 503 (#80). Approve replaces an
+    approved record with the same key; reject deletes a pending one; at
+    most 50 pending; expired records (pending after 30 days, or past
+    `expires_at`) are hidden, then deleted by `expire`, which `list` and
+    `create` run at most once a minute, and unthrottled before the owner
+    sets a key (steps 8 and 9). `export` reads every unexpired record
+    (all levels, pending too) and writes one `memory.exported` event with
+    the count in the same transaction; it deletes nothing (step 10).
+    `retrieval_candidates` reads approved, unexpired records (keyed
+    profile/preference records plus full-text matches) at or below a
+    level, at most 100, with no event. `retrieval.py` then decides, as a
+    pure function, which of them one call may get (privacy rules,
+    ordering, at most 20 records and 4000 characters) and renders them
+    for `memory_context`; each provider sets `ProviderInfo.memory_limit`
+    (step 11). `MemoryRetriever` joins the two as the router's
+    `MemorySource` (step 12, below).
 -   `scripts/`: the identity continuity run (`identity_continuity.py`), a
     backup copy of the owner's `safemerge` fish function (never sourced),
     the systemd user timer templates for backups (`systemd/`, installed by
@@ -87,7 +108,8 @@ the design, follow the ADR numbers into `docs/adr/`.
 4.  **Validation and the privacy label.** `ChatRequest` (`core/chat.py`)
     validates the JSON. The caller sets `privacy`
     (public / personal / sensitive / secret); if they don't, it defaults to
-    `personal`. `allow_cloud` defaults to `false`. Validation errors never
+    `personal`. `allow_cloud` and `include_sensitive` default to `false`.
+    Validation errors never
     echo the input (`validation_error_handler`, `core/errors.py`). The
     handler `chat()` turns the body into a `ModelRequest`
     (`router/contract.py`) and records a `request_received` event.
@@ -101,20 +123,36 @@ the design, follow the ADR numbers into `docs/adr/`.
     -   `choose_route()` applies the ordered rules in the module docstring
         and returns a `RouteDecision` with a human-readable reason, or
         raises `NoRoute`.
-6.  **Identity and the provider call.** `call_with_identity()`
+6.  **Memory for this call.** `Router._call()` asks the `MemorySource`
+    (`memory/retrieval.py`'s `MemoryRetriever`) for this provider's memory,
+    after the route is chosen, with `ProviderInfo.memory_limit_for(...)`:
+    nothing without a limit (the cloud without `allow_cloud`), up to
+    personal for the cloud and an untrusted (off-network) Ollama host, which
+    need `allow_cloud` (ADR-032), up to
+    sensitive (with
+    `include_sensitive`) on a trusted one. The selection
+    (`router/memory_context.py`'s `MemoryContext`) is reported for the
+    `memory.context.retrieved` event. If the store fails, the call goes
+    ahead without memory.
+7.  **Identity and the provider call.** `call_with_identity()`
     (`router/identity_call.py`) sets the system prompt to the identity
-    prompt (the caller's own system text becomes its task section), logs
+    prompt, with the memory in its own section (the caller's own system
+    text becomes its task section) and the effective privacy level (the
+    higher of the request's and its memory's). It checks the memory again
+    against the provider's own limit (`check_memory`, `MemoryNotAllowed`),
+    echo-checks any provider error message against the text sent
+    (`router/echo.py`), logs
     one metadata-only `Model call` record and calls `Provider.generate()` (`router/contract.py`), which
     checks the privacy level again, applies the timeout and turns any
     failure into a `ProviderError` with a safe message. The adapter
     (`OllamaProvider` or `ClaudeProvider`) makes the HTTP call. Ollama may
     receive Sensitive data only on a loopback or private host (ADR-023).
     Claude calls are capped at `AETHER_CLOUD_MAX_OUTPUT_TOKENS`.
-7.  **Failover.** If the call fails with a retryable error, `handle()`
+8.  **Failover.** If the call fails with a retryable error, `handle()`
     asks `decide()` once more without that provider, so every rule still
-    applies to the fallback. A refusal or a cut-off answer is not an
+    applies to the fallback, and the fallback gets its own memory selection. A refusal or a cut-off answer is not an
     error and never fails over.
-8.  **Response.** `chat()` returns `ChatResponse` with the text, the
+9.  **Response.** `chat()` returns `ChatResponse` with the text, the
     provider, the route reason and token counts, or the shared error shape
     from `core/errors.py` (`RouteFailed` 502, `NoRoute` 503) that carries no
     exception text. Auth (401/503), the size limit (413) and validation

@@ -48,7 +48,7 @@ CANARY_KEY = "canary.memstore_41c9"
 class _NoEngine:
     """Fails the test if the store reaches for the database."""
 
-    def begin(self) -> Any:
+    def connect(self) -> Any:
         raise AssertionError("the store touched the database")
 
 
@@ -195,7 +195,7 @@ def test_bad_list_filters_are_refused(changes: dict[str, Any]) -> None:
 
 
 @pytest.mark.parametrize("actor", ["model", "tool", "Owner", None])
-def test_only_the_owner_may_update_approve_or_delete(actor: Any) -> None:
+def test_only_the_owner_may_update_approve_delete_or_export(actor: Any) -> None:
     store = no_db_store()
     record_id = uuid4()
     error = NotAllowed if actor in ("model", "tool") else InvalidRecord
@@ -205,6 +205,7 @@ def test_only_the_owner_may_update_approve_or_delete(actor: Any) -> None:
     )
     refused(lambda: asyncio.run(store.approve(record_id, Approval("public"), actor=actor)), error)
     refused(lambda: asyncio.run(store.delete(record_id, actor=actor)), error)
+    refused(lambda: asyncio.run(store.export(actor=actor)), error)
 
 
 def test_new_record_requires_a_source() -> None:
@@ -460,3 +461,18 @@ def test_store_matches_migration_0004() -> None:
     source = (REPO / "migrations/versions/0004_memory_records.py").read_text()
     assert f"key ~ '^{KEY_PATTERN}$'" in source
     assert set(MemoryRecord.model_fields) == set(re.findall(r'sa\.Column\(\s*"(\w+)"', source))
+
+
+# --- the search query filter (#92) ----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad", ["", "x" * (store_module.QUERY_MAX + 1), "tea\x00", "\ud800", 42, b"tea"]
+)
+def test_a_bad_query_is_refused(bad: Any) -> None:
+    exc = refused(lambda: ListFilter(query=bad))
+    assert isinstance(exc, InvalidRecord) and exc.field == "query"
+
+
+def test_the_query_stays_out_of_repr() -> None:
+    assert CANARY not in repr(ListFilter(query=CANARY))

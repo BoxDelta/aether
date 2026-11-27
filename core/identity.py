@@ -17,6 +17,16 @@ DEFAULT_IDENTITY_PATH = Path(__file__).resolve().parent.parent / "identity" / "a
 
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
+# The headings render_system_prompt starts its sections with. Memory text that
+# contains one is neutralised before it enters the prompt (memory/retrieval.py), so
+# a record can't appear to start a new section (ADR-024 §3).
+TONE_HEADING = "Tone:"
+PRINCIPLES_HEADING = "Principles:"
+NOTES_HEADING = "Notes for this model:"
+MEMORY_HEADING = "Relevant memory:"
+TASK_HEADING = "Task instructions:"
+SECTION_HEADINGS = (TONE_HEADING, PRINCIPLES_HEADING, NOTES_HEADING, MEMORY_HEADING, TASK_HEADING)
+
 
 class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -74,17 +84,17 @@ def render_system_prompt(
     lines = [
         f"You are {identity.name}. {identity.role}",
         "",
-        f"Tone: {identity.tone}",
+        f"{TONE_HEADING} {identity.tone}",
         "",
-        "Principles:",
+        PRINCIPLES_HEADING,
         *(f"{i}. {p}" for i, p in enumerate(identity.principles, start=1)),
     ]
     note = identity.model_notes.get(provider) if provider else None
     if note:
-        lines += ["", f"Notes for this model: {note}"]
+        lines += ["", f"{NOTES_HEADING} {note}"]
     sections = ["\n".join(lines)]
     if memory_context and memory_context.strip():
-        sections.append(f"Relevant memory:\n{memory_context.strip()}")
+        sections.append(f"{MEMORY_HEADING}\n{memory_context.strip()}")
     if task and task.strip():
-        sections.append(f"Task instructions:\n{task.strip()}")
+        sections.append(f"{TASK_HEADING}\n{task.strip()}")
     return "\n\n".join(sections)

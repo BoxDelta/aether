@@ -107,6 +107,30 @@ class ProviderInfo(_Frozen):
     default_model: NonEmptyStr
     # Highest privacy level this provider may receive. Never "secret".
     max_privacy: NonSecretLevel
+    # Highest level of *memory* this provider may get in a call (ADR-024 §3, #139).
+    # Set by each adapter from facts it has when it is built (host trust for Ollama),
+    # so selection never guesses trust from kind and max_privacy. None (the default):
+    # no memory at all, so a provider that doesn't set it fails closed.
+    memory_limit: NonSecretLevel | None = None
+    # A local provider whose data leaves this machine and network: an Ollama host
+    # that is not trusted (ADR-023) and not trusted by the owner's opt-in. Treated
+    # like the cloud for privacy, not for routing order (ADR-032): it needs
+    # allow_cloud, gets memory only with it, and gets the #8 tripwire.
+    off_network: bool = False
+
+    @property
+    def needs_allow_cloud(self) -> bool:
+        """Whether a request must set ``allow_cloud`` to reach this provider. Anything
+        not explicitly local and on-network does, so a new kind fails closed."""
+        return self.kind != "local" or self.off_network
+
+    @model_validator(mode="after")
+    def _off_network_is_a_capped_local_provider(self) -> "ProviderInfo":
+        if self.off_network and (
+            self.kind != "local" or privacy_rank(self.max_privacy) > privacy_rank("personal")
+        ):
+            raise ValueError("off_network is for a local provider capped at personal")
+        return self
 
     @model_validator(mode="after")
     def _cloud_never_gets_sensitive_by_default(self) -> "ProviderInfo":
@@ -115,6 +139,24 @@ class ProviderInfo(_Frozen):
         if self.kind == "cloud" and self.max_privacy == "sensitive":
             raise ValueError("cloud providers may not be configured to accept sensitive")
         return self
+
+    @model_validator(mode="after")
+    def _memory_limit_within_max_privacy(self) -> "ProviderInfo":
+        if self.memory_limit is not None and privacy_rank(self.memory_limit) > privacy_rank(
+            self.max_privacy
+        ):
+            raise ValueError("memory_limit may not be above max_privacy")
+        return self
+
+    def memory_limit_for(self, *, allow_cloud: bool) -> PrivacyLevel | None:
+        """The memory limit for one call (ADR-024 §3): ``None`` means no memory.
+
+        A provider that isn't explicitly local, or is off-network (ADR-032), is
+        treated as cloud, so a new kind fails closed: it gets no memory unless the
+        request has ``allow_cloud``."""
+        if self.needs_allow_cloud and not allow_cloud:
+            return None
+        return self.memory_limit
 
 
 # --- errors ----------------------------------------------------------------------
@@ -153,6 +195,28 @@ class ProviderBadResponse(ProviderError):
 
 class PrivacyNotAllowed(ProviderError):
     """The request's privacy level is above what this provider may receive."""
+
+
+class MemoryNotAllowed(PrivacyNotAllowed):
+    """A record selected for this call may not go to this provider (ADR-024 §3, the
+    ``call_with_identity`` backstop). Raised before anything is sent; never
+    retryable. The message is fixed: no record, level or ID."""
+
+    MESSAGE = "memory not allowed for this call; nothing sent"
+
+    def __init__(self, provider: str) -> None:
+        super().__init__(provider, self.MESSAGE, retryable=False)
+
+
+class SecretContentRefused(ProviderError):
+    """The text of a cloud send looks like a secret (#8). Raised before anything is
+    sent; never retryable, so routing never fails over with it. The message is fixed
+    and never says which text, pattern or value matched."""
+
+    MESSAGE = "request text looks like a secret; not sent to a provider off this network"
+
+    def __init__(self, provider: str) -> None:
+        super().__init__(provider, self.MESSAGE, retryable=False)
 
 
 # --- provider base class -------------------------------------------------------

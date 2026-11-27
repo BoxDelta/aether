@@ -7,10 +7,12 @@ Rules, in order:
 
 1. ``secret`` is never routed anywhere (docs/05 §7.1).
 2. A manual override picks that provider, but only if the request allows it
-   (cloud needs ``allow_cloud``, the provider must accept the privacy level) and
+   (cloud and an off-network local provider need ``allow_cloud``, ADR-032; the
+   provider must accept the privacy level) and
    it is available. Otherwise the request is refused; another provider is never
    substituted silently.
-3. Local, if it is available and has VRAM headroom.
+3. Local, if it is available and has VRAM headroom. An off-network local
+   provider (an untrusted Ollama host, ADR-032) counts only with ``allow_cloud``.
 4. Cloud, if ``allow_cloud`` is set, the privacy level allows it and it is
    available. ``allow_cloud`` defaults to false, so cloud is opt-in per request.
 5. Local without headroom, when it is the only allowed choice (the request is
@@ -18,7 +20,9 @@ Rules, in order:
 6. Otherwise refused with ``NoRoute``.
 
 Every decision carries a human-readable reason and is logged without prompt text.
-Routing calls providers only through ``call_with_identity`` (#16).
+Routing calls providers only through ``call_with_identity`` (#16), which refuses a
+cloud send whose text looks like a secret (#8, ``SecretContentRefused``, never
+retried or failed over). ``Router`` requires the ``SecretCheck`` for that.
 
 Failover (#19), in ``Router.handle``:
 
@@ -34,7 +38,18 @@ Failover (#19), in ``Router.handle``:
 - At most one fallback call; its failure ends the request. No loops.
 - Any failure after a call raises ``RouteFailed`` with every attempt; nothing is
   dropped silently. Error text comes from ``ProviderError.message``, which
-  adapters build from safe parts only.
+  adapters build from safe parts only and ``call_with_identity`` echo-checks.
+
+Memory (ADR-024 §3, step 12 of #58), in ``Router._call``: with a ``MemorySource``,
+every call, the fallback included, gets its own selection, made after its route is
+chosen, for the provider that will receive it, with that provider's
+``memory_limit_for(allow_cloud=...)``. A failover from a trusted local host to the
+cloud therefore drops Sensitive records. Routing itself uses the
+request's own level; memory never changes the route. If the source fails or takes
+longer than ``MEMORY_TIMEOUT_S``, the call goes ahead without memory (one
+metadata-only warning). ``on_memory`` reports each
+selection (``MemoryUse``) before the call, for the ``memory.context.retrieved``
+event and the events echo check.
 """
 
 import asyncio
@@ -46,6 +61,7 @@ from pydantic import BaseModel, ConfigDict
 
 from core.config import Settings
 from core.identity import Identity
+from core.log import SecretCheck
 from router import hardware
 from router.claude import ClaudeProvider
 from router.contract import (
@@ -59,9 +75,19 @@ from router.contract import (
 )
 from router.hardware import MIN_FREE_VRAM_BYTES, HardwareSnapshot, Headroom, has_local_headroom
 from router.identity_call import call_with_identity
+from router.memory_context import (
+    MemoryContext,
+    MemorySource,
+    effective_privacy,
+    fetch_level,
+)
 from router.ollama import OllamaProvider
 
 logger = logging.getLogger("aether.router.routing")
+
+# A memory read that takes longer than this is given up: the call goes ahead
+# without memory (docs/05 §12), so a stalled query can't hold /chat.
+MEMORY_TIMEOUT_S = 2.0
 
 
 class RouteOptions(BaseModel):
@@ -72,6 +98,9 @@ class RouteOptions(BaseModel):
     # Provider name (e.g. "ollama", "claude"). Bypasses the headroom rule, never
     # the allow_cloud or privacy rules.
     override: ProviderName | None = None
+    # Sensitive memory may be included in this request (docs/07 §6, ADR-024 §3).
+    # Never changes the route; only what a call's memory may hold.
+    include_sensitive: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +109,12 @@ class Candidate:
     kind: ProviderKind
     allows_privacy: bool
     available: bool
+    # Cloud, or a local provider off this network (ADR-032): needs allow_cloud.
+    # Required, so a caller that forgets it can't get an open default.
+    needs_allow_cloud: bool
+
+    def allowed_by(self, options: "RouteOptions") -> bool:
+        return options.allow_cloud or not (self.kind == "cloud" or self.needs_allow_cloud)
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +136,15 @@ class Attempt:
     @classmethod
     def from_error(cls, exc: ProviderError) -> "Attempt":
         return cls(exc.provider, type(exc).__name__, exc.message, exc.retryable)
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryUse:
+    """The memory selected for one call (``on_memory``); ``memory`` holds text."""
+
+    provider: str
+    memory: MemoryContext
+    effective_privacy: PrivacyLevel
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +194,8 @@ def _why_not(
     of_kind = [c for c in candidates if c.kind == kind]
     if not of_kind:
         return f"no {kind} provider configured"
+    if not any(c.allowed_by(options) for c in of_kind):
+        return f"{kind} host is off-network and this request does not allow cloud"
     if not any(c.allows_privacy for c in of_kind):
         return f"{kind} may not receive {privacy} data"
     return f"{kind} unavailable"
@@ -168,6 +214,8 @@ def _override_route(
         raise NoRoute(f"override '{name}' is not a configured provider")
     if match.kind == "cloud" and not options.allow_cloud:
         raise NoRoute(f"override '{name}' is cloud, but this request does not allow cloud")
+    if not match.allowed_by(options):
+        raise NoRoute(f"override '{name}' is off-network, but this request does not allow cloud")
     if not match.allows_privacy:
         raise NoRoute(f"override '{name}' may not receive {privacy} data")
     if not match.available:
@@ -192,7 +240,11 @@ def choose_route(
     if options.override is not None:
         return _override_route(privacy, options, candidates, headroom)
 
-    local = [c for c in candidates if c.kind == "local" and c.allows_privacy and c.available]
+    local = [
+        c
+        for c in candidates
+        if c.kind == "local" and c.allowed_by(options) and c.allows_privacy and c.available
+    ]
     cloud = [
         c
         for c in candidates
@@ -230,29 +282,40 @@ async def _available(provider: Provider) -> bool:
 
 
 class Router:
-    def __init__(
+    def __init__(  # noqa: PLR0913 - keyword-only options
         self,
         providers: Sequence[Provider],
         identity: Identity,
         *,
+        secret_check: SecretCheck,
         probe: Callable[[], HardwareSnapshot] = hardware.probe,
         min_free_vram_bytes: int = MIN_FREE_VRAM_BYTES,
+        memory: MemorySource | None = None,
     ) -> None:
         names = [p.name for p in providers]
         if len(set(names)) != len(names):
             raise ValueError("provider names must be unique")
+        # Required and type-checked, like MemoryStore's (#75): no router without it.
+        if not isinstance(secret_check, SecretCheck):
+            raise TypeError("secret_check must be a core.log.SecretCheck")
+        self._secret_check = secret_check
         self._providers = tuple(providers)
         self._by_name = {p.name: p for p in providers}
         self._identity = identity
         self._probe = probe
         self._min_free_vram_bytes = min_free_vram_bytes
+        self._memory = memory
 
     @classmethod
-    def from_settings(cls, settings: Settings, identity: Identity) -> "Router":
+    def from_settings(
+        cls, settings: Settings, identity: Identity, *, memory: MemorySource | None = None
+    ) -> "Router":
         # Local first: on equal footing, the local provider is preferred.
         return cls(
             [OllamaProvider.from_settings(settings), ClaudeProvider.from_settings(settings)],
             identity,
+            secret_check=SecretCheck.from_settings(settings),
+            memory=memory,
         )
 
     def provider(self, name: str) -> Provider | None:
@@ -306,7 +369,7 @@ class Router:
                 for p in self._providers
                 if p.name not in exclude
                 and p.allows(privacy)
-                and (p.info.kind == "local" or options.allow_cloud)
+                and (not p.info.needs_allow_cloud or options.allow_cloud)
             ]
             need_probe = any(p.info.kind == "local" for p in eligible)
             headroom_task = asyncio.ensure_future(self._headroom()) if need_probe else None
@@ -320,6 +383,7 @@ class Router:
                     kind=p.info.kind,
                     allows_privacy=p.allows(privacy),
                     available=available.get(p.name, False),
+                    needs_allow_cloud=p.info.needs_allow_cloud,
                 )
                 for p in self._providers
             ]
@@ -345,6 +409,7 @@ class Router:
         *,
         on_decision: Callable[[RouteDecision], None] | None = None,
         on_attempt_failed: Callable[[Attempt], None] | None = None,
+        on_memory: Callable[[MemoryUse], None] | None = None,
     ) -> RoutedResponse:
         """Decide, call through ``call_with_identity``, fail over at most once.
 
@@ -363,7 +428,7 @@ class Router:
         decision = await self.decide(request, options)
         _report(on_decision, decision, "Decision callback failed")
         try:
-            response = await self._call(decision, request)
+            response = await self._call(decision, request, options, on_memory)
         except ProviderError as exc:
             first = Attempt.from_error(exc)
             _report(on_attempt_failed, first, "Attempt callback failed")
@@ -373,22 +438,66 @@ class Router:
             # Any response is final, including finish_reason="refusal".
             return RoutedResponse(decision, response)
         _report(on_decision, fallback, "Decision callback failed")
-        return await self._call_fallback(fallback, request, first, on_attempt_failed)
+        return await self._call_fallback(
+            fallback, request, options, first, on_attempt_failed, on_memory
+        )
 
-    async def _call(self, decision: RouteDecision, request: ModelRequest) -> ModelResponse:
+    async def _call(
+        self,
+        decision: RouteDecision,
+        request: ModelRequest,
+        options: RouteOptions,
+        on_memory: Callable[[MemoryUse], None] | None,
+    ) -> ModelResponse:
         provider = self._by_name[decision.provider]
-        return await call_with_identity(provider, request, self._identity)
+        memory = await self._memory_for(provider, request, options)
+        if memory is not None:
+            use = MemoryUse(provider.name, memory, effective_privacy(request.privacy, memory))
+            _report(on_memory, use, "Memory callback failed")
+        return await call_with_identity(
+            provider,
+            request,
+            self._identity,
+            secret_check=self._secret_check,
+            memory=memory,
+            allow_cloud=options.allow_cloud,
+            include_sensitive=options.include_sensitive,
+        )
 
-    async def _call_fallback(
+    async def _memory_for(
+        self, provider: Provider, request: ModelRequest, options: RouteOptions
+    ) -> MemoryContext | None:
+        """This call's memory, or None if the provider may get none (no event)."""
+        limit = provider.info.memory_limit_for(allow_cloud=options.allow_cloud)
+        if self._memory is None or limit is None:
+            return None
+        try:
+            async with asyncio.timeout(MEMORY_TIMEOUT_S):
+                return await self._memory.context_for(
+                    _search_text(request),
+                    limit=fetch_level(limit, include_sensitive=options.include_sensitive),
+                    include_sensitive=options.include_sensitive,
+                )
+        except Exception as exc:  # memory is optional; the call goes ahead without it
+            logger.warning(
+                "Memory retrieval failed",
+                extra={"provider": provider.name, "error_type": type(exc).__name__},
+            )
+            return None
+
+    async def _call_fallback(  # noqa: PLR0913 - internal; one value per hook
         self,
         fallback: RouteDecision,
         request: ModelRequest,
+        options: RouteOptions,
         first: Attempt,
         on_attempt_failed: Callable[[Attempt], None] | None,
+        on_memory: Callable[[MemoryUse], None] | None,
     ) -> RoutedResponse:
-        """The one fallback call. Any failure ends routing: at most one fallback."""
+        """The one fallback call, with its own memory selection. Any failure ends
+        routing: at most one fallback."""
         try:
-            response = await self._call(fallback, request)
+            response = await self._call(fallback, request, options, on_memory)
         except ProviderError as exc:
             second = Attempt.from_error(exc)
             _report(on_attempt_failed, second, "Attempt callback failed")
@@ -435,11 +544,20 @@ class Router:
         raise RouteFailed(reason, [first]) from cause
 
 
-def _report[T: (RouteDecision, Attempt)](
+def _search_text(request: ModelRequest) -> str | None:
+    """The text memory is matched against: the latest user message."""
+    for message in reversed(request.messages):
+        if message.role == "user":
+            return message.content
+    return None
+
+
+def _report[T: (RouteDecision, Attempt, MemoryUse)](
     callback: Callable[[T], None] | None, value: T, failure_message: str
 ) -> None:
-    """Tell a reporting hook about a decision or a failed call (``on_decision`` /
-    ``on_attempt_failed``). A hook can never change or break routing."""
+    """Tell a reporting hook about a decision, a failed call or a memory selection
+    (``on_decision`` / ``on_attempt_failed`` / ``on_memory``). A hook can never
+    change or break routing."""
     if callback is None:
         return
     try:

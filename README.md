@@ -16,7 +16,9 @@ content itself.
 Status: early-stage and built by one person on Arch Linux (GNOME).
 Phases 0 and 1 are done: Core (the API), model routing and the identity
 layer work today. Phase 2 (shared memory) is in progress: the memory
-store exists, but there is no memory API or retrieval yet. A web UI
+store and its owner API (`/memory`: list, search, create, approve,
+correct, delete and export) exist, and approved memory goes into model
+calls within each provider's privacy limit. A web UI
 comes in Phase 3. Phase status lines are in
 [`docs/04_Development_Roadmap.md`](docs/04_Development_Roadmap.md). It is
 not production-ready, and it is built for a single user on their own
@@ -155,6 +157,15 @@ local models aren't capped by it. A request may lower the limit with
 Core at startup. A cut-off answer comes back with `"finish_reason": "length"`,
 sometimes with empty text if thinking used the whole budget.
 
+Approved memory is added to each model call within that provider's limit:
+Public and Personal on a trusted Ollama host (loopback, a private address,
+or any host with `AETHER_OLLAMA_TRUST_HOST=true`), Public and Personal for
+Claude and for an untrusted Ollama host (only when the request sets
+`"allow_cloud": true`). An untrusted Ollama host is treated like the cloud
+(ADR-032): it takes only requests with `allow_cloud`, and its sends get the
+same secret check. Sensitive memory is sent only to a trusted
+Ollama host, and only when the request sets `"include_sensitive": true`.
+
 ```fish
 set -l token (string replace -r '^AETHER_API_TOKEN=' '' (grep '^AETHER_API_TOKEN=' .env))
 curl -s http://127.0.0.1:8000/chat -H "authorization: Bearer $token" \
@@ -174,7 +185,9 @@ curl -s http://127.0.0.1:8000/ready -H "authorization: Bearer $token" | jq
 Errors come back as `{"request_id", "error": {"type", "message", "attempts"}}`:
 `502 RouteFailed` (providers failed; each attempt has provider, error type
 and a scrubbed message), `503 NoRoute` (no provider may take it, e.g. Secret
-data), `413` (body too large), `422` (invalid request, input not echoed),
+data), `413` (body too large), `422` (invalid request, input not echoed;
+or `SecretContentRefused`: the text looks like a secret, so it was not sent
+to the cloud),
 `401` (missing or wrong token), `503 AuthNotConfigured` (no valid token in
 `.env`). If `DATABASE_URL` is set, each request records
 metadata-only events after the response is sent. If the event write fails,
@@ -237,7 +250,7 @@ Two roles (ADR-020, #1, #12). The owner `aether` runs migrations only
 (`DATABASE_MIGRATION_URL`). Core connects as `aether_app`
 (`DATABASE_URL`), which can insert and read events but can't change or
 delete them, and Core refuses to start as the owner. On the
-`memory_records` table (ADR-024, no API yet) it can also update and
+`memory_records` table (ADR-024) it can also update and
 delete, but never truncate, add triggers, alter or drop. An install from
 before this change moves over with
 [`docs/runbooks/db-app-role.md`](docs/runbooks/db-app-role.md).
@@ -334,9 +347,11 @@ real database and going back are in
 -   Backups and the database are **not encrypted at rest** until you move
     them onto the encrypted volume (#57, ADR-026):
     [`docs/runbooks/encrypted-volume.md`](docs/runbooks/encrypted-volume.md).
-    Do that before real memory data is stored. Afterwards both are in one
-    LUKS2 container file, unlocked with `aether-vault open` after each
-    boot, and still on the same disk as each other.
+    Since the memory API (`POST /memory`) both hold full memory records
+    (content, key, level and provenance). Until the move, store only
+    invented data in memory. Afterwards both are in one LUKS2 container
+    file, unlocked with `aether-vault open` after each boot, and still on
+    the same disk as each other.
 -   A deleted record stays in backups until the last backup taken before
     the delete is pruned: about 5 weeks with daily backups.
 -   Roles aren't in a backup; a restore onto a new cluster recreates
