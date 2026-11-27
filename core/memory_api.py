@@ -64,6 +64,7 @@ from core.request_context import get_request_id
 from memory.store import (
     LIST_LIMIT_DEFAULT,
     LIST_LIMIT_MAX,
+    LIST_OFFSET_MAX,
     OWNER,
     QUERY_MAX,
     UNSET,
@@ -94,9 +95,8 @@ EXPORT_FORMAT: Literal["aether-memory"] = "aether-memory"
 EXPORT_VERSION: Literal[1] = 1
 BODY_PATHS = frozenset({MEMORY_PATH, SEARCH_PATH})
 BODY_PREFIXES = (MEMORY_PATH + "/",)  # /memory/{id}/approve and the like
-# Far more than any owner's memory; keeps OFFSET inside the database's bigint range,
-# so a huge value is a 422 and never a 500 from the driver.
-OFFSET_MAX = 1_000_000
+# The store's bound (memory/store.py), so the two can't drift apart (#107).
+OFFSET_MAX = LIST_OFFSET_MAX
 # A record is at most 1000 characters (memory.store.CONTENT_MAX); 16 KiB is plenty
 # even for 4-byte characters escaped in JSON.
 MAX_BODY_BYTES = 16 * 1024

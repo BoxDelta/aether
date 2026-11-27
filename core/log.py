@@ -29,10 +29,14 @@ The same values and patterns answer "does this text look like a secret?"
 content (ADR-024 §1, #70) and, later, cloud sends (#8). ``SECRET_FORMATS`` holds the
 patterns once for both; ``tests/test_secret_check.py`` fails if they drift apart.
 
+A record that can't be formatted or written never reaches stderr raw: the handler
+(``SafeStreamHandler``) writes one fixed line with the exception type only (#114).
+
 ``tests/test_log_redaction_docs.py`` fails if ``secrets_from()`` reads a setting
 or ``_KEY_PATTERNS`` gains a pattern that this docstring doesn't list.
 """
 
+import contextlib
 import json
 import logging
 import re
@@ -191,6 +195,38 @@ def secrets_from(settings: Settings) -> list[str]:
     return secrets
 
 
+class SafeStreamHandler(logging.StreamHandler):  # type: ignore[type-arg]
+    """A ``StreamHandler`` whose error path never writes the record (#114).
+
+    If formatting or writing a record raises (``logger.info("%s %s", one_arg)``, a
+    broken ``__repr__``, a closed stream), the stdlib ``handleError`` prints the raw
+    message, its arguments and a traceback to stderr, past the redactor. This one
+    writes a single fixed JSON line with the exception type and where the logging
+    call was (logger name, file, line, function: code locations, not data). The
+    record's message and arguments are never written.
+
+    Limit: records logged before ``configure_logging`` runs (at import time) still go
+    to Python's ``lastResort`` handler, whose error path is the stdlib one.
+    """
+
+    def handleError(self, record: logging.LogRecord) -> None:
+        error_type = type(sys.exc_info()[1]).__name__
+        line = json.dumps(
+            {
+                "level": "ERROR",
+                "logger": "aether.log",
+                "message": "Log record could not be written",
+                "error_type": error_type,
+                "source_logger": record.name,
+                "source_file": record.pathname,
+                "source_line": record.lineno,
+                "source_function": record.funcName,
+            }
+        )
+        with contextlib.suppress(Exception):  # nowhere left to report it
+            sys.stderr.write(line + "\n")
+
+
 # Paths whose query string never reaches the access log (#93): a memory key or a
 # search phrase sent by mistake in a URL is refused with 422, but uvicorn logs the
 # URL first. ``/memory`` and everything under it.
@@ -217,7 +253,7 @@ class AccessLogQueryFilter(logging.Filter):
 
 def configure_logging(settings: Settings, stream: TextIO | None = None) -> logging.Handler:
     """Install the JSON handler on the root logger. Safe to call more than once."""
-    handler = logging.StreamHandler(stream if stream is not None else sys.stdout)
+    handler = SafeStreamHandler(stream if stream is not None else sys.stdout)
     handler.set_name(_HANDLER_NAME)
     handler.setFormatter(JsonFormatter(Redactor(secrets_from(settings))))
 

@@ -83,7 +83,13 @@ class MemorySource(Protocol):
     """Where the router gets memory (``memory.retrieval.MemoryRetriever``)."""
 
     async def context_for(
-        self, request_text: str | None, *, limit: PrivacyLevel, include_sensitive: bool
+        self,
+        request_text: str | None,
+        *,
+        limit: PrivacyLevel,
+        include_sensitive: bool,
+        max_records: int,
+        max_chars: int,
     ) -> MemoryContext: ...
 
 

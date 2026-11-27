@@ -194,6 +194,11 @@ def test_smi_unparseable_output_gives_unknown(monkeypatch: pytest.MonkeyPatch) -
         ("8192, 1692\n", None),
         ("[N/A], [N/A], 34\n", None),
         ("8192 MiB, 1692 MiB, 34 %\n", None),  # units not stripped: refuse to guess
+        # "²" passes str.isdigit() but int() raises; other non-ASCII digits are
+        # refused too rather than guessed at. The probe never raises (#121).
+        ("8192, 1692, \u00b2\n", GpuState("nvidia-smi", 8192 * MIB, 1692 * MIB, None)),
+        ("\uff18\uff11\uff19\uff12, 1692, 34\n", None),  # fullwidth digits
+        ("8192, \u0661\u0666\u0669\u0662, 34\n", None),  # Arabic-Indic digits
     ],
 )
 def test_parse_nvidia_smi(output: str, expected: GpuState | None) -> None:
@@ -290,3 +295,12 @@ def test_no_headroom_when_unknown() -> None:
 def test_custom_reserve() -> None:
     assert has_local_headroom(snapshot(3 * GIB), min_free_vram_bytes=4 * GIB).ok is False
     assert has_local_headroom(snapshot(3 * GIB), min_free_vram_bytes=2 * GIB).ok is True
+
+
+def test_nvidia_smi_fallback_is_probed_on_every_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    # No cache: each routing decision sees the GPU as it is now (#121).
+    use_nvml(monkeypatch, None)
+    seen = use_smi(monkeypatch, stdout="8192, 2048, 40\n")
+    for _ in range(3):
+        assert probe_gpu().source == "nvidia-smi"
+    assert len(seen) == 3

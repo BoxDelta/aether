@@ -16,14 +16,18 @@ import pytest
 
 import core.backup
 from core.backup import (
+    DUMP_TIMEOUT_S,
+    VERIFY_TIMEOUT_S,
     Backup,
     BackupError,
     backup_dir,
     dump_argv,
     keep,
+    list_argv,
     list_backups,
     parse_backup,
     prune,
+    read_argv,
     run_backup,
 )
 from core.config import Settings
@@ -184,7 +188,7 @@ def test_successful_run_writes_a_private_verified_file(folder: Path) -> None:
     assert result.file_name == path.name and result.size_bytes == len(docker.dump)
     assert path.read_bytes() == docker.dump
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
-    assert [c[4:] for c in docker.calls][1:] == [
+    assert [c[6:] for c in docker.calls][1:] == [
         ["pg_restore", "--list"],
         ["pg_restore", "--file=/dev/null"],
     ]
@@ -197,6 +201,46 @@ def test_dump_runs_in_the_container_without_any_secret() -> None:
     assert argv[:4] == ["docker", "exec", "-i", "aether-postgres-1"]
     assert "--no-password" in argv and "--format=custom" in argv
     assert not any("://" in a or "password=" in a.lower() for a in argv)
+
+
+@pytest.mark.parametrize(
+    ("argv", "tool", "outer"),
+    [
+        (dump_argv("aether-postgres-1", "aether", "aether"), "pg_dump", DUMP_TIMEOUT_S),
+        (list_argv("aether-postgres-1"), "pg_restore", VERIFY_TIMEOUT_S),
+        (read_argv("aether-postgres-1"), "pg_restore", VERIFY_TIMEOUT_S),
+    ],
+)
+def test_tools_run_under_the_containers_own_timeout(argv: list[str], tool: str, outer: int) -> None:
+    # The client timeout kills only `docker exec`; the tool itself must stop too, and
+    # first, so a hung dump can't overlap the next run (#117).
+    assert argv[4] == "timeout"
+    assert 0 < int(argv[5]) < outer
+    assert argv[6] == tool
+
+
+def test_a_file_that_cant_be_pruned_is_a_warning_not_a_failure(
+    folder: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    for d in range(1, 40):
+        old_backup(folder, d)
+    real_unlink = Path.unlink
+    refused: list[Path] = []
+
+    def unlink(self: Path, missing_ok: bool = False) -> None:
+        if self.name.endswith(".dump") and not refused:
+            refused.append(self)
+            raise PermissionError(f"cannot remove {self}")
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    with caplog.at_level(logging.WARNING, logger="aether.backup"):
+        result = run_backup(folder, now=NOW, runner=FakeDocker())
+    assert refused and refused[0].exists()
+    assert (folder / result.file_name).exists()
+    [warning] = [r for r in caplog.records if r.getMessage() == "Old backup not pruned"]
+    assert warning.error_type == "PermissionError"  # type: ignore[attr-defined]
+    assert str(folder) not in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -513,6 +557,21 @@ def test_a_bad_setting_logs_one_line(
     [record] = [json.loads(line) for line in out.splitlines()]
     assert record["stage"] == "config" and record["error_type"] == "ValueError"
     assert CANARY_PASSWORD not in out and "Traceback" not in out
+
+
+def test_a_bad_environment_variable_still_logs_one_line(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The fallback logging must not read the environment again (#117): a bad
+    # LOG_LEVEL used to raise a second, uncaught ValidationError with a traceback.
+    monkeypatch.setenv("LOG_LEVEL", f"bogus-{CANARY_PASSWORD}")
+    monkeypatch.setattr(core.backup, "get_settings", lambda: Settings(_env_file=None))
+    assert core.backup.main([]) == 1
+    captured = capsys.readouterr()
+    [record] = [json.loads(line) for line in captured.out.splitlines()]
+    assert record["stage"] == "config" and record["error_type"] == "ValidationError"
+    for text in (captured.out, captured.err):
+        assert CANARY_PASSWORD not in text and "Traceback" not in text
 
 
 def test_invalid_database_name_is_not_echoed(
