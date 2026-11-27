@@ -36,7 +36,8 @@ by class, wherever `OLLAMA_HOST` pointed. A remote or https
     logs a fixed-text warning that the opt-in is active.
 5.  The provider stays `kind="local"`, so routing rules are unchanged:
     a Personal request can still go to an untrusted Ollama host without
-    `allow_cloud` (#22).
+    `allow_cloud` (#22). **Amended by ADR-032 (2026-11-27):** an untrusted
+    host is off-network and needs `allow_cloud`, like the cloud.
 
 Options considered: resolving DNS and checking the addresses (rejected:
 DNS can change after startup, and a lookup is itself a leak); refusing
@@ -56,7 +57,8 @@ setup for Public and Personal use); treating an untrusted host as
     network the owner doesn't control (for example public Wi-Fi). The
     opt-in trusts the host the owner names, with no further check.
     Personal data still goes to an untrusted Ollama host without
-    `allow_cloud` (#22). Because the client ignores the environment, an
+    `allow_cloud` (#22). **Amended by ADR-032:** no longer; it needs
+    `allow_cloud`. Because the client ignores the environment, an
     https `OLLAMA_HOST` signed by a private CA is not trusted:
     `SSL_CERT_FILE`/`SSL_CERT_DIR` are ignored and httpx verifies
     against the certifi bundle, not the system trust store (#24).
@@ -65,4 +67,4 @@ setup for Public and Personal use); treating an untrusted host as
 
 Memory starts sending Personal context automatically; Core runs on more
 than one machine; or an untrusted host should be treated like cloud
-(`allow_cloud` required).
+(`allow_cloud` required): done in ADR-032 (2026-11-27).

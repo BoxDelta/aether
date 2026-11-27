@@ -59,3 +59,5 @@ ADR-009 onward have their own files here.
     2026-11-26).
 -   **ADR-031:** Plane as a one-way mirror of GitHub Issues; partly
     supersedes ADR-010. Proposed (2026-11-26).
+-   **ADR-032:** An untrusted Ollama host needs `allow_cloud`, like the
+    cloud (#22; amends ADR-023 §5). Accepted (owner, 2026-11-27).

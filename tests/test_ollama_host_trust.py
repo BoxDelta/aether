@@ -133,7 +133,7 @@ def test_untrusted_host_warning_is_metadata_only(caplog: pytest.LogCaptureFixtur
 
     [record] = caplog.records
     assert record.levelno == logging.WARNING
-    assert "capped at personal" in record.getMessage()
+    assert "treated like the cloud" in record.getMessage()
     assert "host_category" not in record.__dict__  # fixed text, no extra fields
     assert p.host_category == "hostname"
     assert all(UNTRUSTED_HOST_MARKER not in str(r.__dict__) for r in caplog.records)

@@ -7,10 +7,12 @@ Rules, in order:
 
 1. ``secret`` is never routed anywhere (docs/05 §7.1).
 2. A manual override picks that provider, but only if the request allows it
-   (cloud needs ``allow_cloud``, the provider must accept the privacy level) and
+   (cloud and an off-network local provider need ``allow_cloud``, ADR-032; the
+   provider must accept the privacy level) and
    it is available. Otherwise the request is refused; another provider is never
    substituted silently.
-3. Local, if it is available and has VRAM headroom.
+3. Local, if it is available and has VRAM headroom. An off-network local
+   provider (an untrusted Ollama host, ADR-032) counts only with ``allow_cloud``.
 4. Cloud, if ``allow_cloud`` is set, the privacy level allows it and it is
    available. ``allow_cloud`` defaults to false, so cloud is opt-in per request.
 5. Local without headroom, when it is the only allowed choice (the request is
@@ -107,6 +109,12 @@ class Candidate:
     kind: ProviderKind
     allows_privacy: bool
     available: bool
+    # Cloud, or a local provider off this network (ADR-032): needs allow_cloud.
+    # Required, so a caller that forgets it can't get an open default.
+    needs_allow_cloud: bool
+
+    def allowed_by(self, options: "RouteOptions") -> bool:
+        return options.allow_cloud or not (self.kind == "cloud" or self.needs_allow_cloud)
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +194,8 @@ def _why_not(
     of_kind = [c for c in candidates if c.kind == kind]
     if not of_kind:
         return f"no {kind} provider configured"
+    if not any(c.allowed_by(options) for c in of_kind):
+        return f"{kind} host is off-network and this request does not allow cloud"
     if not any(c.allows_privacy for c in of_kind):
         return f"{kind} may not receive {privacy} data"
     return f"{kind} unavailable"
@@ -204,6 +214,8 @@ def _override_route(
         raise NoRoute(f"override '{name}' is not a configured provider")
     if match.kind == "cloud" and not options.allow_cloud:
         raise NoRoute(f"override '{name}' is cloud, but this request does not allow cloud")
+    if not match.allowed_by(options):
+        raise NoRoute(f"override '{name}' is off-network, but this request does not allow cloud")
     if not match.allows_privacy:
         raise NoRoute(f"override '{name}' may not receive {privacy} data")
     if not match.available:
@@ -228,7 +240,11 @@ def choose_route(
     if options.override is not None:
         return _override_route(privacy, options, candidates, headroom)
 
-    local = [c for c in candidates if c.kind == "local" and c.allows_privacy and c.available]
+    local = [
+        c
+        for c in candidates
+        if c.kind == "local" and c.allowed_by(options) and c.allows_privacy and c.available
+    ]
     cloud = [
         c
         for c in candidates
@@ -353,7 +369,7 @@ class Router:
                 for p in self._providers
                 if p.name not in exclude
                 and p.allows(privacy)
-                and (p.info.kind == "local" or options.allow_cloud)
+                and (not p.info.needs_allow_cloud or options.allow_cloud)
             ]
             need_probe = any(p.info.kind == "local" for p in eligible)
             headroom_task = asyncio.ensure_future(self._headroom()) if need_probe else None
@@ -367,6 +383,7 @@ class Router:
                     kind=p.info.kind,
                     allows_privacy=p.allows(privacy),
                     available=available.get(p.name, False),
+                    needs_allow_cloud=p.info.needs_allow_cloud,
                 )
                 for p in self._providers
             ]

@@ -193,7 +193,7 @@ def test_include_sensitive_reaches_a_trusted_local_host(identity: Identity) -> N
     assert src.asked[0].limit == "sensitive"
 
 
-def test_untrusted_local_host_gets_public_only(identity: Identity) -> None:
+def test_a_local_host_limited_to_public_gets_public_only(identity: Identity) -> None:
     p = local("public")
 
     handle(
@@ -357,7 +357,9 @@ def test_failover_without_allow_cloud_never_reads_for_the_cloud(identity: Identi
         ("cloud", ("personal",), True, False),  # personal to a cloud limited to public
         ("cloud", ("sensitive",), True, True),  # sensitive to the cloud, ever
         ("cloud", ("public",), False, False),  # cloud without allow_cloud
-        ("untrusted", ("personal",), False, False),  # personal to an untrusted host
+        ("public-local", ("personal",), False, False),  # above a local public limit
+        ("off-network", ("public",), False, False),  # off-network without allow_cloud
+        ("off-network", ("sensitive",), True, True),  # sensitive off-network, ever
         ("trusted", ("sensitive",), False, False),  # sensitive without include_sensitive
         ("none", ("public",), False, False),  # a provider without a memory limit
         ("trusted", ("public", "sensitive"), False, False),  # one bad record is enough
@@ -372,7 +374,8 @@ def test_backstop_refuses_a_wrong_selection_before_sending(
 ) -> None:
     p = {
         "cloud": cloud(),
-        "untrusted": local("public"),
+        "public-local": local("public"),
+        "off-network": FakeProvider("ollama", "local", memory_limit="personal", off_network=True),
         "trusted": local("sensitive"),
         "none": local(None),
     }[provider]

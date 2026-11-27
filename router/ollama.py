@@ -102,9 +102,11 @@ class OllamaProvider(Provider):
                 # host (#10); never Secret (docs/05 §7.1).
                 max_privacy="sensitive" if trusted else "personal",
                 # Memory (ADR-024 §3): up to sensitive on a trusted host, including one
-                # trusted by AETHER_OLLAMA_TRUST_HOST (the owner's explicit statement);
-                # public only on any other host until #22 is decided (D4).
-                memory_limit="sensitive" if trusted else "public",
+                # trusted by AETHER_OLLAMA_TRUST_HOST (the owner's explicit statement).
+                # Any other host is off-network (ADR-032): like the cloud, it needs
+                # allow_cloud for requests and memory, and gets up to personal.
+                memory_limit="sensitive" if trusted else "personal",
+                off_network=not trusted,
             )
         )
         self.host_category: HostCategory = category
@@ -112,9 +114,9 @@ class OllamaProvider(Provider):
             # Fixed text only: no variable reaches the log call, so the host can't
             # leak. The category stays on the provider (host_category).
             logger.warning(
-                "OLLAMA_HOST is not loopback or a private address; Ollama is capped at "
-                "personal and will refuse sensitive requests. Set AETHER_OLLAMA_TRUST_HOST "
-                "only if you deliberately trust that host.",
+                "OLLAMA_HOST is not loopback or a private address; Ollama is treated like "
+                "the cloud: it takes only requests with allow_cloud, at most personal. Set "
+                "AETHER_OLLAMA_TRUST_HOST only if you deliberately trust that host.",
             )
         elif category not in TRUSTED_CATEGORIES:
             logger.warning(

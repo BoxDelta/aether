@@ -305,7 +305,8 @@ in `include_by_default` (Public, Personal), Sensitive only with the
 request's `include_sensitive`, never Secret, and never above the
 provider's `memory_limit` (the cloud: up to Personal, since the
 content tripwire (#8) checks memory text too, and nothing without
-`allow_cloud`; an untrusted Ollama host: Public only; a trusted one: up to
+`allow_cloud`; an untrusted Ollama host: the same as the cloud
+(ADR-032); a trusted one: up to
 Sensitive). The request sent carries the effective level (the higher of
 the request's and its memory's). `call_with_identity` checks every
 record again against the provider's own limit and refuses the call
@@ -377,11 +378,10 @@ message that never says which text, pattern or value matched. The
 attempt, its error type and the `request.failed` event are recorded,
 metadata only. A manual override to the cloud and a failover from local
 to the cloud are refused the same way. Any provider kind other than
-`local` is checked, so a new kind fails closed. Local sends are not
-checked. That includes an Ollama host that is not on this machine: an
-untrusted `OLLAMA_HOST`, or one trusted with `AETHER_OLLAMA_TRUST_HOST`,
-is still `local` (ADR-023), and whether it should get this check is part
-of #22. `Router` and `call_with_identity`
+`local` is checked, so a new kind fails closed, and so is an untrusted
+`OLLAMA_HOST` (off-network, ADR-032). Sends to a trusted Ollama host are
+not checked, including one trusted with `AETHER_OLLAMA_TRUST_HOST`, which
+may be on another machine: the opt-in is the owner's statement of trust. `Router` and `call_with_identity`
 require a `SecretCheck` (type-checked); `Router.from_settings` builds it
 with `SecretCheck.from_settings`. The check covers each message and the
 system prompt, and memory goes into the system prompt, so the memory
@@ -408,17 +408,20 @@ proxy environment variables, so it only talks to the host it checked:
     127.0.0.0/8, ::1, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 and
     link-local (169.254.0.0/16, fe80::/10).
 -   Any other host (a name, a public IP, an overlay or CGNAT address,
-    IPv6 unique-local): Ollama is capped at `personal`, Sensitive
-    requests are refused, and Core logs one fixed-text startup warning
-    that carries no host or other value.
+    IPv6 unique-local) is **off-network** and treated like the cloud for
+    privacy (ADR-032, #22): it takes only requests with `allow_cloud`, at
+    most `personal` (Sensitive requests are refused), gets memory only
+    with `allow_cloud` and up to Personal, and its sends get the content
+    tripwire. It stays `kind="local"`, so with `allow_cloud` it is still
+    preferred over the cloud when it has headroom. Core logs one
+    fixed-text startup warning that carries no host or other value.
 -   `AETHER_OLLAMA_TRUST_HOST=true` (off by default) trusts such a host
     deliberately, for example a private overlay network; Core then logs
     that the opt-in is active.
 -   Known limitations: a private-range address is trusted even on a
     network the owner doesn't control; the opt-in is not checked
-    further; and an untrusted Ollama host still receives Personal
-    requests without `allow_cloud`, because it stays `kind="local"`
-    (#22); and an https `OLLAMA_HOST` signed by a private CA is not
+    further; `allow_cloud` also covers an off-network Ollama host, which
+    its name doesn't say; and an https `OLLAMA_HOST` signed by a private CA is not
     trusted, because the client ignores `SSL_CERT_FILE`/`SSL_CERT_DIR`
     and verifies against the certifi bundle, not the system trust store
     (#24).
