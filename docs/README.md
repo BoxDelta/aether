@@ -4,7 +4,7 @@
 **Document set:** Initial engineering baseline\
 **Status:** Phases 0, 1 and 2 (Memory) done; Phase 3 in progress (see
 `04_Development_Roadmap.md`)\
-**Last updated:** 2026-11-26 (docs refresh, ADR-027 to ADR-029)
+**Last updated:** 2026-11-27 (Phase 3 plan, doc 08, ADR-034 to ADR-039)
 
 ## What is AETHER?
 

@@ -86,7 +86,7 @@ Follow `04_Development_Roadmap.md`. In short:
 3.  Phase 2: Memory. Done (exit check passed 2026-11-27; build order:
     ADR-024 §9, #58).
 4.  Phase 3: web UI, phone access, tools, n8n. In progress (since
-    2026-11-27; build order to be agreed).
+    2026-11-27; build order in `08_Phase_3_Build_Order.md`).
 
 The status line under each phase in `04` is the source of truth.
 
@@ -100,11 +100,14 @@ Android route (mobile web, ADR-016); backend (Python + FastAPI,
 ADR-017); Python tooling (uv + mypy, ADR-019); orchestration (thin
 AETHER-owned orchestrator, ADR-005); identity name and default tone (`07`);
 privacy levels (`05` section 7.1, confirmed 2026-11-26); monthly cloud
-API cost ceiling ($5 per month in the Anthropic console, `00`).
+API cost ceiling ($5 per month in the Anthropic console, `00`); web UI stack (ADR-034); web and
+API authentication (ADR-035); which tool actions run without
+confirmation (ADR-036: Low and Moderate run under granted, scoped
+permission; High needs approval in the UI every time; no Critical tools
+in v1).
 
 Still open:
 
--   What tool actions are allowed without confirmation?
 -   What should continue working when the home PC is off?
 
 ## 7. Definition of an acceptable implementation contribution
