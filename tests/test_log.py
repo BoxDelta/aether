@@ -228,15 +228,33 @@ def test_a_record_that_fails_to_format_writes_one_fixed_line_to_stderr(
     assert CONFIGURED_KEY not in err
     assert "token" not in err
     assert "Traceback" not in err
-    assert [json.loads(line) for line in err.splitlines()] == [
-        {
-            "level": "ERROR",
-            "logger": "aether.log",
-            "message": "Log record could not be written",
-            "error_type": error_type,
-        }
-    ]
+    [line] = [json.loads(line) for line in err.splitlines()]
+    assert line == {
+        "level": "ERROR",
+        "logger": "aether.log",
+        "message": "Log record could not be written",
+        "error_type": error_type,
+        # Where the broken call was: code locations, not data.
+        "source_logger": "aether.test",
+        "source_file": __file__,
+        "source_line": 1,
+        "source_function": None,
+    }
     assert out.getvalue() == ""  # nothing half-written to the log itself
+
+
+def test_a_write_to_a_closed_stream_writes_one_fixed_line(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    out = io.StringIO()
+    h = configure_logging(settings(anthropic_api_key=CONFIGURED_KEY), stream=out)
+    out.close()
+    h.handle(record("token %s", (CONFIGURED_KEY,)))
+
+    err = capsys.readouterr().err
+    assert CONFIGURED_KEY not in err and "Traceback" not in err
+    [line] = [json.loads(line) for line in err.splitlines()]
+    assert line["error_type"] == "ValueError"
 
 
 def test_logging_still_works_after_a_failed_record(

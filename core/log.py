@@ -201,11 +201,15 @@ class SafeStreamHandler(logging.StreamHandler):  # type: ignore[type-arg]
     If formatting or writing a record raises (``logger.info("%s %s", one_arg)``, a
     broken ``__repr__``, a closed stream), the stdlib ``handleError`` prints the raw
     message, its arguments and a traceback to stderr, past the redactor. This one
-    writes a single fixed JSON line with the exception type only.
+    writes a single fixed JSON line with the exception type and where the logging
+    call was (logger name, file, line, function: code locations, not data). The
+    record's message and arguments are never written.
+
+    Limit: records logged before ``configure_logging`` runs (at import time) still go
+    to Python's ``lastResort`` handler, whose error path is the stdlib one.
     """
 
-    def handleError(self, record: logging.LogRecord) -> None:  # noqa: ARG002
-        # ``record`` is never written: that is the point.
+    def handleError(self, record: logging.LogRecord) -> None:
         error_type = type(sys.exc_info()[1]).__name__
         line = json.dumps(
             {
@@ -213,6 +217,10 @@ class SafeStreamHandler(logging.StreamHandler):  # type: ignore[type-arg]
                 "logger": "aether.log",
                 "message": "Log record could not be written",
                 "error_type": error_type,
+                "source_logger": record.name,
+                "source_file": record.pathname,
+                "source_line": record.lineno,
+                "source_function": record.funcName,
             }
         )
         with contextlib.suppress(Exception):  # nowhere left to report it

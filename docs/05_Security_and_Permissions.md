@@ -106,7 +106,9 @@ confidence is not a substitute for authorization.
     configured or not (`core/log.py`; its module docstring is the full
     list). A record that fails to format or write (a missing argument, a
     broken `repr`) is never printed raw: the handler writes one fixed
-    stderr line with the exception type only (#114). Database errors are
+    stderr line with the exception type and the logging call's location
+    only (#114). Records logged before logging is configured (at import
+    time) still use Python's own fallback. Database errors are
     reported from safe parts only (`core/db.py`, ADR-020).
 -   The Claude client takes its key and endpoint from AETHER's settings:
     `router/claude.py` passes the API key and the fixed base URL
