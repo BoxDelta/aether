@@ -159,13 +159,17 @@ class RequestContextMiddleware:
             # this exception happens after they are reset. Type and frames only: the
             # message can hold values (#124). The frames' source lines are code.
             error_type = type(exc).__name__
+            try:
+                chain = exception_chain(exc)
+            except Exception:
+                chain = "<chain unavailable>"
             logger.error(
                 "Unhandled exception",
                 extra={
                     "path": scope.get("path"),
                     "error_type": error_type,
                     "frames": "".join(traceback.format_tb(exc.__traceback__)),
-                    "chain": exception_chain(exc),
+                    "chain": chain,
                 },
             )
             # Starlette builds its 500 response outside this middleware, so it would
