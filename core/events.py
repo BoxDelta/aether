@@ -535,10 +535,6 @@ class EventWriter:
         self._engine = engine
         self._redact = redactor
 
-    async def write(self, event: Event, *, request: ModelRequest | None = None) -> int:
-        async with self._engine.begin() as conn:
-            return await self.write_with(conn, event, request=request)
-
     async def write_with(
         self,
         conn: AsyncConnection,
