@@ -1,11 +1,12 @@
 """Dispatcher settings: env file only, mode 600, loopback LiteLLM, no secret in errors."""
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from dispatch.config import ConfigError, load_settings
-from tests.dispatch.helpers import OWNER, fake_value, write_env
+from tests.dispatch.helpers import OWNER, fake_value, fake_webhook, write_env
 
 
 def test_loads_from_file(tmp_path: Path) -> None:
@@ -75,3 +76,41 @@ def test_loopback_urls_accepted(tmp_path: Path, url: str) -> None:
 def test_owner_and_repo_are_plain_names(tmp_path: Path, name: str) -> None:
     with pytest.raises(ConfigError, match="dispatch_repo"):
         load_settings(write_env(tmp_path / "d.env", DISPATCH_REPO=name))
+
+
+def test_webhook_is_optional(tmp_path: Path) -> None:
+    settings = load_settings(write_env(tmp_path / "d.env", DISPATCH_DISCORD_WEBHOOK=""))
+    assert settings.dispatch_discord_webhook is None
+
+
+def test_webhook_loaded_as_secret(tmp_path: Path) -> None:
+    url = fake_webhook()
+    settings = load_settings(write_env(tmp_path / "d.env", DISPATCH_DISCORD_WEBHOOK=url))
+    assert settings.dispatch_discord_webhook is not None
+    assert settings.dispatch_discord_webhook.get_secret_value() == url
+    assert url not in repr(settings)
+
+
+@pytest.mark.parametrize(
+    "transform",
+    [
+        lambda u: u.replace("https://", "http://"),
+        lambda u: u.replace("discord.com", "discordapp.com"),
+        lambda u: u.replace("discord.com", "discord.com.evil.example"),
+        lambda u: u.replace("discord.com", "evil.example/discord.com"),
+        lambda u: u.replace("discord.com", "canary.discord.com"),
+        lambda u: u.replace("discord.com", "discord.com:8443"),
+        lambda u: u.replace("discord.com", "user@discord.com"),
+        lambda u: u.replace("discord.com", "DISCORD.com"),
+        lambda u: u.replace("/api/webhooks/", "/api/v9/channels/"),
+        lambda u: u.split("/api/")[0] + "/api/webhooks/",
+        lambda u: u + "?wait=true",
+        lambda u: u + "#x",
+    ],
+)
+def test_webhook_validation(tmp_path: Path, transform: Callable[[str], str]) -> None:
+    url = transform(fake_webhook())
+    with pytest.raises(ConfigError) as info:
+        load_settings(write_env(tmp_path / "d.env", DISPATCH_DISCORD_WEBHOOK=url))
+    assert "dispatch_discord_webhook" in str(info.value)
+    assert url not in str(info.value)

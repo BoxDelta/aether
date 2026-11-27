@@ -20,3 +20,5 @@ tests/identity/results-*.md
 # Dispatcher (ADR-030): model-written briefs and dry-run reports stay local.
 .dispatch/briefs/
 .dispatch/reports/
+.dispatch/state.json
+.dispatch/.state-*.tmp

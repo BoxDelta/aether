@@ -21,6 +21,13 @@ def fake_value(kind: str) -> str:
     return f"fake-{kind}-" + secrets.token_hex(6)
 
 
+def fake_webhook() -> str:
+    # Joined at runtime so no webhook-shaped literal is committed (gitleaks).
+    return (
+        "https://" + "discord.com" + "/api/" + "webhooks/" + "123" + "/fake" + secrets.token_hex(8)
+    )
+
+
 def write_env(path: Path, **overrides: str) -> Path:
     values = {
         "DISPATCH_GITHUB_TOKEN": fake_value("gh"),
@@ -28,6 +35,7 @@ def write_env(path: Path, **overrides: str) -> Path:
         "DISPATCH_LITELLM_URL": LITELLM_URL,
         "DISPATCH_OWNER": OWNER,
         "DISPATCH_REPO": REPO,
+        "DISPATCH_DISCORD_WEBHOOK": fake_webhook(),
         **overrides,
     }
     path.write_text("".join(f"{k}={v}\n" for k, v in values.items() if v != ""), "utf-8")

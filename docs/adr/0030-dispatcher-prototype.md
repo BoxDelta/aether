@@ -164,6 +164,10 @@ diff Aider produces. A match means `claude`, with no model call.
     `CLAUDE.md` wins over both.
 -   The Discord webhook posts only the issue number and "brief ready".
     No issue text, code or file contents.
+-   Until the 4a review on 2026-12-03 (owner decision 2026-11-26), the
+    dry run also posts each sorted issue to the webhook: the issue number
+    and link, the route, the step and the reason (at most 200
+    characters, mentions off). Never the issue body or code.
 
 ### Credentials
 

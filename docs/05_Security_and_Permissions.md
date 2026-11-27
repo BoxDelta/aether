@@ -25,7 +25,12 @@ Client channels into the development PC belong to domain 1. Besides the
 terminal, that includes the Telegram channel into the Claude Code session
 (ADR-027, Proposed): Telegram is not end-to-end encrypted, its pairing
 allowlist holds only the owner, and its bot token is a credential kept
-outside the repository.
+outside the repository. The dispatcher's Discord webhook (ADR-030) posts
+to a channel in a private server where only the owner is a member. Until
+step 4d it is outbound only: it posts dry-run results (issue number and
+link, route, step, a reason of at most 200 characters, mentions off) and
+reads nothing back. Discord is not end-to-end encrypted. The webhook URL
+is a credential, kept in `~/.config/aether-dispatch/dispatch.env`.
 
 Content returned by a model, website, repository, document, or plugin is
 data, not trusted policy. It must not override AETHER's system
