@@ -9,6 +9,13 @@ WITH c(name, pass) AS (VALUES
     ('triggers', (SELECT count(*) FROM pg_trigger
                   WHERE tgrelid = 'public.events'::regclass AND NOT tgisinternal
                     AND tgname IN ('events_no_update_delete', 'events_no_truncate')) = 2),
+    -- 0007: only the owner may write actor 'restore'. A backup from before 0007
+    -- passes; the repair's upgrade to head adds the trigger.
+    ('restore_actor_trigger', (SELECT version_num FROM public.alembic_version) < '0007'
+                              OR EXISTS (SELECT 1 FROM pg_trigger
+                                         WHERE tgrelid = 'public.events'::regclass
+                                           AND tgname = 'events_restore_actor_owner_only'
+                                           AND tgenabled IN ('O', 'A'))),
     ('app_insert_select', has_table_privilege('aether_app', 'public.events', 'INSERT')
                           AND has_table_privilege('aether_app', 'public.events', 'SELECT')
                           AND has_table_privilege('aether_app', 'public.alembic_version', 'SELECT')),

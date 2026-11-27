@@ -394,9 +394,17 @@ def test_live_retrieved_events_from_the_builder_pass_the_checks(live_app: Settin
 # --- actor="restore" is the owner's only (migration 0007, #150) -----------------------
 
 
+async def require_0007(conn: AsyncConnection) -> None:
+    version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar()
+    if version is None or version < "0007":
+        pytest.skip("the database is below migration 0007: run `uv run alembic upgrade head`")
+
+
 def test_app_role_cannot_write_the_restore_actor(live_app: Settings) -> None:
+    # Also covered on a fresh copy in test_backup_live.py.
     async def body(conn: AsyncConnection) -> list[str]:
         await require_events_table(conn)
+        await require_0007(conn)
         return [await try_insert(conn, {**row, "actor": "restore"}) for row in (RECORD, EXPORTED)]
 
     results = in_rolled_back_tx(live_app, body)

@@ -12,9 +12,10 @@ What changes:
   ``actor = 'restore'`` is refused unless the connecting role can act as the owner
   of ``events`` (``pg_has_role(current_user, <owner>, 'USAGE')``: the owner itself,
   or a superuser). The error is a ``check_violation`` (SQLSTATE 23514), like the
-  CHECKs that refuse other bad rows, and names no value. The function runs with
-  ``search_path = pg_catalog``, so no object a role creates can stand in for
-  ``pg_has_role`` or ``pg_class``.
+  CHECKs that refuse other bad rows, and names no value. The catalog names are
+  schema-qualified and the function runs with ``search_path = pg_catalog,
+  pg_temp`` (``pg_temp`` last, so a temporary table can't shadow ``pg_class``;
+  roles have no TEMPORARY right anyway, migration 0003).
 
 Unchanged: the table, its columns, CHECKs, indexes and the append-only triggers,
 and every grant. The app role still can't drop or disable triggers (it owns
@@ -45,12 +46,12 @@ def upgrade() -> None:
         """
         CREATE FUNCTION events_restore_actor_owner_only() RETURNS trigger
         LANGUAGE plpgsql
-        SET search_path = pg_catalog
+        SET search_path = pg_catalog, pg_temp
         AS $$
         BEGIN
-            IF NEW.actor = 'restore' AND NOT pg_has_role(
+            IF NEW.actor = 'restore' AND NOT pg_catalog.pg_has_role(
                 current_user,
-                (SELECT relowner FROM pg_class WHERE oid = TG_RELID),
+                (SELECT c.relowner FROM pg_catalog.pg_class c WHERE c.oid = TG_RELID),
                 'USAGE'
             ) THEN
                 RAISE EXCEPTION 'actor restore is for the owner role only (the restore repair)'
