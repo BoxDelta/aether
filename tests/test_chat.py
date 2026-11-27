@@ -595,3 +595,39 @@ def test_an_unknown_body_field_is_not_named_back() -> None:
     [field] = r.json()["error"]["fields"]
     assert field["loc"] == ["body", UNKNOWN_FIELD]
     assert "migraine" not in r.text and PROMPT not in r.text
+
+
+def test_an_error_serialising_the_answer_keeps_the_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The response is serialised inside the handler (#165), so a failure there is
+    # still recorded, after the call it follows.
+    from core.chat import ChatResponse
+
+    def broken(*_args: Any, **_kwargs: Any) -> Any:
+        raise TypeError("cannot serialise")
+
+    s = Setup()
+    monkeypatch.setattr(ChatResponse, "model_dump", broken)
+    r = s.client.post("/chat", json={"messages": [{"role": "user", "content": PROMPT}]})
+
+    assert r.status_code == 500
+    assert [row["event_type"] for row in s.rows] == [
+        "request.received",
+        "model.route.selected",
+        "model.call.completed",
+        "request.failed",
+    ]
+    assert s.rows[-1]["error_type"] == "TypeError"
+
+
+def test_a_successful_answer_is_unchanged_and_records_its_events() -> None:
+    s = Setup()
+    r = s.client.post("/chat", json={"messages": [{"role": "user", "content": PROMPT}]})
+
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/json"
+    from core.chat import ChatResponse
+
+    assert set(r.json()) == set(ChatResponse.model_fields)
+    assert [row["event_type"] for row in s.rows][-1] == "model.call.completed"
