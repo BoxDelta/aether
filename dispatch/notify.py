@@ -1,16 +1,20 @@
 """Post dry-run results to the owner's Discord channel (ADR-030, #135).
 
 One message per triaged issue: number, link, route, step and the cleaned reason.
-Never the issue body or code. Mentions are always off and link embeds suppressed.
+The issue title and body are never put in the message; a model-written reason may
+quote up to 200 characters of them, neutralised. Mentions are always off and link embeds suppressed.
 A failed post prints a short error and the run carries on; nothing is retried here
 (an unposted issue is tried again on the next run).
 """
 
+import fcntl
 import json
 import os
 import re
 import sys
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import httpx
@@ -21,6 +25,7 @@ from dispatch.config import DispatchSettings
 TIMEOUT_S = 15.0
 SUPPRESS_EMBEDS = 1 << 2  # Discord message flag
 STATE_FILE = Path(__file__).resolve().parents[1] / ".dispatch" / "state.json"
+LOCK_FILE = STATE_FILE.with_name("notify.lock")
 
 # Discord markdown: escape each with a backslash so a reason can't format or link.
 _MARKDOWN = re.compile(r"([\\*_~`|>#\[\]()\-:<])")
@@ -28,6 +33,26 @@ _MARKDOWN = re.compile(r"([\\*_~`|>#\[\]()\-:<])")
 
 class StateError(Exception):
     """The posted-issues state file can't be read."""
+
+
+class Busy(Exception):
+    """Another ``--notify`` run holds the lock."""
+
+
+@contextmanager
+def run_lock(path: Path = LOCK_FILE) -> Iterator[None]:
+    """One ``--notify`` run at a time (timer and manual), so state isn't lost or
+    issues posted twice. Non-blocking: a second run stops at once."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise Busy from None
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def neutralise(reason: str) -> str:
@@ -58,6 +83,10 @@ def make_client(transport: httpx.BaseTransport | None = None) -> httpx.Client:
 def deliver(client: httpx.Client, settings: DispatchSettings, content: str) -> bool:
     """One try. Never raises; never prints the webhook URL."""
     webhook = settings.dispatch_discord_webhook
+    if "authorization" in client.headers:
+        # Never send another service's credential (the GitHub or LiteLLM client).
+        print("discord: refused a client that carries credentials", file=sys.stderr)
+        return False
     if webhook is None:
         print("discord: no webhook configured", file=sys.stderr)
         return False

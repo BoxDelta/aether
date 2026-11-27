@@ -87,6 +87,7 @@ class DispatchSettings(BaseSettings):
 
 WEBHOOK_HOST = "discord.com"
 WEBHOOK_PATH = "/api/webhooks/"
+_WEBHOOK_PATH = re.compile(r"/api/webhooks/\d+/[A-Za-z0-9_-]+")
 
 
 def is_discord_webhook(url: str) -> bool:
@@ -101,8 +102,7 @@ def is_discord_webhook(url: str) -> bool:
         and parts.netloc == WEBHOOK_HOST
         and parts.hostname == WEBHOOK_HOST
         and port is None
-        and parts.path.startswith(WEBHOOK_PATH)
-        and len(parts.path) > len(WEBHOOK_PATH)
+        and _WEBHOOK_PATH.fullmatch(parts.path) is not None
         and not parts.query
         and not parts.fragment
     )

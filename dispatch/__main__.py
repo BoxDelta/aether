@@ -164,7 +164,18 @@ def _run_triage(
         print(table)
         print(f"\nreport: {write_report(table, datetime.now().astimezone())}")
         return 0
-    posted = notify.load_posted()  # before the rules and the model
+    try:
+        with notify.run_lock():
+            return _notify_run(gh, settings, triage, args)
+    except notify.Busy:
+        print("another --notify run is in progress")
+        return 0
+
+
+def _notify_run(
+    gh: httpx.Client, settings: DispatchSettings, triage: Triage, args: argparse.Namespace
+) -> int:
+    posted = notify.load_posted()  # before the trust check, the rules and the model
     rows = triage_rows(gh, settings, triage, args.issue, frozenset(posted))
     if not rows:
         print("nothing new")

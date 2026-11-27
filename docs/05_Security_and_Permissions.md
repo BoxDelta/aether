@@ -29,7 +29,10 @@ outside the repository. The dispatcher's Discord webhook (ADR-030) posts
 to a channel in a private server where only the owner is a member. Until
 step 4d it is outbound only: it posts dry-run results (issue number and
 link, route, step, a reason of at most 200 characters, mentions off) and
-reads nothing back. Discord is not end-to-end encrypted. The webhook URL
+reads nothing back. The reason is model text and may quote the issue.
+Its timer runs from the working clone, not a main-only clone (owner
+decision, ADR-030), so it runs the checked-out branch with the
+dispatcher's credentials loaded. Discord is not end-to-end encrypted. The webhook URL
 is a credential, kept in `~/.config/aether-dispatch/dispatch.env`.
 
 Content returned by a model, website, repository, document, or plugin is

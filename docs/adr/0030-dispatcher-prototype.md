@@ -167,7 +167,14 @@ diff Aider produces. A match means `claude`, with no model call.
 -   Until the 4a review on 2026-12-03 (owner decision 2026-11-26), the
     dry run also posts each sorted issue to the webhook: the issue number
     and link, the route, the step and the reason (at most 200
-    characters, mentions off). Never the issue body or code.
+    characters, mentions off). The issue body and code are never put in
+    the post, but a model-written reason may quote up to 200 characters
+    of the issue.
+-   The dry run runs every 15 minutes from a systemd user timer in the
+    working clone (owner decision 2026-11-26), not a main-only clone as
+    for backups (ADR-025 D8). It runs whatever branch is checked out,
+    with `dispatch.env` loaded. Accepted for the dry run; revisit before
+    step 4b gives the timer any write path.
 
 ### Credentials
 

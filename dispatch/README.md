@@ -44,8 +44,9 @@ It never writes to GitHub.
 ## Discord posts (until the 4a review on 2026-12-03)
 
 `triage --notify` posts one message per sorted issue to the webhook:
-`#<n> → <route> (<step>): <reason>` and the issue link. Never the issue
-title, body or code. The reason is cleaned (one line, at most 200
+`#<n> → <route> (<step>): <reason>` and the issue link. The issue title,
+body and code are never put in the message, but a model-written reason
+may quote up to 200 characters of them. The reason is cleaned (one line, at most 200
 characters), `@` is removed and Discord markdown is escaped; mentions are
 always off (`allowed_mentions: {"parse": []}`) and link previews are
 suppressed.
@@ -57,13 +58,18 @@ suppressed.
     fails, the run prints a short error and carries on; the issue is tried
     again on the next run. Nothing retries in a loop.
 -   Issues skipped by the trust check are never posted.
+-   One `--notify` run at a time (`.dispatch/notify.lock`); a second run
+    stops at once.
 -   A broken state file stops the run (`state error`) rather than posting
     everything again. Delete it to start over.
 
 ### Timer (fish)
 
-Every 15 minutes as a systemd user timer, from `~/Projects/aether`. It
-runs whatever branch that clone has checked out.
+Every 15 minutes as a systemd user timer, from `~/Projects/aether` (owner
+decision). It runs whatever branch that clone has checked out, unattended,
+with `dispatch.env` loaded, and `uv run` installs whatever that branch's
+`uv.lock` says. Branch code has not passed Sentinel's boundary tests yet.
+Stop the timer before checking out untrusted or experimental branches.
 
 Install:
 

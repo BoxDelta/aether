@@ -106,6 +106,9 @@ def test_webhook_loaded_as_secret(tmp_path: Path) -> None:
         lambda u: u.split("/api/")[0] + "/api/webhooks/",
         lambda u: u + "?wait=true",
         lambda u: u + "#x",
+        lambda u: u.replace("/api/webhooks/123/", "/api/webhooks/../../users/"),
+        lambda u: u.replace("/api/webhooks/123/", "/api/webhooks/%31/"),
+        lambda u: u + "/extra",
     ],
 )
 def test_webhook_validation(tmp_path: Path, transform: Callable[[str], str]) -> None:

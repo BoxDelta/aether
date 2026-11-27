@@ -159,3 +159,30 @@ def test_notify_without_webhook_is_a_config_error(
     monkeypatch.setenv("DISPATCH_ENV_FILE", str(path))
     assert cli.main(["triage", "--notify"]) == 2
     assert "DISPATCH_DISCORD_WEBHOOK" in capsys.readouterr().err
+
+
+def test_client_with_credentials_is_refused(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    fake = FakeDiscord()
+    client = httpx.Client(
+        headers={"Authorization": "Bearer fake"}, transport=httpx.MockTransport(fake.handler)
+    )
+    with client:
+        assert not notify.deliver(client, settings, "x")
+    assert fake.requests == []
+
+
+def test_webhook_request_has_no_authorization(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    fake = FakeDiscord()
+    with fake.client() as client:
+        notify.deliver(client, settings, "x")
+    assert "authorization" not in fake.requests[0].headers
+
+
+def test_second_notify_run_is_refused(tmp_path: Path) -> None:
+    lock = tmp_path / "notify.lock"
+    with notify.run_lock(lock), pytest.raises(notify.Busy), notify.run_lock(lock):
+        pass
+    with notify.run_lock(lock):  # released after the first run
+        pass

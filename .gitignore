@@ -21,4 +21,5 @@ tests/identity/results-*.md
 .dispatch/briefs/
 .dispatch/reports/
 .dispatch/state.json
+.dispatch/notify.lock
 .dispatch/.state-*.tmp
