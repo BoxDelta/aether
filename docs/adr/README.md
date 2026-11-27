@@ -27,6 +27,7 @@ ADR-009 onward have their own files here.
 -   **ADR-009:** Reduce v1 scope to Core, Nexus, Memory, web UI.
     Accepted.
 -   **ADR-010:** GitHub Issues/Projects for development tasks. Accepted.
+    Partly superseded by ADR-031 (Proposed).
 -   **ADR-011:** One Postgres for memory, tasks, events. Accepted.
 -   **ADR-012:** Plain code names, branded doc names. Accepted.
 -   **ADR-013:** Use existing n8n for scheduling/workflows. Accepted.
@@ -54,3 +55,7 @@ ADR-009 onward have their own files here.
 -   **ADR-028:** OpenRouter as an OpenAI-compatible provider adapter.
     Proposed (2026-11-26); build after Phase 2 exit criteria pass.
 -   **ADR-029:** End-of-phase code-health review. Proposed (2026-11-26).
+-   **ADR-030:** Dispatcher prototype during Phase 2. Proposed
+    (2026-11-26).
+-   **ADR-031:** Plane as a two-way view of GitHub Issues; partly
+    supersedes ADR-010. Proposed (2026-11-26).
