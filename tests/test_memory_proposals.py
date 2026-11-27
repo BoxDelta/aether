@@ -341,6 +341,22 @@ def test_propose_memory_stores_pending_proposals_from_the_answering_provider() -
     assert [(r["proposed"], r["dropped"], r["error_type"]) for r in lines] == [(2, 0, None)]
 
 
+def test_the_proposal_reason_is_marked_for_an_off_network_host() -> None:
+    from router.routing import OFF_NETWORK_MARK
+
+    setup = Setup(
+        store=FakeStore(),
+        local_replies=["the answer", reply(item())],
+        local_off_network=True,
+    )
+    response = setup.post(propose_memory=True, privacy="public", allow_cloud=True)
+
+    assert response.status_code == 200
+    assert setup.local.calls == 2
+    completed = [r for r in setup.rows if r["event_type"] == "model.call.completed"]
+    assert completed[1]["route_reason"] == PROPOSAL_REASON + OFF_NETWORK_MARK
+
+
 def test_the_cloud_proposes_only_with_allow_cloud_and_gets_no_memory() -> None:
     store = FakeStore()
     source = FakeSource([record("public")])

@@ -48,6 +48,7 @@ class Setup:
         store: Any = None,
         local_replies: list[str] | None = None,
         cloud_replies: list[str] | None = None,
+        local_off_network: bool = False,
     ) -> None:
         self.log = io.StringIO()
         self.local = FakeProvider(
@@ -60,6 +61,7 @@ class Setup:
             usage=USAGE,
             memory_limit=local_memory_limit,
             replies=local_replies,
+            off_network=local_off_network,
         )
         self.cloud = FakeProvider(
             "claude",

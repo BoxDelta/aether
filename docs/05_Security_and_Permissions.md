@@ -454,7 +454,8 @@ proxy environment variables, so it only talks to the host it checked:
     preferred over the cloud when it has headroom. Its route reason, in
     the `/chat` reply and the `model.route.selected` event, ends with
     "[off-network host: data leaves this network]", so an audit can tell
-    such a send from a local one (#148). Core logs one fixed-text startup
+    such a send from a local one (#148); so does the memory proposal
+    call's reason in its `model.call.completed` event. Core logs one fixed-text startup
     warning that carries no host or other value.
 -   `AETHER_OLLAMA_TRUST_HOST=true` (off by default) trusts such a host
     deliberately, for example a private overlay network; Core then logs
