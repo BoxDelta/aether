@@ -378,7 +378,8 @@ with 422, and the access log drops the query string of requests to
 (`AccessLogQueryFilter`, `core/log.py`, #93). Limits: text put in the
 path itself (`GET /memory/<text>`) is still logged, as is the query of a
 path that doesn't route to memory (`//memory`, `/MEMORY`, a percent-encoded
-`?`).
+`?`), and any path under a uvicorn `--root-path`, which Core doesn't use
+(#166).
 
 **Secret-shaped content is never stored (ADR-024 §1, #70).** Whatever its
 label, the store refuses content that looks like a secret, on create,
