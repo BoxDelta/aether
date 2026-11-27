@@ -38,7 +38,7 @@ Safety rules applied here:
 """
 
 import logging
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, BackgroundTasks, Request
 from fastapi.exceptions import RequestValidationError
@@ -79,6 +79,7 @@ from router.routing import (
     MemoryUse,
     NoRoute,
     RouteDecision,
+    RoutedResponse,
     RouteFailed,
     RouteOptions,
     Router,
@@ -377,13 +378,41 @@ async def chat(
         events.append(request_failed(exc, request, options))
         return error_json(503, "NoRoute", redact(exc.reason))
     except Exception as exc:
-        # A bug in routing or an adapter (#112). Background tasks don't run when the
-        # handler raises, so the events are written here (bounded, never raises),
-        # then the error goes on to the middleware's generic 500.
-        events.append(request_crashed(exc, request, options))
-        await recorder.record(events, request, memory_texts)
+        await _record_crash(exc, recorder, events, request, options, memory_texts)
         raise
 
+    try:
+        return await _answer(body, state, router, routed, request, options, events, redact)
+    except Exception as exc:  # after a call that may have been paid for: keep its events
+        await _record_crash(exc, recorder, events, request, options, memory_texts)
+        raise
+
+
+async def _record_crash(  # noqa: PLR0913 - one value per event input
+    exc: Exception,
+    recorder: EventRecorder,
+    events: list[Event],
+    request: ModelRequest,
+    options: RouteOptions,
+    memory_texts: list[str],
+) -> None:
+    """A bug in routing, an adapter or the answer (#112). Background tasks don't run
+    when the handler raises, so the events are written here (bounded, never raises);
+    the error then goes on to the middleware's generic 500."""
+    events.append(request_crashed(exc, request, options))
+    await recorder.record(events, request, memory_texts)
+
+
+async def _answer(  # noqa: PLR0913 - the handler's state, passed through
+    body: ChatRequest,
+    state: Any,
+    router: Router,
+    routed: RoutedResponse,
+    request: ModelRequest,
+    options: RouteOptions,
+    events: list[Event],
+    redact: Redactor,
+) -> ChatResponse:
     response = routed.response
     failover_from = None
     if routed.failed_first is not None:

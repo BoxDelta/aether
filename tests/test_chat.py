@@ -555,3 +555,29 @@ def test_a_crash_event_never_carries_an_odd_type_name() -> None:
     request = ModelRequest(messages=(ModelMessage(role="user", content="hi"),))
     event = request_crashed(weird("x"), request, RouteOptions())
     assert event.error_type == "Exception"
+
+
+def test_an_error_after_the_call_keeps_the_calls_events(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The model call (maybe a paid cloud call) already happened: its events must
+    # not be lost to a bug further on (#112).
+    import core.chat
+
+    async def broken(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError(f"bug near {PROMPT}")
+
+    s = Setup()
+    monkeypatch.setattr(core.chat, "_propose", broken)
+    r = s.client.post(
+        "/chat",
+        json={"messages": [{"role": "user", "content": PROMPT}], "propose_memory": True},
+    )
+
+    assert r.status_code == 500
+    assert [row["event_type"] for row in s.rows] == [
+        "request.received",
+        "model.route.selected",
+        "model.call.completed",
+        "request.failed",
+    ]
+    assert s.rows[-1]["error_type"] == "RuntimeError"
+    assert_no_content(json.dumps(s.rows, default=str))
