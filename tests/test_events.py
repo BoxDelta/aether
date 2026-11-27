@@ -345,3 +345,56 @@ def test_attempts_none_is_sql_null_not_json_null() -> None:
     column_type = events_table.c.attempts.type
     assert isinstance(column_type, JSONB)
     assert column_type.none_as_null is True
+
+
+# --- include_sensitive, the per-request approval (migration 0008, #144) ----------------
+
+
+@pytest.mark.parametrize("approved", [True, False])
+def test_request_events_record_include_sensitive(approved: bool) -> None:
+    from core.events import request_crashed
+    from router.routing import NoRoute, RouteDecision
+
+    options = RouteOptions(include_sensitive=approved)
+    request = make_request()
+    decision = RouteDecision("ollama", "local", "local preferred")
+    events = [
+        request_received(request, options),
+        route_selected(decision, request, options),
+        request_failed(NoRoute("no route"), request, options),
+        request_crashed(RuntimeError("x"), request, options),
+    ]
+    assert [to_row(e, REDACT)["include_sensitive"] for e in events] == [approved] * 4
+
+
+def test_a_memory_event_never_carries_include_sensitive() -> None:
+    from uuid import uuid4
+
+    with pytest.raises(ValueError, match="include_sensitive"):
+        Event(
+            event_type="memory.deleted",
+            actor="memory",
+            memory_record_id=uuid4(),
+            memory_category="preference",
+            memory_source="owner",
+            memory_level="personal",
+            include_sensitive=True,
+        )
+
+
+def test_migration_0008_matches_the_memory_event_names() -> None:
+    # Its CHECK tells memory events apart by the "memory." prefix.
+    from typing import get_args
+
+    from core.events import MEMORY_EVENT_TYPES, EventType
+
+    names: list[str] = []
+    for arg in get_args(EventType):
+        names.extend(get_args(arg) or [arg])
+    flat: list[str] = []
+    for name in names:
+        flat.extend(get_args(name) or [name])
+    assert {n for n in flat if n.startswith("memory.")} == set(MEMORY_EVENT_TYPES)
+    source = (REPO / "migrations/versions/0008_event_include_sensitive.py").read_text()
+    assert "NOT starts_with(event_type, 'memory.')" in source
+    assert "include_sensitive" in events_table.c

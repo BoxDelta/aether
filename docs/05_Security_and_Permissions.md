@@ -502,6 +502,12 @@ decision where applicable. - Evidence or output references.
 
 Avoid storing unnecessary sensitive payloads in audit logs.
 
+The per-request approvals are recorded on the request-level events
+(`request.received`, `model.route.selected`, `request.failed`):
+`allow_cloud`, and since migration 0008 `include_sensitive` (#144), so a
+request that approved Sensitive memory but got none still leaves a trace.
+Memory events never carry them (a CHECK).
+
 ## 10. Sentinel independence
 
 **Sentinel v1** is the deterministic checks in GitHub Actions: tests,

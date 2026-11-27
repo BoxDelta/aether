@@ -147,6 +147,7 @@ class Event(_Frozen):
     session_id: SafeId | None = None
     privacy: PrivacyLevel | None = None
     allow_cloud: bool | None = None
+    include_sensitive: bool | None = None  # migration 0008 (#144)
     override: ProviderName | None = None
     provider: ProviderName | None = None
     provider_kind: ProviderKind | None = None
@@ -236,6 +237,8 @@ def _check_memory_shape(event: Event) -> None:
         raise ValueError("export count on memory.exported only")
     if is_memory and (event.route_reason, event.error_message, event.attempts) != (None,) * 3:
         raise ValueError("memory events carry no free text")
+    if is_memory and event.include_sensitive is not None:
+        raise ValueError("memory events don't carry include_sensitive (migration 0008)")
 
 
 # SQLAlchemy Core view of the table created by migration 0002 (used for inserts).
@@ -254,6 +257,7 @@ events_table = Table(
     Column("session_id", Text),
     Column("privacy", Text),
     Column("allow_cloud", Boolean),
+    Column("include_sensitive", Boolean),  # migration 0008
     Column("override", Text),
     Column("provider", Text),
     Column("provider_kind", Text),
@@ -298,6 +302,7 @@ def request_received(request: ModelRequest, options: RouteOptions) -> Event:
         actor="core",
         privacy=request.privacy,
         allow_cloud=options.allow_cloud,
+        include_sensitive=options.include_sensitive,
         override=options.override,
         request_id=get_request_id(),
         session_id=get_session_id(),
@@ -313,6 +318,7 @@ def route_selected(decision: RouteDecision, request: ModelRequest, options: Rout
         provider_kind=decision.kind,
         route_reason=decision.reason,
         allow_cloud=options.allow_cloud,
+        include_sensitive=options.include_sensitive,
         override=options.override,
         request_id=get_request_id(),
         session_id=get_session_id(),
@@ -389,6 +395,7 @@ def request_crashed(exc: BaseException, request: ModelRequest, options: RouteOpt
         route_reason=UNEXPECTED_ERROR_REASON,
         error_type=name if _TYPE_NAME.fullmatch(name) else "Exception",
         allow_cloud=options.allow_cloud,
+        include_sensitive=options.include_sensitive,
         override=options.override,
         request_id=get_request_id(),
         session_id=get_session_id(),
@@ -408,6 +415,7 @@ def request_failed(
         error_type=type(exc).__name__,
         attempts=tuple(_event_attempt(a) for a in attempts) or None,
         allow_cloud=options.allow_cloud,
+        include_sensitive=options.include_sensitive,
         override=options.override,
         request_id=get_request_id(),
         session_id=get_session_id(),
@@ -494,7 +502,9 @@ async def write_memory_event(conn: AsyncConnection, event: Event) -> int:
         raise ValueError("not a memory event")
     if (event.route_reason, event.error_message, event.attempts) != (None, None, None):
         raise ValueError("memory events carry no free text")
-    row = event.model_dump(mode="python")
+    # Never set on a memory event: left out of the insert, so memory changes keep
+    # working on a database not yet migrated to 0008.
+    row = event.model_dump(mode="python", exclude={"include_sensitive"})
     result = await conn.execute(insert(events_table).values(**row).returning(events_table.c.id))
     return int(result.scalar_one())
 
@@ -518,6 +528,8 @@ def to_row(event: Event, redact: Redactor, forbidden: Iterable[str] = ()) -> dic
     """The exact values that will be stored. Free text is redacted and echo-checked."""
     forbid = list(forbidden)
     row = event.model_dump(mode="python")
+    if row["include_sensitive"] is None:
+        del row["include_sensitive"]  # migration 0008: only set where it means something
     row["route_reason"] = _clean(event.route_reason, redact, forbid)
     row["error_message"] = _clean(event.error_message, redact, forbid)
     if event.attempts is not None:
