@@ -118,8 +118,9 @@ the design, follow the ADR numbers into `docs/adr/`.
 6.  **Memory for this call.** `Router._call()` asks the `MemorySource`
     (`memory/retrieval.py`'s `MemoryRetriever`) for this provider's memory,
     after the route is chosen, with `ProviderInfo.memory_limit_for(...)`:
-    nothing without a limit (the cloud without `allow_cloud`), public only
-    for the cloud and an untrusted Ollama host, up to sensitive (with
+    nothing without a limit (the cloud without `allow_cloud`), up to
+    personal for the cloud, public only for an untrusted Ollama host, up to
+    sensitive (with
     `include_sensitive`) on a trusted one. The selection
     (`router/memory_context.py`'s `MemoryContext`) is reported for the
     `memory.context.retrieved` event. If the store fails, the call goes

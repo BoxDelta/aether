@@ -128,6 +128,9 @@ def local(limit: PrivacyLevel | None = "sensitive", **kw: Any) -> FakeProvider:
     return FakeProvider("ollama", "local", memory_limit=limit, **kw)
 
 
+# The cloud fakes here default to a *public* memory limit on purpose: they test
+# that a configured limit is applied, whatever it is. Claude's real limit
+# (personal, ADR-024 D3) is tested in test_memory_recall.py and below.
 def cloud(limit: PrivacyLevel | None = "public", **kw: Any) -> FakeProvider:
     return FakeProvider("claude", "cloud", memory_limit=limit, **kw)
 
@@ -351,7 +354,7 @@ def test_failover_without_allow_cloud_never_reads_for_the_cloud(identity: Identi
 @pytest.mark.parametrize(
     ("provider", "levels", "allow_cloud", "include_sensitive"),
     [
-        ("cloud", ("personal",), True, False),  # personal to the cloud before step 14
+        ("cloud", ("personal",), True, False),  # personal to a cloud limited to public
         ("cloud", ("sensitive",), True, True),  # sensitive to the cloud, ever
         ("cloud", ("public",), False, False),  # cloud without allow_cloud
         ("untrusted", ("personal",), False, False),  # personal to an untrusted host
@@ -480,12 +483,13 @@ def test_a_slow_source_is_given_up_and_the_call_goes_ahead(
     assert getattr(warned[0], "error_type", None) == "TimeoutError"
 
 
-def test_tripwire_checks_memory_text_for_cloud(identity: Identity) -> None:
+@pytest.mark.parametrize("level", ["public", "personal"])
+def test_tripwire_checks_memory_text_for_cloud(identity: Identity, level: PrivacyLevel) -> None:
     from router.contract import SecretContentRefused
 
     key = "sk-ant-api03-FAKE-memory-tripwire-0123456789"  # gitleaks:allow
-    rec = record("public", content=f"{CANARY} {key}")
-    c = cloud()
+    rec = record(level, content=f"{CANARY} {key}")
+    c = cloud("personal")
 
     with pytest.raises(SecretContentRefused):
         asyncio.run(
@@ -502,11 +506,11 @@ def test_tripwire_checks_memory_text_for_cloud(identity: Identity) -> None:
 
 
 def context_from(records: list[MemoryRecord]) -> MemoryContext:
-    public: tuple[PrivacyLevel, ...] = ("public",)
+    default: tuple[PrivacyLevel, ...] = ("public", "personal")
     return select_memory(
         [Candidate(r, False, 0.0) for r in records],
-        limit="public",
-        include_by_default=public,
+        limit="personal",
+        include_by_default=default,
         include_sensitive=False,
         now=NOW,
     ).to_context()

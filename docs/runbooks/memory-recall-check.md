@@ -1,0 +1,123 @@
+# Memory recall check on the real PC (Phase 2 exit 1, ADR-024 §8)
+
+The manual half of Phase 2's first exit criterion: a fact saved once is
+recalled by **both** real providers, Ollama and Claude. The automated half is
+`tests/test_memory_recall.py` (fakes) and `tests/test_memory_recall_live.py`
+(live Postgres). **Each step runs only after the owner approves it.**
+Commands are fish.
+
+**Who runs what:** the owner runs every step here, because each one needs the
+API token from `.env`, and the agent never reads `.env`. The agent may read
+the results back from the database (steps 1 and 5) after approval.
+
+**Use only an invented, `public` fact.** The word `TELVARINDO` below is made
+up and exists nowhere else. Never use a real fact, name or secret here.
+
+**Claude gets all eligible memory, not just this fact.** Step 4 sends Claude
+every approved, unexpired Public and Personal record that retrieval picks
+(up to 20, including every keyed `profile` and `preference` record). Step 1
+checks that there are none besides this one.
+
+**Permanent rows.** Each `/chat` request adds `events` rows (metadata only,
+append-only). The memory record is deleted again in step 6; its
+`memory.*` events stay, with IDs and levels only. A daily backup taken while
+the record exists keeps it until that backup is pruned (up to about 5 weeks,
+ADR-025); harmless, since the fact is invented.
+
+**Run step 6 even if an earlier step fails.** Until it runs, the record is
+approved and goes into every later request.
+
+**Cost.** Step 4 makes one short Claude call.
+
+Prerequisites: Postgres up and migrated (`uv run alembic upgrade head`),
+Ollama running, `ANTHROPIC_API_KEY` set. The check stores no real data, so
+the encrypted volume (#57) is not needed for it.
+
+------------------------------------------------------------------------
+
+### Step 0: Start Core (localhost only)
+
+```fish
+uv run uvicorn core.app:create_app --factory --host 127.0.0.1 --port 8000
+```
+
+In a second terminal, load the token into an unexported variable (never
+printed; clear it with `set -e token` at the end):
+
+```fish
+set -l token (string replace -r '^AETHER_API_TOKEN=' '' (grep '^AETHER_API_TOKEN=' .env))
+```
+
+### Step 1: Check there is no other approved memory (read-only)
+
+```fish
+echo "SELECT privacy, count(*) FROM memory_records WHERE status = 'approved' GROUP BY privacy;" | docker compose exec -T -e PGOPTIONS='-c default_transaction_read_only=on' postgres psql -U aether -d aether
+```
+
+**Expect:** no rows. If there are any, stop, unless you accept that steps
+3 and 4 send them (Public and Personal ones to Claude).
+
+### Step 2: Save the fact (owner record, approved at once)
+
+```fish
+curl -s http://127.0.0.1:8000/memory \
+    -H "authorization: Bearer $token" -H 'content-type: application/json' \
+    -d '{"content": "The owner calls their test plant TELVARINDO.", "category": "profile", "privacy": "public"}'
+```
+
+**Expect:** HTTP 201 with `status: approved`. Note the `id`.
+
+### Step 3: Recall through Ollama
+
+```fish
+curl -s http://127.0.0.1:8000/chat \
+    -H "authorization: Bearer $token" -H 'content-type: application/json' \
+    -d '{"override": "ollama", "messages": [{"role": "user", "content": "What do I call my test plant?"}]}'
+```
+
+**Expect:** HTTP 200, `provider: ollama`, and an answer that names
+`TELVARINDO`. Note the `request_id`.
+
+### Step 4: Recall through Claude
+
+```fish
+curl -s http://127.0.0.1:8000/chat \
+    -H "authorization: Bearer $token" -H 'content-type: application/json' \
+    -d '{"allow_cloud": true, "override": "claude", "messages": [{"role": "user", "content": "What do I call my test plant?"}]}'
+```
+
+**Expect:** HTTP 200, `provider: claude`, and an answer that names
+`TELVARINDO`. Note the `request_id`.
+
+### Step 5: Read back the retrieval events (read-only)
+
+For each `request_id` from steps 3 and 4 (agent or owner, after approval;
+read-only transactions, as in the Phase 1 runbook):
+
+```fish
+set -l rid REQUEST_ID
+echo "SELECT provider, memory_count_public, memory_count_personal, memory_count_sensitive, memory_effective_level, memory_record_ids FROM events WHERE event_type = 'memory.context.retrieved' AND request_id = :'rid';" | docker compose exec -T -e PGOPTIONS='-c default_transaction_read_only=on' postgres psql -U aether -d aether -v rid=$rid
+echo "SELECT count(*) AS rows_with_marker FROM events e WHERE row_to_json(e)::text ~* '\mTELVARINDO\M';" | docker compose exec -T -e PGOPTIONS='-c default_transaction_read_only=on' postgres psql -U aether -d aether
+```
+
+**Expect:** one row per request, naming `ollama` and `claude` in turn,
+with **only** the step 2 `id` in `memory_record_ids`, `memory_count_public`
+1 and both other counts 0; and a count of **0**: the
+fact's text is in no event.
+
+### Step 6: Clean up
+
+```fish
+curl -s -o /dev/null -w '%{http_code}\n' -X DELETE \
+    http://127.0.0.1:8000/memory/RECORD_ID -H "authorization: Bearer $token"
+set -e token
+```
+
+**Expect:** `204`. Stop Core with Ctrl-C.
+
+------------------------------------------------------------------------
+
+## Results
+
+Not run yet. Record the date, the models (`ollama list`, the Claude model
+from step 4's response), each step's outcome and anything that differed.
