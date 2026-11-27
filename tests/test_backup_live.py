@@ -38,6 +38,12 @@ pytestmark = LIVE_DB
 REPO = Path(__file__).resolve().parent.parent
 INSUFFICIENT_PRIVILEGE = "42501"
 EVENT = "INSERT INTO events (occurred_at, event_type, schema_version, actor) VALUES (now(), 'request.received', 1, 'core')"  # noqa: E501
+RESTORE_EVENT = (
+    "INSERT INTO events (occurred_at, event_type, schema_version, actor, memory_record_id,"
+    " memory_category, memory_source, memory_level) VALUES (now(), 'memory.deleted', 1,"
+    " 'restore', gen_random_uuid(), 'preference', 'owner', 'personal')"
+)
+CHECK_VIOLATION = "23514"
 # Invented canary text only (migration 0004).
 MEMORY = (
     "INSERT INTO memory_records (content, category, privacy, status, source, privacy_source,"
@@ -264,6 +270,22 @@ def secrets_of(*settings: Settings) -> list[str]:
     return [f for f in found if f]
 
 
+def owner_insert(statement: str) -> Any:
+    """A body for owner_run: run one statement, rolled back by a savepoint."""
+
+    async def body(conn: AsyncConnection) -> str:
+        nested = await conn.begin_nested()
+        try:
+            await conn.execute(text(statement))
+        except DBAPIError as exc:
+            return sqlstate(exc) or type(exc.orig).__name__
+        finally:
+            await nested.rollback()
+        return "allowed"
+
+    return body
+
+
 async def as_app(app: Settings, statement: str) -> str:
     """Run one statement as Core's app role, always rolled back."""
     engine = create_engine(app)
@@ -343,6 +365,9 @@ def test_backup_restore_round_trip_keeps_rows_triggers_and_grants(
     app_dst = with_database(live_app, dst)
     assert asyncio.run(check_database(app_dst)).ok  # Core's privilege check passes
     assert asyncio.run(as_app(app_dst, EVENT)) == "allowed"  # rolled back
+    # 0007 (#150): actor 'restore' is the owner's only, also in the restored copy.
+    assert asyncio.run(as_app(app_dst, RESTORE_EVENT)) == CHECK_VIOLATION
+    assert asyncio.run(owner_run(dst_owner, owner_insert(RESTORE_EVENT))) == "allowed"
     for statement in ("UPDATE events SET outcome = 'ok'", "DELETE FROM events", "TRUNCATE events"):
         assert asyncio.run(as_app(app_dst, statement)) == INSUFFICIENT_PRIVILEGE, statement
     # memory_records (0004): the grants came back with the table, and no more.
@@ -374,3 +399,20 @@ def test_restore_check_flags_a_database_from_before_0004(
 
     asyncio.run(owner_run(owner, body))
     assert restore_check(container, owner_user(live_owner), src) == "NOT OK: memory_table"
+
+
+def test_restore_check_flags_a_missing_restore_actor_trigger(
+    live_owner: Settings, container: str, databases: tuple[str, str]
+) -> None:
+    # A copy at 0007 or later must have the trigger that keeps actor 'restore' for
+    # the owner (#150): the check names it if a restore lost it.
+    src, _ = databases
+    owner = with_database(live_owner, src)
+    migrate(owner)
+    assert restore_check(container, owner_user(live_owner), src) == "ok"
+
+    async def drop(conn: AsyncConnection) -> None:
+        await conn.execute(text("DROP TRIGGER events_restore_actor_owner_only ON events"))
+
+    asyncio.run(owner_run(owner, drop))
+    assert restore_check(container, owner_user(live_owner), src) == "NOT OK: restore_actor_trigger"

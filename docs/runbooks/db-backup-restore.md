@@ -205,7 +205,8 @@ echo "SELECT count(*) FROM events WHERE id <= $max" | docker compose exec -T pos
 
 Triggers and rights: this prints exactly `ok` (else `NOT OK:` and the
 failing checks). It checks that both append-only triggers exist and are
-enabled, the app role's
+enabled, the trigger that keeps `actor="restore"` for the owner (from
+0007; an older backup passes and the repair adds it), the app role's
 insert and read rights on `events`, that it can't update, delete,
 truncate or add triggers there, its read, insert, update and delete
 rights on `memory_records` (and no truncate, triggers or references),
