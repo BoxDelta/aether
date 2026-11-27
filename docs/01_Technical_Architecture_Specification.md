@@ -243,7 +243,9 @@ Example event types: - `request.received` - `model.route.selected` -
 `tool.execution.completed` - `tool.execution.failed` -
 `task.status.changed` - `sentinel.review.started` -
 `sentinel.finding.created` - `approval.requested` - `approval.granted` -
-`approval.denied` - `provider.unavailable`
+`approval.denied` - `provider.unavailable` - `chat.topic.created` -
+`chat.message.routed` - `chat.topic.merged` - `chat.topic.archived`
+(the `chat.*` types are planned for Phase 3, ADR-039)
 
 Each event should include, where applicable: - Unique event ID. -
 Timestamp. - Correlation/request ID. - Task ID. - Actor or subsystem. -
@@ -376,7 +378,9 @@ task tracker (GitHub, ADR-010), database and
 vector approach (one Postgres + pgvector later, ADR-011), event
 persistence (Postgres events table, ADR-011), Android strategy (mobile
 web over Tailscale, ADR-016), monthly cloud API cost ceiling ($5 per
-month, set in the Anthropic console, docs/00).
+month, set in the Anthropic console, docs/00), web UI stack (ADR-034),
+web and API authentication (ADR-035), tool permission levels (ADR-036),
+live updates (SSE, ADR-037), agents as supervised clients (ADR-038).
 
 Still open and must be recorded when resolved:
 

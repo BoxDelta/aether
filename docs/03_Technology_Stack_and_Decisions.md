@@ -62,8 +62,15 @@ looks impressive.
                     table + web UI    views                 Langfuse optional
                                                             later
 
-  Web UI            React (or         Command center, works Candidate
-                    simpler) web app  on phone browsers
+  Web UI            Vite + React +    Command center, works Accepted for v1
+                    TypeScript in     on phone browsers;    (ADR-034)
+                    `web/`, Tailwind, installable PWA
+                    shadcn/ui; static
+                    files served by
+                    Core
+
+  Live updates      Server-Sent       Chat streaming, task  Accepted for v1
+                    Events (SSE)      status, Activity      (ADR-037)
 
   3D visualization  Three.js          Neural memory graph   Future
 
