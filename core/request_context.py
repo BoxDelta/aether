@@ -17,6 +17,7 @@ quotes them). The server then sees a stand-in, ``UnhandledRequestError``, raised
 ``from None``, so its own log of the error carries no message either (#124).
 """
 
+import contextlib
 import logging
 import re
 import traceback
@@ -132,18 +133,23 @@ class RequestContextMiddleware:
             # Starlette builds its 500 response outside this middleware, so it would
             # lack the IDs. Send a generic 500 with the IDs (no error details), then
             # re-raise so the server still logs the exception.
+            # A failing send (the client went away) must not replace the stand-in:
+            # its traceback would chain the original message back in (#124).
             if not response_started:
-                await send_with_ids(
-                    {
-                        "type": "http.response.start",
-                        "status": 500,
-                        "headers": [
-                            (b"content-type", b"application/json"),
-                            (b"content-length", str(len(_ERROR_BODY)).encode()),
-                        ],
-                    }
-                )
-                await send_with_ids({"type": "http.response.body", "body": _ERROR_BODY})
+                with contextlib.suppress(Exception):
+                    await send_with_ids(
+                        {
+                            "type": "http.response.start",
+                            "status": 500,
+                            "headers": [
+                                (b"content-type", b"application/json"),
+                                (b"content-length", str(len(_ERROR_BODY)).encode()),
+                            ],
+                        }
+                    )
+                    await send_with_ids({"type": "http.response.body", "body": _ERROR_BODY})
+            # ``from None`` hides the original from traceback printing; it is still on
+            # ``__context__``, so an error reporter must honour __suppress_context__.
             raise UnhandledRequestError(error_type) from None
         finally:
             _request_id.reset(request_token)

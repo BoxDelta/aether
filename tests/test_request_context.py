@@ -1,4 +1,6 @@
 import asyncio
+import io
+import logging
 import uuid
 
 import pytest
@@ -9,6 +11,7 @@ from starlette.types import Message, Receive, Scope, Send
 
 from core.app import create_app
 from core.config import Settings
+from core.log import configure_logging
 from core.request_context import (
     REQUEST_ID_HEADER,
     SESSION_ID_HEADER,
@@ -204,3 +207,38 @@ def test_an_id_holding_a_configured_secret_is_replaced(client: TestClient) -> No
         "session_id": None,
     }
     assert TEST_TOKEN not in response.text
+
+
+def test_a_failing_500_send_still_raises_the_stand_in() -> None:
+    # The client went away while the 500 was sent: the send error must not escape,
+    # or its traceback would chain the original message back in (#124).
+    async def failing_app(scope: Scope, receive: Receive, send: Send) -> None:
+        raise RuntimeError("detail CANARY-SEND-0042")
+
+    async def receive() -> Message:
+        return {"type": "http.request"}
+
+    async def send(message: Message) -> None:
+        raise OSError("client disconnected")
+
+    scope: Scope = {"type": "http", "path": "/x", "headers": []}
+    with pytest.raises(UnhandledRequestError) as raised:
+        asyncio.run(RequestContextMiddleware(failing_app)(scope, receive, send))
+    assert raised.value.__suppress_context__
+
+
+def test_the_servers_own_log_of_the_stand_in_has_no_message(
+    client: TestClient,
+) -> None:
+    # Log the stand-in the way uvicorn does, through AETHER's JSON handler.
+    out = io.StringIO()
+    configure_logging(Settings(_env_file=None), stream=out)
+    with pytest.raises(UnhandledRequestError) as raised:
+        client.get("/_test/boom")
+    logging.getLogger("uvicorn.error").error("Exception in ASGI application", exc_info=raised.value)
+    # The server's record only (the middleware's own record has the frames, whose
+    # source lines are code, here including this test app's literal).
+    [text] = [line for line in out.getvalue().splitlines() if '"uvicorn.error"' in line]
+    assert "UnhandledRequestError" in text
+    assert "secret internal detail" not in text
+    assert "During handling" not in text and "direct cause" not in text
