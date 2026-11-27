@@ -341,7 +341,8 @@ an unusable reply or a store error never fails the answer: the reply's
 error type, never text; records stored before a store failure stay and
 are counted. The proposal call has its own `model.call.completed` (or
 `provider.unavailable`) event, marked with the fixed `route_reason`
-"memory proposal call (ADR-033), not the answer"; a refusal before
+"memory proposal call (ADR-033), not the answer" (plus the off-network
+mark for an off-network Ollama host, #148); a refusal before
 sending writes none. No failover.
 Limit: secret-shaped text in a format `SecretCheck` doesn't know can be
 proposed; it stays pending, is never retrieved, and the owner rejects it.
@@ -461,8 +462,13 @@ proxy environment variables, so it only talks to the host it checked:
     most `personal` (Sensitive requests are refused), gets memory only
     with `allow_cloud` and up to Personal, and its sends get the content
     tripwire. It stays `kind="local"`, so with `allow_cloud` it is still
-    preferred over the cloud when it has headroom. Core logs one
-    fixed-text startup warning that carries no host or other value.
+    preferred over the cloud when it has headroom. Its route reason, in
+    the `/chat` reply and the `model.route.selected` event, ends with
+    "[off-network host: data leaves this network]", so an audit can tell
+    such a send from a local one (#148); so does the memory proposal
+    call's reason in its `model.call.completed` or `provider.unavailable`
+    event. Core logs one fixed-text startup
+    warning that carries no host or other value.
 -   `AETHER_OLLAMA_TRUST_HOST=true` (off by default) trusts such a host
     deliberately, for example a private overlay network; Core then logs
     that the opt-in is active.

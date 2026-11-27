@@ -75,6 +75,7 @@ from router.contract import (
 )
 from router.contract import Message as ModelMessage
 from router.routing import (
+    OFF_NETWORK_MARK,
     Attempt,
     MemoryUse,
     NoRoute,
@@ -226,6 +227,15 @@ def _attempt_info(attempt: Attempt, redact: Redactor) -> AttemptInfo:
 PROPOSAL_REASON = "memory proposal call (ADR-033), not the answer"
 
 
+def _proposal_reason(router: Router, name: str) -> str:
+    """The fixed proposal reason, marked like the answer's when the provider is an
+    off-network Ollama host (#148)."""
+    provider = router.provider(name)
+    if provider is not None and provider.info.kind == "local" and provider.info.off_network:
+        return PROPOSAL_REASON + OFF_NETWORK_MARK
+    return PROPOSAL_REASON
+
+
 async def _propose(  # noqa: PLR0913 - one value per input
     router: Router,
     store: MemoryStore | None,
@@ -241,6 +251,7 @@ async def _propose(  # noqa: PLR0913 - one value per input
     proposed = dropped = 0
     error_type: str | None = None
     prop = proposal_request(request)
+    reason = _proposal_reason(router, answer.provider)
     try:
         if store is None:
             error_type = "MemoryNotConfigured"
@@ -251,9 +262,9 @@ async def _propose(  # noqa: PLR0913 - one value per input
                 reply = await router.call_once(answer.provider, prop, options)
             except ProviderError as exc:
                 attempt = Attempt.from_error(exc)
-                events.append(provider_unavailable(attempt, prop, route_reason=PROPOSAL_REASON))
+                events.append(provider_unavailable(attempt, prop, route_reason=reason))
                 raise
-            events.append(call_completed(reply, prop, route_reason=PROPOSAL_REASON))
+            events.append(call_completed(reply, prop, route_reason=reason))
             parsed = parse(reply.text) if reply.finish_reason == "stop" else None
             if parsed is None:
                 dropped = 1
