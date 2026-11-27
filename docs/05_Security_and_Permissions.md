@@ -696,12 +696,58 @@ shapes only; they cannot recognise personal data.
     checked out and has no `.env`, and refuses to start otherwise, so
     the timer never runs an unreviewed branch with the owner's Docker
     access (ADR-025 D8).
--   **Known limitation:** backups are **not encrypted at rest** until #57
-    and sit on the same disk as the database, so they don't protect
-    against losing the disk. They hold the events and, since the memory
-    API (`POST /memory`, ADR-024 step 6), full memory records too
-    (content, key, level and provenance), unencrypted. Until #57 is
-    done, only invented data belongs in memory (ADR-024 §4, §7).
+-   **Encryption at rest (#57, ADR-026).** The Postgres data and the
+    backups move into one LUKS2 container file (20 GB, ext4 inside),
+    unlocked only by a passphrase the owner types. It is never in `.env`,
+    a keyfile on this disk, compose, a script or a unit. The owner carries
+    the move out by hand (`docs/runbooks/encrypted-volume.md`); until then,
+    the database and the backups are **not encrypted at rest**. Both hold
+    the events and, since the memory API (`POST /memory`, ADR-024 step 6),
+    full memory records (content, key, level and provenance). The move
+    must happen before real memory data is stored; until then only
+    invented data belongs in memory (ADR-024 §4, §7).
+    -   **Fails closed, with the override loaded** (`compose.vault.yaml`,
+        through `COMPOSE_FILE` in `.env` or `aether-vault`). With the volume
+        locked or not mounted, Docker refuses to start Postgres: the bind
+        source exists only inside the volume, `create_host_path: false`,
+        and the bare mount point is empty and immutable. The entrypoint
+        also refuses without the volume's marker.
+    -   A compose run that misses the override uses the old named volume
+        until the runbook's stage 7 recreates that name as a bind to the
+        volume. After that, it can't create a database on the bare disk
+        either. The nightly backup refuses to run (exit 1, one `err`
+        journal line). Core still starts with events skipped, `/ready`
+        reports `degraded` with database `unreachable`, the memory routes
+        answer 503, and `/chat` answers without memory.
+    -   **Encrypted:** the Postgres data, the backups and psql history in
+        the container (`PSQL_HISTORY`), while the volume is locked or the
+        PC is off.
+    -   **Not encrypted:**
+        -   anything while the volume is open;
+        -   swap on disk and hibernation images;
+        -   core dumps;
+        -   memory text typed into shell commands (shell history);
+        -   data written before the move (old volume, old backups,
+            snapshots). Deleting it is not wiping it on btrfs or an SSD,
+            which is acceptable only because, before the move, it holds
+            event metadata and invented memory data only.
+        -   memory sent or copied out on purpose: to model providers by
+            retrieval (local Ollama, whose logs can hold prompts with
+            debug logging on; the cloud or an off-network Ollama host
+            with `allow_cloud`), the export file wherever it is saved
+            (§7.1: keep it off synced or shared folders), and `/memory`
+            output in terminal scrollback or Claude Code transcripts
+            (ADR-026 §8).
+    -   Postgres's error log lives in Docker's log on the unencrypted
+        disk. With the volume's override it no longer carries DETAIL
+        lines (rows, keys) or the failing statement
+        (`log_error_verbosity=terse`, `log_min_error_statement=panic`).
+        Some primary messages can still quote a fragment of input.
+-   **Known limitation:** backups sit on the **same physical disk** as the
+    database, so they don't protect against losing the disk. An encrypted
+    off-machine copy is a separate follow-up. A forgotten passphrase loses
+    the database and its backups together; the LUKS header backup is kept
+    off the machine (ADR-026 §3).
 -   **Deletion and backups:** a deleted memory record stays in every
     backup taken before the delete, until retention prunes the last of
     them, about 5 weeks with daily backups (ADR-024 §4). A restore brings

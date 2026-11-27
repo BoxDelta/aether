@@ -49,7 +49,7 @@ ADR-009 onward have their own files here.
 -   **ADR-025:** Database backups and restore. Accepted (owner,
     2026-11-16).
 -   **ADR-026:** Encrypted volume for the Postgres data and the backups.
-    Proposed; in open PR #82, not yet on `main`.
+    Accepted (owner, 2026-11-27).
 -   **ADR-027:** Telegram channel and Claude Code review workflow.
     Proposed (2026-11-26).
 -   **ADR-028:** OpenRouter as an OpenAI-compatible provider adapter.

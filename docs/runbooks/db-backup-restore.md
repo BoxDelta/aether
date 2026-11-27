@@ -14,12 +14,23 @@ answers), `alembic_version` and, since the memory API (ADR-024 step 6),
 `memory_records`: full rows (content, key, level and provenance),
 including `personal` and `sensitive` ones.
 
-**Not encrypted at rest yet.** Backups are plain files in a private
-folder (mode 700, files 600) on the PC's disk, which is not encrypted. The
-folder moves to the encrypted volume in #57 before any real memory data is
-stored. Backups never go to a cloud location. They are on the **same
-disk** as the database, so they protect against mistakes (a bad migration,
-`down -v`, a corrupted volume), not against losing the disk (ADR-025 D4).
+**Encrypted at rest only after the move (#57, ADR-026).** Until you've run
+[`encrypted-volume.md`](encrypted-volume.md), backups are plain files in a
+private folder (mode 700, files 600) on the PC's disk, which is not
+encrypted. The move must be done before any real memory data is stored.
+
+After the move:
+
+-   Backups go to `~/.local/share/aether/vault/backups`, inside the same
+    LUKS2 volume as the database.
+-   The timer's drop-in refuses to run while that volume is locked: exit 1,
+    one `err` journal line, the unit failed, and nothing written.
+-   **Use that folder wherever this runbook says
+    `~/.local/share/aether/backups`.**
+
+Backups never go to a cloud location. They are on the **same disk** as the
+database, so they protect against mistakes (a bad migration, `down -v`, a
+corrupted volume), not against losing the disk (ADR-025 D4).
 
 ## 1. How a backup works
 
@@ -115,9 +126,14 @@ journalctl --user -u aether-backup.service -n 3 --no-pager
 If the merge changed the service or timer template, copy them again (the
 `cp` line in 2b), then run `systemctl --user daemon-reload`.
 
-If a run fails at `ExecStartPre` (the journal shows the `/bin/sh` step
-failed), the second clone is not on a clean `main`. Check it with
-`git -C ~/Projects/aether-backup status`.
+If a run fails at `ExecStartPre`, the journal shows which check failed:
+
+-   The git check: the second clone is not on a clean `main`. Check it with
+    `git -C ~/Projects/aether-backup status`.
+-   After the move to the encrypted volume, the line `aether-backup:
+    encrypted volume not mounted (or no AETHER marker); no backup written`:
+    run `aether-vault open`, then
+    `systemctl --user start aether-backup.service`.
 
 User timers run only while your user session exists. With
 `Persistent=true`, a run missed while the PC was off or you were logged
@@ -328,7 +344,30 @@ the dump brings back its grants, and its password comes from `.env`
 (ADR-025 D5; why not a `pg_dumpall --globals-only` backup is explained
 there).
 
-1.  Start a fresh container. It creates a new empty volume, the owner
+**After the move to the encrypted volume (#57, ADR-026)** the override
+won't start Postgres on a new empty volume: it needs `vault/data` and
+its marker. If only the database is broken and the volume still opens,
+the backups are still in `vault/backups`. With the volume open, move the
+broken folder aside and recreate an empty one (layout as in
+`encrypted-volume.md` stage 2d), then start Postgres and go on with
+step 2:
+
+```fish
+set m ~/.local/share/aether/vault
+aether-vault open      # unlocks and mounts; "did not become healthy" is expected here
+docker compose -f docker-compose.yml -f compose.vault.yaml stop postgres
+mv $m/data $m/data-broken                  # delete it once the restore is checked
+mkdir -m 711 $m/data; touch $m/data/.aether-vault; chmod 600 $m/data/.aether-vault
+docker compose -f docker-compose.yml -f compose.vault.yaml up -d --wait postgres
+docker compose -f docker-compose.yml -f compose.vault.yaml ps   # expect: (healthy)
+```
+
+If the container file itself is lost or won't open, the backups are lost
+with it (they are on the same volume): restore needs an off-machine copy
+(a separate follow-up) or the LUKS header backup (ADR-026 §3).
+
+1.  Start a fresh container. Without the volume: it creates a new empty
+    Docker volume. With it: the block above. Either way you get the owner
     `aether` with `POSTGRES_PASSWORD` from `.env`, and an empty database
     `aether`.
 

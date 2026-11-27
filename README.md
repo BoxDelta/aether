@@ -344,10 +344,14 @@ Install steps, the restore drill into a throwaway database, replacing the
 real database and going back are in
 [`docs/runbooks/db-backup-restore.md`](docs/runbooks/db-backup-restore.md).
 
--   Backups are **not encrypted at rest** until #57, and sit on the same
-    disk as the database. Since the memory API (`POST /memory`) they
-    hold full memory records too (content, key, level and provenance),
-    in plain text. Until #57 is done, store only invented data in memory.
+-   Backups and the database are **not encrypted at rest** until you move
+    them onto the encrypted volume (#57, ADR-026):
+    [`docs/runbooks/encrypted-volume.md`](docs/runbooks/encrypted-volume.md).
+    Since the memory API (`POST /memory`) both hold full memory records
+    (content, key, level and provenance). Until the move, store only
+    invented data in memory. Afterwards both are in one LUKS2 container
+    file, unlocked with `aether-vault open` after each boot, and still on
+    the same disk as each other.
 -   After a restore, `python -m memory.restore` repairs memory from the
     live database before the swap: records deleted since stay deleted,
     and records changed since come back as `pending` (marked `restored`)

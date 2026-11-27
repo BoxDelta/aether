@@ -1,4 +1,4 @@
-"""The memory store with the database down (#80; ADR-026 §5, proposed in #82).
+"""The memory store with the database down (#80; ADR-026 §5).
 
 With the encrypted volume locked, Postgres is not running. Every operation must
 then raise ``StoreUnavailable``: never an empty list, ``RecordNotFound`` or a write

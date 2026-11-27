@@ -67,7 +67,7 @@ chained. Logs carry the record ID and status only.
 
 Every operation runs in one transaction: if it fails, nothing is changed.
 
-**Database down** (#80; ADR-026 §5, proposed in #82): if no connection can be made, or the
+**Database down** (#80; ADR-026 §5): if no connection can be made, or the
 connection is lost during an operation, the store raises ``StoreUnavailable``,
 never an empty list, "not found" or a write that did nothing. Its message names
 the error type only.
