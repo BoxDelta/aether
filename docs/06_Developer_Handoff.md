@@ -83,7 +83,8 @@ Follow `04_Development_Roadmap.md`. In short:
     identity file, Claude adapter, Ollama adapter, routing with logged
     reasons, `events` table, tests running in Sentinel. Done (exit check
     passed 2026-11-14).
-3.  Phase 2: Memory. In progress (build order: ADR-024 §9, #58).
+3.  Phase 2: Memory. Done (exit check passed 2026-11-27; build order:
+    ADR-024 §9, #58).
 4.  Phase 3: web UI, phone access, tools, n8n. Not started.
 
 The status line under each phase in `04` is the source of truth.

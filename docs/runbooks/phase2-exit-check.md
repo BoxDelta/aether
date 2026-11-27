@@ -262,10 +262,58 @@ event.
 
 ## Results
 
-**Part A, checked 2026-11-27 by the agent on `main` (85b39ef).** Sentinel
-passed on that commit, including the live Postgres job
-(`AETHER_DB_TESTS=1 uv run pytest -m db`). Every test file listed in Part
-A is on `main`. Locally (on this branch, docs-only changes on top of 85b39ef): `uv run pytest -q` gave 1750 passed, 241 skipped
-(the live tests).
+**Result: passed, 2026-11-27.** All three exit criteria hold on the
+owner's PC.
 
-**Part B:** not run yet.
+**Part A, re-checked 2026-11-27 by the agent on `main` (67ea2ab).**
+Sentinel passed on that commit, including the live Postgres job. Every
+test file listed in Part A is on `main`. Locally, with the database at
+migration 0008 (head): `uv run pytest -q` gave 1837 passed, 251 skipped
+(the live tests); `env AETHER_DB_TESTS=1 uv run pytest -q -m db` gave 251
+passed. (First checked on 85b39ef: 1750 passed, 241 skipped.)
+
+**Part B, run 2026-11-27 by the owner** (about 20:26–20:31 UTC), output
+read back by the agent:
+
+-   **B0:** the volume is a mountpoint; Postgres healthy; `alembic
+    current` 0008 (head); Core connects as `aether_app`; `llama3.1:8b`
+    listed; `AETHER_BACKUP_DIR` points at the volume (count 1).
+-   **B1:** 0 memory records (so Claude got no other memory in B3); 0
+    events with the marker.
+-   **B2:** record `f36ee8eb-e4e0-4d9b-9298-696f229754a8` saved,
+    `approved`, `sensitive`.
+-   **B3 (Claude, `allow_cloud` and `include_sensitive`):** `provider:
+    claude`; the answer doesn't name the fact ("I don't have anything
+    saved about this").
+-   **B4 (Ollama, no `include_sensitive`):** `provider: ollama`; "You
+    haven't shared the name of your test medicine yet."
+-   **B5 (Ollama, `include_sensitive`):** `provider: ollama`; "You've
+    called it QUORVETHIL."
+-   **Retrieval events:** Claude and B4: `memory_count_sensitive` 0, no
+    record IDs; B5: `memory_count_sensitive` 1, IDs `{f36ee8eb…}`,
+    effective level `sensitive`. (The empty rows show `personal`, the
+    request's default level.)
+-   **B6:** `Backup completed`, `aether-20261127T202955Z.dump` on the
+    volume (`kept` 1, `pruned` 1: the day's earlier backup, by D5
+    retention).
+-   **B7:** `DELETE` returned 204; Core stopped.
+-   **B8:** `restored` 1 (the backup brought the record back); dry run
+    and real run each `Memory repair completed` with `events_copied` 1,
+    `deleted_again` 1, `set_pending` 0, `other_events_lost` 0;
+    `after_repair` 0 (the deletion survives the restore);
+    `restore_check.sql` printed `ok`.
+-   **B9:** `aether_restore_check` dropped; `live` 0;
+    `rows_with_marker` 0 (the fact's text is in no event).
+
+**Exit criteria:**
+
+1.  Cross-provider recall: `docs/runbooks/memory-recall-check.md`
+    (passed 2026-11-27) and the recall tests (Part A).
+2.  No context above a provider's level: B3–B5 on the real providers,
+    plus the tests in Part A.
+3.  Deletion and restore: B6–B9 on the real database, plus
+    `tests/test_memory_restore_live.py`.
+
+Left behind on purpose: the B6 backup holds the invented record until
+retention prunes it (about 5 weeks); the record's `memory.*` events stay
+(IDs and levels only).

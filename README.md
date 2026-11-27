@@ -14,13 +14,13 @@ unlabelled requests are treated as Personal; AETHER does not yet classify
 content itself.
 
 Status: early-stage and built by one person on Arch Linux (GNOME).
-Phases 0 and 1 are done: Core (the API), model routing and the identity
-layer work today. Phase 2 (shared memory) is in progress: the memory
+Phases 0, 1 and 2 are done: Core (the API), model routing, the identity
+layer and shared memory work today. Memory: the memory
 store and its owner API (`/memory`: list, search, create, approve,
 correct, delete and export) exist, approved memory goes into model
 calls within each provider's privacy limit, models can propose memory for
 you to approve, and the database and backups are on an encrypted volume.
-The Phase 2 exit check is still to be run. A web UI
+The Phase 2 exit check passed on 2026-11-27. A web UI
 comes in Phase 3. Phase status lines are in
 [`docs/04_Development_Roadmap.md`](docs/04_Development_Roadmap.md). It is
 not production-ready, and it is built for a single user on their own
