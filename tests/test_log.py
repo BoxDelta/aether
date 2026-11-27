@@ -145,6 +145,11 @@ def app_and_stream() -> tuple[FastAPI, io.StringIO]:
     async def boom() -> None:
         raise RuntimeError(f"failed with {CONFIGURED_KEY}")
 
+    @app.get("/_test/values")
+    async def values() -> None:
+        record_text = "-".join(("RECORD", "VALUE", "CANARY", "7731"))  # built at run time
+        raise ValueError(record_text)
+
     return app, out
 
 
@@ -173,8 +178,25 @@ def test_unhandled_exception_logged_with_ids_and_redacted(
     assert record["level"] == "ERROR"
     assert record["request_id"] == "req-500"
     assert record["path"] == "/_test/boom"
-    assert "RuntimeError" in record["exc_info"]
+    assert record["error_type"] == "RuntimeError"
+    assert "exc_info" not in record  # no message: it can hold values (#124)
+    assert "boom" in record["frames"]  # where it happened is kept
     assert CONFIGURED_KEY not in out.getvalue()
+
+
+def test_unhandled_exception_message_is_never_logged(
+    app_and_stream: tuple[FastAPI, io.StringIO], capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A message can hold request or response values (a ResponseValidationError
+    # quotes them): only the type and frames are logged (#124).
+    app, out = app_and_stream
+    response = TestClient(app, headers=AUTH, raise_server_exceptions=False).get("/_test/values")
+
+    assert response.status_code == 500
+    [record] = [r for r in lines(out) if r["message"] == "Unhandled exception"]
+    assert record["error_type"] == "ValueError"
+    for text in (out.getvalue(), response.text, *capsys.readouterr()):
+        assert "RECORD-VALUE-CANARY-7731" not in text
 
 
 def test_third_party_loggers_stay_quiet_at_debug() -> None:

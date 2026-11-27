@@ -10,10 +10,17 @@ or control characters into logs or response headers (docs/05). With a
 ``looks_secret`` check (Core passes ``SecretCheck.from_settings``), an incoming ID
 that contains a configured secret value is replaced too, so it is never echoed,
 logged, put in an event or stored as a memory record's ``source_request_id`` (#75).
+
+An unhandled exception is logged with its type and stack frames only, never its
+message, which can hold request or response values (a ``ResponseValidationError``
+quotes them). The server then sees a stand-in, ``UnhandledRequestError``, raised
+``from None``, so its own log of the error carries no message either (#124).
 """
 
+import contextlib
 import logging
 import re
+import traceback
 import uuid
 from collections.abc import Callable
 from contextvars import ContextVar
@@ -36,6 +43,15 @@ SafeId = Annotated[str, StringConstraints(pattern=rf"^{SAFE_ID_PATTERN}$")]
 logger = logging.getLogger("aether.core.request")
 
 _ERROR_BODY = b'{"detail":"Internal Server Error"}'
+
+
+class UnhandledRequestError(Exception):
+    """What the server sees instead of an unhandled exception: its type name only."""
+
+    def __init__(self, error_type: str) -> None:
+        super().__init__(f"unhandled {error_type} (details not logged, docs/05 §5)")
+        self.error_type = error_type
+
 
 _request_id: ContextVar[str | None] = ContextVar("aether_request_id", default=None)
 _session_id: ContextVar[str | None] = ContextVar("aether_session_id", default=None)
@@ -101,26 +117,40 @@ class RequestContextMiddleware:
         session_token = _session_id.set(session_id)
         try:
             await self.app(scope, receive, send_with_ids)
-        except Exception:
+        except Exception as exc:
             # Log here, while the IDs are still in context; the server's own log of
-            # this exception happens after they are reset.
-            logger.exception("Unhandled exception", extra={"path": scope.get("path")})
+            # this exception happens after they are reset. Type and frames only: the
+            # message can hold values (#124). The frames' source lines are code.
+            error_type = type(exc).__name__
+            logger.error(
+                "Unhandled exception",
+                extra={
+                    "path": scope.get("path"),
+                    "error_type": error_type,
+                    "frames": "".join(traceback.format_tb(exc.__traceback__)),
+                },
+            )
             # Starlette builds its 500 response outside this middleware, so it would
             # lack the IDs. Send a generic 500 with the IDs (no error details), then
             # re-raise so the server still logs the exception.
+            # A failing send (the client went away) must not replace the stand-in:
+            # its traceback would chain the original message back in (#124).
             if not response_started:
-                await send_with_ids(
-                    {
-                        "type": "http.response.start",
-                        "status": 500,
-                        "headers": [
-                            (b"content-type", b"application/json"),
-                            (b"content-length", str(len(_ERROR_BODY)).encode()),
-                        ],
-                    }
-                )
-                await send_with_ids({"type": "http.response.body", "body": _ERROR_BODY})
-            raise
+                with contextlib.suppress(Exception):
+                    await send_with_ids(
+                        {
+                            "type": "http.response.start",
+                            "status": 500,
+                            "headers": [
+                                (b"content-type", b"application/json"),
+                                (b"content-length", str(len(_ERROR_BODY)).encode()),
+                            ],
+                        }
+                    )
+                    await send_with_ids({"type": "http.response.body", "body": _ERROR_BODY})
+            # ``from None`` hides the original from traceback printing; it is still on
+            # ``__context__``, so an error reporter must honour __suppress_context__.
+            raise UnhandledRequestError(error_type) from None
         finally:
             _request_id.reset(request_token)
             _session_id.reset(session_token)
