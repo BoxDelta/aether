@@ -221,7 +221,7 @@ def test_long_text_is_capped_when_stored() -> None:
     assert len(row["error_message"]) == MAX_TEXT
 
 
-@pytest.mark.parametrize("start", [MAX_TEXT - 10, MAX_TEXT - len(FAKE_SECRET) + 1, MAX_TEXT - 1])
+@pytest.mark.parametrize("start", [MAX_TEXT - 10, MAX_TEXT - len(FAKE_SECRET) + 1, MAX_TEXT - 2])
 def test_a_secret_across_the_cap_is_redacted_not_cut(start: int) -> None:
     # Redaction runs before the cap (#115): a configured secret that straddles
     # character MAX_TEXT is masked whole, so no prefix of it is stored.
@@ -236,6 +236,9 @@ def test_a_secret_across_the_cap_is_redacted_not_cut(start: int) -> None:
     for t in texts:
         assert len(t) <= MAX_TEXT
         assert FAKE_SECRET[:6] not in t
+        # Masked, not cut: the marker (or its start, if the cap falls inside it) is there.
+        kept = t[start:].removesuffix("…")[: len(REDACTED)]
+        assert kept and REDACTED.startswith(kept)
 
 
 # --- the model refuses anything that isn't metadata ----------------------------------
