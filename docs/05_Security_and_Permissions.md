@@ -104,7 +104,8 @@ confidence is not a substitute for authorization.
 -   An unhandled exception answers a generic 500 and is logged with its
     type and stack frames only, never its message, which can hold request
     or response values. Its chained causes and exception-group members
-    are logged the same way, type and frames only, at most 10 (#164). The server sees a stand-in
+    are logged the same way, type and frames only, at most 10 links of
+    30 frames each (#164). The server sees a stand-in
     (`UnhandledRequestError`, type name only), so its own log has no
     message either (`core/request_context.py`, #124).
 -   Logs redact configured secrets by value (`ANTHROPIC_API_KEY`,

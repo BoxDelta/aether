@@ -312,3 +312,36 @@ def test_chain_is_bounded_and_survives_a_cycle() -> None:
     assert chain is not None
     assert chain.count("--- caused by:") == CHAIN_MAX_LINKS
     assert chain.endswith("--- more links not logged ---\n")
+
+
+def test_chain_keeps_only_the_innermost_frames_of_each_link() -> None:
+    from core.request_context import CHAIN_MAX_FRAMES, exception_chain
+
+    # Mutual recursion: frames alternate, so the traceback doesn't collapse them.
+    def ping(n: int) -> None:
+        if n == 0:
+            raise ValueError("deep")
+        pong(n - 1)
+
+    def pong(n: int) -> None:
+        ping(n - 1)
+
+    try:
+        ping(CHAIN_MAX_FRAMES * 3)
+    except ValueError as cause:
+        outer = RuntimeError("outer")
+        outer.__cause__ = cause
+    chain = exception_chain(outer)
+    assert chain is not None
+    assert chain.count(", in ping") + chain.count(", in pong") == CHAIN_MAX_FRAMES
+    assert "more links" not in chain
+
+
+def test_chain_has_no_more_marker_when_only_seen_links_remain() -> None:
+    from core.request_context import exception_chain
+
+    a, b = RuntimeError("a"), ValueError("b")
+    a.__cause__, b.__cause__ = b, a
+    chain = exception_chain(a)
+    assert chain is not None
+    assert "more links" not in chain

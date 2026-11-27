@@ -46,13 +46,15 @@ _ERROR_BODY = b'{"detail":"Internal Server Error"}'
 
 
 CHAIN_MAX_LINKS = 10  # chained causes and group members logged, at most
+CHAIN_MAX_FRAMES = 30  # per link: the innermost frames, where it was raised
 
 
 def exception_chain(exc: BaseException) -> str | None:
     """Type and frames of each exception linked to ``exc`` (#164), never a message:
     its explicit cause, its implicit context (unless suppressed with ``from None``)
     and the members of an exception group, depth first, at most ``CHAIN_MAX_LINKS``
-    links and each exception once. ``None`` if there are none."""
+    links of at most ``CHAIN_MAX_FRAMES`` frames each, and each
+    exception once. ``None`` if there are none."""
     parts: list[str] = []
     seen = {id(exc)}
     pending: list[tuple[str, BaseException]] = list(reversed(_links(exc)))
@@ -61,10 +63,10 @@ def exception_chain(exc: BaseException) -> str | None:
         if id(linked) in seen:
             continue
         seen.add(id(linked))
-        frames = "".join(traceback.format_tb(linked.__traceback__))
+        frames = "".join(traceback.format_tb(linked.__traceback__, limit=-CHAIN_MAX_FRAMES))
         parts.append(f"--- {how}: {type(linked).__name__} ---\n{frames}")
         pending.extend(reversed(_links(linked)))
-    if pending and len(parts) == CHAIN_MAX_LINKS:
+    if any(id(linked) not in seen for _, linked in pending):
         parts.append("--- more links not logged ---\n")
     return "".join(parts) or None
 
