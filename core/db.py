@@ -62,7 +62,9 @@ SAME_ROLE_MESSAGE = (
 # one table in the public schema and those two rights only (a memory_records in any
 # other schema is not exempt): ``events`` and ``alembic_version``
 # stay insert/read-only, and owning or creating anything is refused everywhere.
-# Independent of search_path. Each part is COALESCEd: a NULL must not hide the rest.
+# Independent of search_path. The parts are not COALESCEd: if the result is NULL,
+# the pool hook treats it as privileged (``privileged is not False``), so a NULL
+# fails closed (#117).
 MUTABLE_TABLE = "memory_records"
 PRIVILEGE_QUERY = """
 SELECT r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication
