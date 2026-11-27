@@ -25,6 +25,7 @@ from sqlalchemy import text
 from core.config import Settings
 from core.db import create_migration_engine
 from core.log import SecretCheck
+from core.ready import migration_head
 from memory.restore import RepairRefused, run
 from memory.store import PENDING_MAX, Approval, MemoryStore, NewRecord, PendingLimit, RecordChanges
 from tests.conftest import LIVE_DB
@@ -344,7 +345,7 @@ def test_migration_0006_downgrade_refuses_while_records_are_restored(
 
     with pytest.raises(DBAPIError, match="restored memory records exist"):
         asyncio.run(owner_run(dst, body))
-    assert sql(dst, "SELECT version_num FROM alembic_version")[0][0] == "0006"
+    assert sql(dst, "SELECT version_num FROM alembic_version")[0][0] == migration_head()
 
     # Once reviewed, it goes down and up cleanly.
     sql(dst, "DELETE FROM memory_records WHERE restored")
@@ -438,7 +439,7 @@ def test_an_older_copy_is_upgraded_only_after_the_checks(scenario: dict[str, Any
 
     result = asyncio.run(run(scenario["src"], scenario["dst_name"], dry_run=False))
 
-    assert sql(dst, "SELECT version_num FROM alembic_version")[0][0] == "0006"
+    assert sql(dst, "SELECT version_num FROM alembic_version")[0][0] == migration_head()
     assert (result.deleted_again, result.set_pending) == (2, 3)
 
 
