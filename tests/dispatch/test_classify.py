@@ -28,6 +28,14 @@ def _no_sleep(_: float) -> None:
     pass
 
 
+def _gate(
+    snapshot: hardware.HardwareSnapshot,
+    sleep: classify.Sleep = _no_sleep,
+    only_ours: bool | None = None,
+) -> classify.GpuGate:
+    return classify.GpuGate(lambda: snapshot, sleep, lambda: only_ours)
+
+
 @pytest.mark.parametrize(
     ("content", "expected"),
     [
@@ -106,7 +114,7 @@ def test_model_local(tmp_path: Path) -> None:
         return chat_reply(route_json("local"))(request)
 
     with _client(tmp_path, httpx.MockTransport(handler)) as client:
-        decision = classify.triage(ISSUE, client, probe=lambda: GPU_OK, sleep=_no_sleep)
+        decision = classify.triage(ISSUE, client, _gate(GPU_OK))
     assert decision == classify.Decision("local", "model", "small docs change")
     assert sent[0].url == "http://127.0.0.1:4000/chat/completions"
     assert sent[0].headers["Authorization"].startswith("Bearer fake-llm-")
@@ -154,7 +162,7 @@ def test_rule_match_skips_model(tmp_path: Path) -> None:
 
     issue = Issue(8, "Tidy", "Rename a helper in router/routing.py", "BoxDelta", ())
     with _client(tmp_path, httpx.MockTransport(handler)) as client:
-        decision = classify.triage(issue, client, probe=lambda: GPU_OK, sleep=_no_sleep)
+        decision = classify.triage(issue, client, _gate(GPU_OK))
     assert decision == classify.Decision("claude", "rule", "mentions router/")
 
 
@@ -164,7 +172,7 @@ def test_label_rule_skips_model(tmp_path: Path) -> None:
 
     issue = Issue(8, "Tidy", "docs only", "BoxDelta", ("model:opus",))
     with _client(tmp_path, httpx.MockTransport(handler)) as client:
-        decision = classify.triage(issue, client, probe=lambda: GPU_OK, sleep=_no_sleep)
+        decision = classify.triage(issue, client, _gate(GPU_OK))
     assert decision.step == "rule"
 
 
@@ -175,7 +183,7 @@ def test_busy_gpu_waits_then_means_claude(tmp_path: Path) -> None:
         raise AssertionError("model must not be called")
 
     with _client(tmp_path, httpx.MockTransport(handler)) as client:
-        decision = classify.triage(ISSUE, client, probe=lambda: GPU_FULL, sleep=slept.append)
+        decision = classify.triage(ISSUE, client, _gate(GPU_FULL, slept.append))
     assert decision.route == "claude"
     assert decision.step == "gpu"
     assert sum(slept) >= classify.GPU_MAX_WAIT_S
@@ -203,3 +211,57 @@ def test_proxy_variables_are_ignored(
         assert not llm._trust_env
         assert not gh._trust_env
         assert llm._mounts == {} and gh._mounts == {}
+
+
+def test_two_issues_in_one_run_make_one_gpu_check(tmp_path: Path) -> None:
+    probes: list[int] = []
+
+    def probe() -> hardware.HardwareSnapshot:
+        probes.append(1)
+        return GPU_OK if len(probes) == 1 else GPU_FULL  # our model now holds the VRAM
+
+    gate = classify.GpuGate(probe, _no_sleep, lambda: None)
+    other = Issue(8, "Fix a typo in README.md", "One word.", "BoxDelta", ())
+    with _client(tmp_path, httpx.MockTransport(chat_reply(route_json("local")))) as client:
+        first = classify.triage(ISSUE, client, gate)
+        second = classify.triage(other, client, gate)
+    assert (first.route, second.route) == ("local", "local")
+    assert len(probes) == 1
+
+
+def test_failed_call_does_not_skip_the_next_check(tmp_path: Path) -> None:
+    probes: list[int] = []
+
+    def probe() -> hardware.HardwareSnapshot:
+        probes.append(1)
+        return GPU_OK
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused", request=request)
+
+    gate = classify.GpuGate(probe, _no_sleep, lambda: None)
+    with _client(tmp_path, httpx.MockTransport(handler)) as client:
+        classify.triage(ISSUE, client, gate)
+        classify.triage(ISSUE, client, gate)
+    assert len(probes) == 2
+
+
+def test_gpu_held_only_by_llama_server_counts_as_available(tmp_path: Path) -> None:
+    with _client(tmp_path, httpx.MockTransport(chat_reply(route_json("local")))) as client:
+        decision = classify.triage(ISSUE, client, _gate(GPU_FULL, only_ours=True))
+    assert decision.route == "local"
+
+
+@pytest.mark.parametrize("only_ours", [False, None])
+def test_gpu_held_by_another_process_or_unknown_still_waits(
+    tmp_path: Path, only_ours: bool | None
+) -> None:
+    slept: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("model must not be called")
+
+    with _client(tmp_path, httpx.MockTransport(handler)) as client:
+        decision = classify.triage(ISSUE, client, _gate(GPU_FULL, slept.append, only_ours))
+    assert decision.step == "gpu"
+    assert sum(slept) >= classify.GPU_MAX_WAIT_S

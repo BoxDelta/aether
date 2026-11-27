@@ -26,9 +26,13 @@ It never writes to GitHub.
 2.  **Rules** (step `rule`): the always-Claude list in `rules.py`, checked
     against labels and against paths or keywords in the title and body.
     A match means `claude` with no model call.
-3.  **GPU** (step `gpu`): `router/hardware.py` must report the VRAM
-    reserve free. It waits up to 5 minutes, polling every 15 seconds, then
-    gives `claude`.
+3.  **GPU** (step `gpu`): waits only when something other than our model
+    uses the GPU. Skipped for the rest of a run once a model call in that
+    run has answered. Before that, the GPU counts as available if
+    `nvidia-smi --query-compute-apps` lists only `llama-server` processes
+    (`gpu.py`). Otherwise `router/hardware.py` must report the VRAM
+    reserve free; it waits up to 5 minutes, polling every 15 seconds,
+    then gives `claude`.
 4.  **Model** (step `model`): one LiteLLM call, model `local`, temperature
     0, 200 tokens, thinking off, Langfuse trace `dispatch-triage` tagged
     `dry-run` and `issue-<n>`. The answer must be exactly
@@ -54,5 +58,12 @@ The other services keep their own files in the same folder
 
 ## Local model
 
-Not chosen yet. The model, its quantization and measured speed are
-recorded here after setup (ADR-030 §Models).
+-   Qwen3.6-35B-A3B Q4_K_M (20 GB GGUF), served by llama.cpp in
+    llama-swap.
+-   `--n-cpu-moe 33`, 16k context, q8_0 KV cache, flash attention.
+-   7,415 MiB VRAM when loaded.
+-   About 350 tokens/s prompt processing (2.7k-token prompt) and 42 to 44
+    tokens/s output.
+-   Unloads after 5 idle minutes.
+-   Thinking is switched off per request
+    (`chat_template_kwargs: {"enable_thinking": false}`).

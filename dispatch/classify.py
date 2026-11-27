@@ -15,7 +15,7 @@ from typing import Literal
 
 import httpx
 
-from dispatch import rules
+from dispatch import gpu, rules
 from dispatch.config import DispatchSettings
 from dispatch.github import Issue
 from router import hardware
@@ -129,27 +129,33 @@ def make_client(
     )
 
 
-def ask_model(client: httpx.Client, issue: Issue) -> Decision:
-    """One LiteLLM call. Never raises: every failure is a ``claude`` decision."""
+def _call_model(client: httpx.Client, issue: Issue) -> tuple[Decision, bool]:
+    """The decision, and whether the model answered at all (so it is loaded)."""
     try:
         response = client.post("/chat/completions", json=build_payload(issue))
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]
     except httpx.TimeoutException:
-        return Decision("claude", "model", "model timed out")
+        return Decision("claude", "model", "model timed out"), False
     except httpx.HTTPError as exc:
-        return Decision("claude", "model", f"model call failed: {type(exc).__name__}")
+        return Decision("claude", "model", f"model call failed: {type(exc).__name__}"), False
     except (ValueError, KeyError, IndexError, TypeError):
-        return Decision("claude", "model", "model reply not understood")
+        return Decision("claude", "model", "model reply not understood"), False
     parsed = parse_answer(content) if isinstance(content, str) else None
     if parsed is None:
-        return Decision("claude", "model", "model answer not a valid route")
+        return Decision("claude", "model", "model answer not a valid route"), True
     route, reason = parsed
-    return Decision(route, "model", reason)
+    return Decision(route, "model", reason), True
+
+
+def ask_model(client: httpx.Client, issue: Issue) -> Decision:
+    """One LiteLLM call. Never raises: every failure is a ``claude`` decision."""
+    return _call_model(client, issue)[0]
 
 
 Probe = Callable[[], hardware.HardwareSnapshot]
 Sleep = Callable[[float], None]
+AppsCheck = Callable[[], bool | None]
 
 
 def wait_for_gpu(
@@ -167,17 +173,33 @@ def wait_for_gpu(
         waited += poll_s
 
 
-def triage(
-    issue: Issue,
-    client: httpx.Client,
-    probe: Probe = hardware.probe,
-    sleep: Sleep = time.sleep,
-) -> Decision:
+@dataclass(slots=True)
+class GpuGate:
+    """The GPU check for one run. It waits only when something other than our model
+    uses the GPU: once a model call in this run has answered, the model is loaded
+    and later issues skip the check (#131)."""
+
+    probe: Probe = hardware.probe
+    sleep: Sleep = time.sleep
+    only_our_model: AppsCheck = gpu.only_our_model
+    model_answered: bool = False
+
+    def ready(self) -> hardware.Headroom:
+        if self.model_answered:
+            return hardware.Headroom(True, "our model answered earlier in this run")
+        if self.only_our_model() is True:
+            return hardware.Headroom(True, "GPU held only by llama-server")
+        return wait_for_gpu(self.probe, self.sleep)
+
+
+def triage(issue: Issue, client: httpx.Client, gate: GpuGate) -> Decision:
     """Rules first (no model call on a match), then the GPU check, then the model."""
     matched = rules.issue_rule(issue.title, issue.body, issue.labels)
     if matched is not None:
         return Decision("claude", "rule", matched)
-    headroom = wait_for_gpu(probe, sleep)
+    headroom = gate.ready()
     if not headroom.ok:
         return Decision("claude", "gpu", f"GPU busy: {headroom.reason}")
-    return ask_model(client, issue)
+    decision, answered = _call_model(client, issue)
+    gate.model_answered = gate.model_answered or answered
+    return decision

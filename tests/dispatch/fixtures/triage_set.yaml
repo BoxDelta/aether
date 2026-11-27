@@ -1,7 +1,8 @@
 # Triage eval set (ADR-030 step 4a). Closed issues from this repository.
-# expected: "claude" if the merged PR that closed the issue touched an always-Claude
-# path (dispatch/rules.py), else "local". deciding_files: for claude, the listed
-# paths that PR touched; for local, every file it touched.
+# expected: "claude" if the owner labelled the issue model:opus, or the merged PR
+# that closed it touched an always-Claude path (dispatch/rules.py); else "local".
+# deciding_files: for claude, the listed paths that PR touched (or every file, when
+# deciding_label decides); for local, every file it touched.
 issues:
   # Local: the closing PR touched no always-Claude path.
   - issue: 28  # PR #29
@@ -23,13 +24,16 @@ issues:
       - tests/test_hardware.py
       - tests/test_ollama_host_trust.py
       - tests/test_routing.py
-  - issue: 38  # PR #41; labelled model:opus, so the label rule says claude
-    expected: local
+  # Claude: the owner labelled it model:opus, or the closing PR touched an
+  # always-Claude path.
+  - issue: 38  # PR #41
+    expected: claude
+    deciding_label: model:opus
     deciding_files: [tests/conftest.py, tests/test_env_isolation.py]
-  - issue: 42  # PR #51; labelled model:opus, so the label rule says claude
-    expected: local
+  - issue: 42  # PR #51
+    expected: claude
+    deciding_label: model:opus
     deciding_files: [core/log.py, tests/test_auth.py, tests/test_log_redaction_docs.py]
-  # Claude: the closing PR touched an always-Claude path.
   - issue: 113  # PR #118
     expected: claude
     deciding_files: [core/config.py]

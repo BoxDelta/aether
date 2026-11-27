@@ -27,7 +27,7 @@ are in `docs/adr/`; a longer tour is in `docs/CODE_TOUR.md`.
 -   `identity/aether.yaml`: the single AETHER identity.
 -   `dispatch/`: dispatcher prototype (ADR-030, dev tooling, not Core):
     `config.py`, `github.py` (read-only), `rules.py` (always-Claude list),
-    `classify.py`, `__main__.py`. See `dispatch/README.md`.
+    `classify.py`, `gpu.py`, `__main__.py`. See `dispatch/README.md`.
 -   `scripts/`: `safemerge.fish`, `identity_continuity.py`, systemd units.
 
 ## Tests

@@ -35,6 +35,7 @@ class EvalItem(BaseModel):
     issue: int = Field(gt=0)
     expected: Literal["local", "claude"]
     deciding_files: list[str] = Field(min_length=1)
+    deciding_label: str | None = None
 
 
 class EvalSet(BaseModel):
@@ -132,9 +133,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"config error: {exc}", file=sys.stderr)
         return 2
     with github.make_client(settings) as gh, classify.make_client(settings) as llm:
+        gate = classify.GpuGate()  # one per run
 
         def triage(issue: github.Issue) -> classify.Decision:
-            return classify.triage(issue, llm)
+            return classify.triage(issue, llm, gate)
 
         try:
             if args.command == "eval":
