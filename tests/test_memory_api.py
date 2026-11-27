@@ -573,3 +573,12 @@ def test_one_of_the_apis_own_names_is_still_named(core: tuple[Core, TestClient])
     _, client = core
     r = client.post("/memory", json=record(source="model"))
     assert field_errors(r) == [["body", "source"]]
+
+
+def test_the_api_names_are_built_at_startup() -> None:
+    from core.app import create_app as build
+
+    app = build(Settings(_env_file=None), load_identity())
+    with TestClient(app):  # runs the lifespan
+        names = app.state.aether_api_field_names
+    assert {"messages", "privacy", "source", "offset"} <= names

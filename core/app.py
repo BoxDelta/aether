@@ -21,7 +21,7 @@ from core.db import (
     check_database,
     create_engine,
 )
-from core.errors import validation_error_handler
+from core.errors import api_field_names, validation_error_handler
 from core.events import EventRecorder, EventWriter
 from core.identity import Identity, load_identity
 from core.log import Redactor, SecretCheck, configure_logging, secrets_from
@@ -121,6 +121,10 @@ def create_app(
         try:
             if engine is not None:
                 await _refuse_privileged_role(settings, engine)
+            # The API's own field names, for 422s (#94): built at startup, so a schema
+            # error stops Core here, never on a request. (A test app without a
+            # lifespan builds them on its first 422.)
+            api_field_names(app)
             yield
         finally:
             # Shutdown (or a refused start): close provider HTTP clients, then the

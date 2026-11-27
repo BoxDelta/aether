@@ -66,7 +66,8 @@ UNKNOWN_FIELD = "<unknown field>"
 def api_field_names(app: Any) -> frozenset[str]:
     """Every property and parameter name in the app's own API schema: names AETHER
     defines, so echoing one tells the sender nothing they didn't send and nothing
-    of theirs. Built once per app."""
+    of theirs. Built once per app, at startup (``create_app``'s lifespan); a request
+    only reads it."""
     cached = getattr(app.state, "aether_api_field_names", None)
     if cached is None:
         schema = app.openapi()
