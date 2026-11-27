@@ -31,6 +31,7 @@ from core.memory_api import MAX_BODY_BYTES as MEMORY_MAX_BODY_BYTES
 from core.memory_api import memory_router, memory_store
 from core.ready import ready_router
 from core.request_context import RequestContextMiddleware
+from memory.retrieval import MemoryRetriever
 from memory.store import MemoryStore
 from router.routing import Router
 
@@ -134,7 +135,16 @@ def create_app(
     app.state.settings = settings
     app.state.identity = identity
     app.state.redactor = redactor
-    app.state.router = router if router is not None else Router.from_settings(settings, identity)
+    if router is None:
+        # Memory for model calls (ADR-024 §3): only with a store. An injected router
+        # brings its own MemorySource, or none.
+        retriever = (
+            MemoryRetriever(memory, identity.user_context_policy.include_by_default)
+            if memory is not None
+            else None
+        )
+        router = Router.from_settings(settings, identity, memory=retriever)
+    app.state.router = router
     app.state.events = events
     app.state.memory = memory
     # Shared DB pool (events and /ready); None without DATABASE_URL or with an

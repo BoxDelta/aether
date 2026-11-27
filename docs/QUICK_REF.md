@@ -22,7 +22,9 @@ are in `docs/adr/`; a longer tour is in `docs/CODE_TOUR.md`.
 -   `router/` (Nexus): `contract.py` provider contract and privacy
     levels, `routing.py` rules and failover, `identity_call.py` the one
     function every model call goes through, `ollama.py` (local),
-    `claude.py` (cloud), `hardware.py` GPU/RAM probe.
+    `claude.py` (cloud), `hardware.py` GPU/RAM probe,
+    `memory_context.py` the memory a call gets and its backstop,
+    `echo.py` the echo backstop.
 -   `memory/`: `store.py` the memory store, `retrieval.py` which memory
     one model call may get, `types.py` its types.
 -   `identity/aether.yaml`: the single AETHER identity.

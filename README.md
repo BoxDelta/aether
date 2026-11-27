@@ -17,8 +17,8 @@ Status: early-stage and built by one person on Arch Linux (GNOME).
 Phases 0 and 1 are done: Core (the API), model routing and the identity
 layer work today. Phase 2 (shared memory) is in progress: the memory
 store and its owner API (`/memory`: list, search, create, approve,
-correct, delete and export) exist, but there is no retrieval into model
-calls yet. A web UI
+correct, delete and export) exist, and approved memory goes into model
+calls within each provider's privacy limit. A web UI
 comes in Phase 3. Phase status lines are in
 [`docs/04_Development_Roadmap.md`](docs/04_Development_Roadmap.md). It is
 not production-ready, and it is built for a single user on their own
@@ -156,6 +156,12 @@ local models aren't capped by it. A request may lower the limit with
 `"max_tokens": N` but not raise it (422). An invalid value in `.env` stops
 Core at startup. A cut-off answer comes back with `"finish_reason": "length"`,
 sometimes with empty text if thinking used the whole budget.
+
+Approved memory is added to each model call within that provider's limit:
+Public and Personal on a trusted Ollama host (loopback, a private address,
+or any host with `AETHER_OLLAMA_TRUST_HOST=true`), Public only for Claude
+and for an untrusted host. Sensitive memory is sent only to a trusted
+Ollama host, and only when the request sets `"include_sensitive": true`.
 
 ```fish
 set -l token (string replace -r '^AETHER_API_TOKEN=' '' (grep '^AETHER_API_TOKEN=' .env))

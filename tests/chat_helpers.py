@@ -15,7 +15,8 @@ from core.config import Settings
 from core.events import EventRecorder, EventWriter
 from core.identity import load_identity
 from core.log import Redactor, SecretCheck, secrets_from
-from router.contract import FinishReason, ProviderUnavailable, Usage
+from router.contract import FinishReason, PrivacyLevel, ProviderUnavailable, Usage
+from router.memory_context import MemorySource
 from router.routing import Router
 from tests.fakes import FakeProvider, MemoryWriter, snapshot
 
@@ -41,6 +42,9 @@ class Setup:
         writer: EventWriter | None = None,
         recorder_timeout_s: float = 3.0,
         client: tuple[str, int] = LOCAL,
+        memory: MemorySource | None = None,
+        local_memory_limit: PrivacyLevel | None = None,
+        cloud_memory_limit: PrivacyLevel | None = None,
     ) -> None:
         self.log = io.StringIO()
         self.local = FakeProvider(
@@ -51,6 +55,7 @@ class Setup:
             text=text,
             answer=ANSWER,
             usage=USAGE,
+            memory_limit=local_memory_limit,
         )
         self.cloud = FakeProvider(
             "claude",
@@ -60,6 +65,7 @@ class Setup:
             text=text,
             answer=ANSWER,
             usage=USAGE,
+            memory_limit=cloud_memory_limit,
         )
         identity = load_identity()
         settings = Settings(
@@ -74,6 +80,7 @@ class Setup:
             identity,
             secret_check=SecretCheck.from_settings(settings),
             probe=lambda: snapshot(free_gib),
+            memory=memory,
         )
         # The same redactor Core builds, so the token is covered too.
         self.writer = (

@@ -1261,3 +1261,37 @@ def test_candidates_refuse_secret_and_unknown_levels(store: Run[Any]) -> None:
         store(secret)
     with pytest.raises(InvalidRecord):
         store(unknown)
+
+
+def test_retriever_reads_and_selects_for_one_call(store: Run[Any]) -> None:
+    from memory.retrieval import MemoryRetriever
+
+    async def body(s: MemoryStore) -> dict[str, Any]:
+        pub = await s.create(owner_record("rp", category="project", content=f"{PREFIX} okapi pub"))
+        per = await s.create(
+            owner_record(
+                "rr", category="project", content=f"{PREFIX} okapi per", privacy="personal"
+            )
+        )
+        await s.create(
+            owner_record(
+                "rs", category="project", content=f"{PREFIX} okapi sen", privacy="sensitive"
+            )
+        )
+        retriever = MemoryRetriever(s, ("public", "personal"))
+        got = await retriever.context_for("okapi", limit="personal", include_sensitive=False)
+        mine = [i for i in got.record_ids if i in {pub.id, per.id}]
+        return {"ids": set(mine), "want": {pub.id, per.id}, "ctx": got.context or ""}
+
+    out = store(body)
+
+    assert out["ids"] == out["want"]
+    assert f"{PREFIX} okapi sen" not in out["ctx"]
+    assert f"{PREFIX} okapi pub" in out["ctx"]
+
+
+def test_retriever_needs_a_store() -> None:
+    from memory.retrieval import MemoryRetriever
+
+    with pytest.raises(TypeError):
+        MemoryRetriever(object(), ("public",))  # type: ignore[arg-type]

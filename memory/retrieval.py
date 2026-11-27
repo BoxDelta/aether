@@ -4,8 +4,9 @@
 Nothing here touches the database or a provider. The store reads candidates
 (``MemoryStore.retrieval_candidates``); ``select_memory`` decides, as one pure
 function, which of them a call may get; ``Selection.context`` renders them for
-``render_system_prompt(memory_context=...)``. Step 12 wires this into ``/chat``,
-per call and again on failover, with a backstop in ``call_with_identity``.
+``render_system_prompt(memory_context=...)``. ``MemoryRetriever`` puts the two
+together as the router's ``MemorySource`` (step 12): the router asks it per call,
+and again on failover, and ``call_with_identity`` checks the result again.
 
 **The privacy rules.** A record is selected only if all of these hold:
 
@@ -42,14 +43,16 @@ What never leaves this module except in the rendered context: content. The
 
 import re
 import unicodedata
-from collections.abc import Collection, Iterable
+from collections.abc import Callable, Collection, Iterable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID
 
 from core.identity import SECTION_HEADINGS
-from memory.store import Candidate, MemoryRecord
+from memory.store import Candidate, MemoryRecord, MemoryStore
 from router.contract import NON_SECRET_LEVELS, SECRET, PrivacyLevel, privacy_rank
+from router.memory_context import MemoryContext
+from router.memory_context import effective_privacy as _effective_privacy
 
 MAX_RECORDS = 20  # D9
 MAX_CHARS = 4000  # D9, rendered lines without the fixed sentence
@@ -106,13 +109,22 @@ class Selection:
             return None
         return "\n".join((PREAMBLE, *self.lines))
 
+    def to_context(self) -> MemoryContext:
+        """What the router gets: IDs, levels, the rendered context and the texts for
+        the echo backstop (each record's content and its rendered line)."""
+        return MemoryContext(
+            record_ids=self.record_ids,
+            levels=tuple(r.privacy for r in self.records),
+            context=self.context,
+            texts=(*(r.content for r in self.records), *self.lines),
+            chars=self.chars,
+            left_out=self.left_out_privacy + self.left_out_size,
+        )
+
 
 def effective_privacy(request_level: PrivacyLevel, selection: Selection) -> PrivacyLevel:
     """The request's level raised to the highest level of its memory (ADR-024 §3)."""
-    highest = selection.highest_level
-    if highest is None or privacy_rank(request_level) >= privacy_rank(highest):
-        return request_level
-    return highest
+    return _effective_privacy(request_level, selection.to_context())
 
 
 def render_line(record: MemoryRecord) -> str:
@@ -204,3 +216,36 @@ def select_memory(  # noqa: PLR0913 - keyword-only; each argument is one rule
         left_out_privacy=privacy,
         left_out_size=size,
     )
+
+
+class MemoryRetriever:
+    """The router's ``MemorySource``: reads candidates from the store and selects
+    them for one call. ``include_by_default`` is the identity's
+    ``user_context_policy.include_by_default``. A store error propagates (the
+    router then calls without memory)."""
+
+    def __init__(
+        self,
+        store: MemoryStore,
+        include_by_default: Collection[PrivacyLevel],
+        *,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> None:
+        if not isinstance(store, MemoryStore):
+            raise TypeError("store must be a memory.store.MemoryStore")
+        self._store = store
+        self._include_by_default = tuple(include_by_default)
+        self._clock = clock
+
+    async def context_for(
+        self, request_text: str | None, *, limit: PrivacyLevel, include_sensitive: bool
+    ) -> MemoryContext:
+        candidates = await self._store.retrieval_candidates(request_text, max_level=limit)
+        selection = select_memory(
+            candidates,
+            limit=limit,
+            include_by_default=self._include_by_default,
+            include_sensitive=include_sensitive,
+            now=self._clock(),
+        )
+        return selection.to_context()
