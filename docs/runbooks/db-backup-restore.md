@@ -40,8 +40,9 @@ corrupted volume), not against losing the disk (ADR-025 D4).
 -   runs `pg_dump --format=custom` **inside** the Postgres container, as
     the owner over the container's local socket, so no password is used
     or passed anywhere;
--   writes into `AETHER_BACKUP_DIR` (default
-    `~/.local/share/aether/backups`, outside the repo) under a temporary
+-   writes into `AETHER_BACKUP_DIR` (code default
+    `~/.local/share/aether/backups`, outside the repo; on this machine the
+    vault folder, set in `.env` and in the timer's drop-in) under a temporary
     name, checks it (`pg_restore --list` for the contents, then a full
     read of every data block, so a cut-off file fails), and only then
     renames it to `aether-<UTC time>.dump`;

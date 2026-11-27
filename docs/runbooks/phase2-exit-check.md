@@ -91,7 +91,13 @@ docker compose ps postgres                    # STATUS (healthy)
 uv run alembic current                        # … (head)
 uv run python -m core.db                      # ok: connected to aether_app@…
 ollama list                                   # llama3.1:8b listed
+grep -c '^AETHER_BACKUP_DIR=.*vault/backups' .env   # 1: backups go to the volume (prints a count only)
 ```
+
+If the last line prints 0, set `AETHER_BACKUP_DIR` to
+`~/.local/share/aether/vault/backups` in `.env` first
+(`docs/runbooks/encrypted-volume.md` stage 5). Without it, step B6 fails on
+the old, immutable folder and writes nothing.
 
 Start Core in a second terminal (localhost only), then load the token in
 the first. The token is never printed. Don't run `echo $token`, or `set`
@@ -239,12 +245,14 @@ docker compose exec -T postgres psql -U aether -d aether_restore_check -At < scr
 
 This removes only `aether_restore_check`. Check the name before you press
 Enter. If B7 didn't run, delete the record first, with the step B7
-command, Core running and the token loaded.
+command, Core running and the token loaded. If `$record` is empty, B2
+created nothing and there is nothing to delete.
 
 ```fish
 docker compose exec -T postgres dropdb -U aether aether_restore_check
 echo "SELECT count(*) AS live FROM memory_records WHERE id = :'rec';" | docker compose exec -T -e PGOPTIONS='-c default_transaction_read_only=on' postgres psql -U aether -d aether -v rec=$record
 echo "SELECT count(*) AS rows_with_marker FROM events e WHERE row_to_json(e)::text ~* '\mQUORVETHIL\M';" | docker compose exec -T -e PGOPTIONS='-c default_transaction_read_only=on' postgres psql -U aether -d aether
+set -e token    # again, in case a step failed before B7
 ```
 
 **Expect:** `live` 0; `rows_with_marker` 0: the fact's text is in no
