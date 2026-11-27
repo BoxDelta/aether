@@ -76,8 +76,8 @@ Exit criteria:
 
 **Status:** In progress (since 2026-11-15; build order in ADR-024 §9,
 #58). As of 2026-11-27 every build step is done except the clean-up of
-the old unencrypted data (#152, stage 7 of step 17). The exit check has
-not been run.
+the old unencrypted data (#152, stage 7 of step 17). The exit check
+(`docs/runbooks/phase2-exit-check.md`) has not been run.
 
 **Goal:** Cross-provider continuity, the core of AETHER.
 

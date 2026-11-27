@@ -25,8 +25,9 @@ After the move:
     LUKS2 volume as the database.
 -   The timer's drop-in refuses to run while that volume is locked: exit 1,
     one `err` journal line, the unit failed, and nothing written.
--   **Use that folder wherever this runbook says
-    `~/.local/share/aether/backups`.**
+-   The commands below use that folder. The old folder,
+    `~/.local/share/aether/backups`, is empty and immutable since stage 7
+    of the encrypted-volume runbook (#152).
 
 Backups never go to a cloud location. They are on the **same disk** as the
 database, so they protect against mistakes (a bad migration, `down -v`, a
@@ -60,7 +61,7 @@ Run one by hand:
 
 ```fish
 uv run python -m core.backup
-ls -l ~/.local/share/aether/backups/     # drwx------ folder, -rw------- files
+ls -l ~/.local/share/aether/vault/backups/     # drwx------ folder, -rw------- files
 ```
 
 ## 2. Install the daily timer (by hand)
@@ -161,7 +162,7 @@ the real `aether` database: it only creates and later drops
 **R1. Pick the backup.** Names sort by time, so the last one is the newest:
 
 ```fish
-set backup (path sort ~/.local/share/aether/backups/aether-*.dump)[-1]
+set backup (path sort ~/.local/share/aether/vault/backups/aether-*.dump)[-1]
 path basename $backup
 ```
 
@@ -320,8 +321,8 @@ docker compose exec -T postgres dropdb -U aether aether_restore_check
     `aether_before_restore` in step 6.
 
     ```fish
-    ls ~/.local/share/aether/backups/*-*-*.dump     # labelled backups only
-    rm ~/.local/share/aether/backups/aether-*-prerestore.dump
+    ls ~/.local/share/aether/vault/backups/*-*-*.dump     # labelled backups only
+    rm ~/.local/share/aether/vault/backups/aether-*-prerestore.dump
     ```
 
 ### Going back (before step 6)
