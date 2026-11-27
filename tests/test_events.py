@@ -210,13 +210,32 @@ def test_request_texts_skip_short_messages() -> None:
     assert request_texts(request) == [SYSTEM]
 
 
-def test_long_text_is_capped() -> None:
-    attempt = Attempt("ollama", "ProviderBadResponse", "x" * 400, False)
+def test_long_text_is_capped_when_stored() -> None:
+    attempt = Attempt("ollama", "ProviderBadResponse", "x" * (MAX_TEXT + 100), False)
     reason = "r" * (MAX_TEXT + 100)
-    with pytest.raises(ValidationError):
-        Event(event_type="request.failed", actor="router", route_reason=reason)
-    event = request_failed(RouteFailed(reason, [attempt]), make_request(), OPTIONS)
-    assert len(to_row(event, REDACT)["route_reason"]) == MAX_TEXT
+    request = make_request()
+    row = to_row(request_failed(RouteFailed(reason, [attempt]), request, OPTIONS), REDACT)
+    assert len(row["route_reason"]) == MAX_TEXT
+    assert len(row["attempts"][0]["message"]) == MAX_TEXT
+    row = to_row(provider_unavailable(attempt, request), REDACT)
+    assert len(row["error_message"]) == MAX_TEXT
+
+
+@pytest.mark.parametrize("start", [MAX_TEXT - 10, MAX_TEXT - len(FAKE_SECRET) + 1, MAX_TEXT - 1])
+def test_a_secret_across_the_cap_is_redacted_not_cut(start: int) -> None:
+    # Redaction runs before the cap (#115): a configured secret that straddles
+    # character MAX_TEXT is masked whole, so no prefix of it is stored.
+    text = "e" * start + FAKE_SECRET + "e" * 50
+    attempt = Attempt("ollama", "ProviderBadResponse", text, False)
+    request = make_request()
+    rows = [
+        to_row(request_failed(RouteFailed(text, [attempt]), request, OPTIONS), REDACT),
+        to_row(provider_unavailable(attempt, request), REDACT),
+    ]
+    texts = [rows[0]["route_reason"], rows[0]["attempts"][0]["message"], rows[1]["error_message"]]
+    for t in texts:
+        assert len(t) <= MAX_TEXT
+        assert FAKE_SECRET[:6] not in t
 
 
 # --- the model refuses anything that isn't metadata ----------------------------------
