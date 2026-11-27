@@ -207,23 +207,32 @@ for the highest level present.
   -----------------------------------------------------------------------
   Level         Meaning                       Allowed providers (default)
   ------------- ----------------------------- ---------------------------
-  Public        Already public or harmless    Any configured provider
-                (docs, general questions)     
+  Public        Already public or harmless    Any configured provider;
+                (docs, general questions)     the cloud and an untrusted
+                                              Ollama host only with
+                                              `allow_cloud`
 
-  Personal      Ordinary preferences, project Approved cloud providers
-                notes, plans                  listed in config, and local
+  Personal      Ordinary preferences, project Local, and a cloud provider
+                notes, plans                  or untrusted Ollama host
+                                              when the request sets
+                                              `allow_cloud` (no
+                                              allowlist, #120)
 
-  Sensitive     Health, finances, private     Local only, unless the
-                messages, other people's      owner approves a specific
-                details                       request
+  Sensitive     Health, finances, private     A trusted Ollama host only
+                messages, other people's      (loopback or private
+                details                       address, or opted in with
+                                              `AETHER_OLLAMA_TRUST_HOST`);
+                                              as memory, only with the
+                                              request's
+                                              `include_sensitive`
 
   Secret        Passwords, API keys, tokens,  Never sent to any model;
                 account numbers               never stored in Memory
   -----------------------------------------------------------------------
 
 Unclassified content is treated as Personal. Routing tests must prove
-that Sensitive content never reaches a cloud adapter without approval
-and that Secret content never reaches any adapter.
+that Sensitive content never reaches a cloud adapter or an untrusted
+Ollama host, and that Secret content never reaches any adapter.
 
 In code, the level names and their order are defined once, in
 `router/contract.py` (`PrivacyLevel`). The non-Secret subset (identity
@@ -727,13 +736,21 @@ shapes only; they cannot recognise personal data.
 -   **Encryption at rest (#57, ADR-026).** The Postgres data and the
     backups move into one LUKS2 container file (20 GB, ext4 inside),
     unlocked only by a passphrase the owner types. It is never in `.env`,
-    a keyfile on this disk, compose, a script or a unit. The owner carries
-    the move out by hand (`docs/runbooks/encrypted-volume.md`); until then,
-    the database and the backups are **not encrypted at rest**. Both hold
-    the events and, since the memory API (`POST /memory`, ADR-024 step 6),
-    full memory records (content, key, level and provenance). The move
-    must happen before real memory data is stored; until then only
-    invented data belongs in memory (ADR-024 §4, §7).
+    a keyfile on this disk, compose, a script or a unit. The owner carried
+    out the move by hand on 2026-11-27 (`docs/runbooks/encrypted-volume.md`
+    stages 0–5, results on #57): since then the database and the nightly
+    backups are on the volume, which the owner opens with `aether-vault
+    open` after each boot. Both hold the events and full memory records
+    (content, key, level and provenance). With #1, #12 and #3 already
+    done, this meets the ADR-024 §7 gate for storing real memory data,
+    **provided every compose run loads the override until stage 7**
+    (#152): a run without it (`-f docker-compose.yml`, another folder, a
+    lost `.env` line) starts the old database on the unencrypted
+    `aether_pgdata` volume, and real memory written there can't be wiped
+    from this disk (ADR-026 §5 layer 6, §7). Stage 7, removing the old
+    unencrypted volume and backups and rebinding that name to the
+    volume, is still open (#152, not before 2026-12-04, with the owner's
+    approval).
     -   **Fails closed, with the override loaded** (`compose.vault.yaml`,
         through `COMPOSE_FILE` in `.env` or `aether-vault`). With the volume
         locked or not mounted, Docker refuses to start Postgres: the bind

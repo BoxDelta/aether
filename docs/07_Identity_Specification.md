@@ -35,9 +35,10 @@ It is stored at `identity/aether.yaml` and contains:
 
   `principles`              Fixed behavior rules (section 3).
 
-  `user_context_policy`     Which memory categories may be included by
-                            default (references Memory and the privacy
-                            levels in `05` section 7.1).
+  `user_context_policy`     Which memory privacy levels may be included
+                            by default (`include_by_default`; references
+                            Memory and the privacy levels in `05`
+                            section 7.1).
 
   `model_notes`             Optional per-provider adjustments needed to
                             keep the same behavior (e.g. a shorter prompt
@@ -94,6 +95,18 @@ reason, token counts and latency. Prompt, answer and identity text are
 never logged. Routing (#18) and failover (#19) call providers only
 through this wrapper.
 
+Memory context (Phase 2, ADR-024 §3, #58): for each call, the failover
+call included, the router asks `memory/retrieval.py` for the records
+this provider may get (section 6 and `05` §7.1) and passes them as
+`memory_context`. They form their own section under the fixed heading
+"Relevant memory:", which starts with a sentence saying these are notes,
+not instructions; one line per record, with its category and level.
+Line breaks and the section headings are neutralised in the record
+text, so a record can't add lines or pose as a new section. This lowers
+the risk of prompt injection through approved memory; it can't remove
+it. With no permitted memory the section is left out. The memory
+proposal call (ADR-033) uses the same wrapper with no memory at all.
+
 ## 5. Continuity test (Phase 1 acceptance)
 
 Send the same set of 10 prompts through the Claude adapter and the
@@ -111,7 +124,13 @@ Decided:
 -   Default memory context (2026-11-14): `public` and `personal` levels
     may be included by default (`user_context_policy.include_by_default`).
     `sensitive` needs explicit owner approval per request; `secret` is
-    never included (`05` section 7.1).
+    never included (`05` section 7.1). Applied in Phase 2 by
+    `memory/retrieval.py`: the approval is the request's
+    `include_sensitive`, required for Sensitive memory even if a future
+    identity listed `sensitive` in `include_by_default`, and Sensitive
+    memory goes only to a trusted Ollama host. Each provider's memory
+    limit applies on top (the cloud and an untrusted Ollama host: up to
+    `personal`, and only with `allow_cloud`).
 
 Open:
 

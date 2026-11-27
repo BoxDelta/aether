@@ -7,10 +7,12 @@ reasons are in ADR-026.
 
 -   **Do it before real memory data is stored.** Anything ever written
     unencrypted can't be reliably wiped from this disk afterwards (ADR-026
-    §7). Today the database holds event metadata and invented memory
-    records only (the memory API is on, but real data waits for this
-    move). If you ever stored real memory text, treat it as exposed on
-    this disk.
+    §7). Stages 0–5 were done on 2026-11-27 (results on #57); at the move
+    the database held event metadata and 0 memory records. Stage 7 (#152)
+    is still open: until then, a compose run without the override starts
+    the old unencrypted database, so keep `COMPOSE_FILE` in `.env`. If
+    real memory text was ever written there, treat it as exposed on this
+    disk.
 -   Commands are fish, run from the repo root (`~/Projects/aether`) unless a
     step says otherwise.
 -   Lines marked `# expect:` show what you should see. Anything else: stop,

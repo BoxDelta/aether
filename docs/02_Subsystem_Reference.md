@@ -134,6 +134,45 @@ Searchable reference knowledge. - Operational metadata.
 provenance; retention policy; backup and restore; sensitive-data
 minimization.
 
+**As built (Phase 2, ADR-024, #58).** The design is ADR-024; the
+privacy rules are in `05` §7.1 and the backup rules in `05` §11.
+
+-   **Store.** One Postgres table, `memory_records` (migration 0004):
+    content, optional key, category (`profile`, `preference`, `project`,
+    `decision`, `task`, `reference`), privacy level (never `secret`),
+    status (`pending` or `approved`), provenance (source `owner`, `model`
+    or `tool`, the provider and request ID, whether the level is the
+    owner's or suggested), timestamps and an optional `expires_at`.
+    Core writes it only through `memory/store.py`, and each change
+    writes one content-free `memory.*` event in the same transaction.
+    The only other writer is the restore repair (`memory/restore.py`),
+    which runs by hand on a restored copy before it replaces the live
+    database.
+    Operational metadata stays in the events table, not in memory.
+-   **Who decides.** The owner creates records directly (level
+    required) and approves, rejects, corrects and deletes them. A model
+    may only propose: with `propose_memory` on `/chat`, proposals are
+    stored as `pending` and are never retrieved until the owner approves
+    them with a level (ADR-033). At most 50 pending; a pending record
+    expires after 30 days.
+-   **Owner API.** `/memory` (Core, bearer token): list, get, search,
+    create, approve, reject, correct (`PATCH`), delete and export.
+    Commands are in the README.
+-   **Retrieval.** Each model call, the failover call included, gets its
+    own selection for the provider that receives it: approved, unexpired
+    records within that provider's memory limit (Public and Personal by
+    default, Sensitive only on a trusted Ollama host with the request's
+    `include_sensitive`, nothing for the cloud without `allow_cloud`),
+    keyed profile and preference records first, then full-text matches,
+    at most 20 records and 4000 characters. They go into the system
+    prompt's memory section (`07` §4). Structured and full-text search
+    only; pgvector is not used.
+-   **Protection.** The database and its backups are in a LUKS2
+    container file (ADR-026, since 2026-11-27); backups are verified,
+    kept 7 daily plus 4 weekly, and the restore is tested, including the
+    memory repair after a restore (`memory/restore.py`, runbook
+    `docs/runbooks/db-backup-restore.md`).
+
 ## AETHER Nexus
 
 **Purpose:** Choose the appropriate model for each request.
