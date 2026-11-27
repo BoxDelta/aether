@@ -63,3 +63,18 @@ ADR-009 onward have their own files here.
     cloud (#22; amends ADR-023 §5). Accepted (owner, 2026-11-27).
 -   **ADR-033:** How a model proposes memory (`propose_memory`; ADR-024
     D7, step 15). Accepted (owner, 2026-11-27).
+-   **ADR-034:** Web UI stack: Vite + React + TypeScript in `web/`, built
+    to static files that Core serves; an installable PWA. Accepted
+    (owner, 2026-11-27).
+-   **ADR-035:** Web and API authentication: Tailscale plus a single-user
+    login with a session cookie, and scoped service tokens for machines.
+    Accepted (owner, 2026-11-27).
+-   **ADR-036:** Tool permission levels for v1 (docs/05 §4 per tool;
+    High needs approval in the UI; no Critical tools). Accepted (owner,
+    2026-11-27).
+-   **ADR-037:** Live updates with Server-Sent Events. Accepted (owner,
+    2026-11-27).
+-   **ADR-038:** Agents as supervised clients of Core (registry, own
+    token, pause and revoke). Accepted (owner, 2026-11-27).
+-   **ADR-039:** One main chat with automatic topics. Accepted (owner,
+    2026-11-27).
