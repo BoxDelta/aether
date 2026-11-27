@@ -48,6 +48,9 @@ host environment is Arch / GNOME, with Android access planned.
   `07_Identity_Specification.md`                 What the single AETHER identity
                                                  is and how it is applied
 
+  `08_Phase_3_Build_Order.md`                    Phase 3 build order, Sentinel
+                                                 track and UI design plan
+
   `CODE_TOUR.md`                                 One-page tour of the code for a
                                                  new developer
 
