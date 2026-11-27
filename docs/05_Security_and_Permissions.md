@@ -104,8 +104,10 @@ confidence is not a substitute for authorization.
     `DATABASE_MIGRATION_URL` passwords as written and percent-decoded), Anthropic-key-shaped strings, `Bearer <credential>`
     values, and the password in any `scheme://user:password@host` URL,
     configured or not (`core/log.py`; its module docstring is the full
-    list). Database errors are reported from safe parts only
-    (`core/db.py`, ADR-020).
+    list). A record that fails to format or write (a missing argument, a
+    broken `repr`) is never printed raw: the handler writes one fixed
+    stderr line with the exception type only (#114). Database errors are
+    reported from safe parts only (`core/db.py`, ADR-020).
 -   The Claude client takes its key and endpoint from AETHER's settings:
     `router/claude.py` passes the API key and the fixed base URL
     `https://api.anthropic.com` explicitly (and `auth_token=None`), so a
