@@ -12,6 +12,7 @@ from pydantic import SecretStr
 from core.app import create_app
 from core.chat import MAX_BODY_BYTES, MAX_MESSAGE_CHARS, MAX_MESSAGES, MAX_TOTAL_CHARS
 from core.config import Settings
+from core.errors import UNKNOWN_FIELD
 from core.events import Event, EventWriter
 from core.identity import load_identity
 from core.request_context import REQUEST_ID_HEADER
@@ -523,3 +524,16 @@ def test_events_are_recorded_in_the_order_they_happen(
     times = [e["occurred_at"] for e in s.rows]
     assert times == sorted(times)
     assert_no_content(repr(s.rows))
+
+
+def test_an_unknown_body_field_is_not_named_back() -> None:
+    # The name is the sender's own text (#94); only AETHER's own names are echoed.
+    s = Setup()
+    r = s.client.post(
+        "/chat",
+        json={"messages": [{"role": "user", "content": PROMPT}], "my_diagnosis_migraine": True},
+    )
+    assert r.status_code == 422
+    [field] = r.json()["error"]["fields"]
+    assert field["loc"] == ["body", UNKNOWN_FIELD]
+    assert "migraine" not in r.text and PROMPT not in r.text

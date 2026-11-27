@@ -98,7 +98,9 @@ confidence is not a substitute for authorization.
 -   `/chat` error bodies carry only the error type, the routing reason
     and each attempt's provider, error type and scrubbed message. Never
     exception text, `__cause__` or a traceback. Validation errors never
-    echo the submitted input.
+    echo the submitted input, and name an unknown field only if the name
+    is one of the API's own (`source` sent where it isn't allowed);
+    any other name becomes `<unknown field>` (#94).
 -   Logs redact configured secrets by value (`ANTHROPIC_API_KEY`,
     `AETHER_API_TOKEN`, and the `DATABASE_URL` and
     `DATABASE_MIGRATION_URL` passwords as written and percent-decoded), Anthropic-key-shaped strings, `Bearer <credential>`

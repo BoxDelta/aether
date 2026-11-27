@@ -24,6 +24,7 @@ from pydantic import SecretStr
 
 from core.app import create_app
 from core.config import Settings
+from core.errors import UNKNOWN_FIELD
 from core.identity import load_identity
 from core.log import configure_logging
 from core.memory_api import MAX_BODY_BYTES, OFFSET_MAX, UNAVAILABLE_MESSAGE
@@ -538,3 +539,37 @@ def test_patch_and_delete_need_a_uuid(core: tuple[Core, TestClient]) -> None:
     r = client.patch("/memory/not-a-uuid", json={"content": "x"})
     assert field_errors(r) == [["path", "record_id"]]
     assert field_errors(client.delete("/memory/not-a-uuid")) == [["path", "record_id"]]
+
+
+# --- an unknown field's name is the sender's text (#94) -----------------------------
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "kwargs", "loc"),
+    [
+        ("post", "/memory", {"json": record(**{"diagnosis.migraine": "x"})}, ["body"]),
+        ("post", "/memory/search", {"json": {"query": "teal", "Sam's address": 1}}, ["body"]),
+        ("get", "/memory", {"params": {"diagnosis.migraine": "1"}}, ["query"]),
+        ("get", "/memory/export", {"params": {"my-bank-pin": "4711"}}, ["query"]),
+    ],
+)
+def test_an_unknown_field_name_is_never_echoed(
+    core: tuple[Core, TestClient],
+    method: str,
+    path: str,
+    kwargs: dict[str, Any],
+    loc: list[str],
+) -> None:
+    c, client = core
+    r = getattr(client, method)(path, **kwargs)
+    assert field_errors(r) == [[*loc, UNKNOWN_FIELD]]
+    for name in ("diagnosis", "migraine", "Sam", "bank", "4711"):
+        assert name not in r.text
+    assert_clean(c, r)
+
+
+def test_one_of_the_apis_own_names_is_still_named(core: tuple[Core, TestClient]) -> None:
+    # "source" is AETHER's name, not the sender's text: naming it says what was wrong.
+    _, client = core
+    r = client.post("/memory", json=record(source="model"))
+    assert field_errors(r) == [["body", "source"]]

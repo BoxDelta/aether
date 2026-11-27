@@ -59,16 +59,45 @@ def error_json(status: int, error_type: str, message: str, **extra: Any) -> JSON
     return JSONResponse(status_code=status, content=body.model_dump(exclude=exclude))
 
 
-def _safe_validation_errors(errors: Any) -> list[FieldError]:
+# Stands in for the name of a field the request sent but the model doesn't have.
+UNKNOWN_FIELD = "<unknown field>"
+
+
+def api_field_names(app: Any) -> frozenset[str]:
+    """Every property and parameter name in the app's own API schema: names AETHER
+    defines, so echoing one tells the sender nothing they didn't send and nothing
+    of theirs. Built once per app."""
+    cached = getattr(app.state, "aether_api_field_names", None)
+    if cached is None:
+        schema = app.openapi()
+        names: set[str] = set()
+        for component in schema.get("components", {}).get("schemas", {}).values():
+            names.update(component.get("properties", {}))
+        for operations in schema.get("paths", {}).values():
+            for operation in operations.values():
+                if isinstance(operation, dict):
+                    names.update(p["name"] for p in operation.get("parameters", ()))
+        cached = frozenset(names)
+        app.state.aether_api_field_names = cached
+    return cached
+
+
+def _safe_loc(error: Any, known: frozenset[str]) -> list[str]:
+    loc = [str(part) for part in error.get("loc", ())]
+    # An unknown field's name is the sender's own text (a body key, a query name,
+    # e.g. "diagnosis.migraine"), so it is echoed only if it is one of the API's
+    # own names, such as "source" sent where it isn't allowed (#94, docs/05 §5).
+    if error.get("type") == "extra_forbidden" and loc and loc[-1] not in known:
+        loc[-1] = UNKNOWN_FIELD
+    return loc
+
+
+def _safe_validation_errors(errors: Any, known: frozenset[str]) -> list[FieldError]:
     # Location and message only: pydantic's "input"/"ctx" can echo the request.
-    return [
-        FieldError(loc=[str(part) for part in e.get("loc", ())], msg=str(e.get("msg", "")))
-        for e in errors
-    ]
+    return [FieldError(loc=_safe_loc(e, known), msg=str(e.get("msg", ""))) for e in errors]
 
 
-async def validation_error_handler(_request: Request, exc: Exception) -> JSONResponse:
+async def validation_error_handler(request: Request, exc: Exception) -> JSONResponse:
     errors: Any = exc.errors() if isinstance(exc, RequestValidationError) else []
-    return error_json(
-        422, "ValidationError", "invalid request", fields=_safe_validation_errors(errors)
-    )
+    fields = _safe_validation_errors(errors, api_field_names(request.app))
+    return error_json(422, "ValidationError", "invalid request", fields=fields)
