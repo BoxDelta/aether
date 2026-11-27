@@ -248,8 +248,8 @@ old and new level when the level changed) and a delete
 clean-up that may run first is separate, and keeps its own events), and if the
 event can't be written the change is rolled back (ADR-024 §5, #72).
 
-Its only caller is the memory API (`core/memory_api.py`, ADR-024 step 6,
-#92): `GET /memory` (filters `status`, `category`, `privacy` only),
+Its callers are the memory API, and `/chat` for model proposals (below).
+The memory API (`core/memory_api.py`, ADR-024 step 6, #92) has: `GET /memory` (filters `status`, `category`, `privacy` only),
 `GET /memory/{id}`, `POST /memory/search` (key and text query in the
 body, never the URL, which the access log records), `POST /memory`, and
 (step 8, #97) `POST /memory/{id}/approve` and `POST /memory/{id}/reject`,
@@ -298,6 +298,28 @@ part of the read: if it fails, the list or create fails too (503 or
 `pending` is marked `restored` (migration 0006): it never expires and
 doesn't count toward the 50-proposal limit, until the owner approves or
 rejects it (approving clears the marker).
+
+Model proposals (ADR-033, ADR-024 D7, step 15): only when a `/chat`
+request sets `propose_memory: true`, and only after an answer that
+finished normally (`stop`). Core then makes **one more call to the
+provider that answered**, through `call_with_identity` (identity, the #8
+tripwire, the echo scrub, `max_privacy`) with the same `allow_cloud`,
+**no memory**, and only the **latest user message**: not the answer,
+earlier turns or memory, so a proposal can only restate what the owner
+just wrote. The reply is parsed as data: one JSON object
+(`{"proposals": [...]}`, one Markdown fence tolerated), each item exactly
+`content`, `category`, `privacy`, a known category, never `secret`, at
+most 3, no duplicates; anything else is dropped. The stored level is the
+higher of the model's suggestion and the request's level, so a model
+can't make the owner's text look more public. Records are `pending`,
+`source="model"`, with the provider and request ID, through the store's
+normal checks (length, `SecretCheck`, 50 pending). A proposal call error,
+an unusable reply or a store error never fails the answer: the reply's
+`memory_proposals` count is 0, and one log line gives counts and an
+error type, never text. The proposal call has its own
+`model.call.completed` (or `provider.unavailable`) event; no failover.
+Limit: secret-shaped text in a format `SecretCheck` doesn't know can be
+proposed; it stays pending, is never retrieved, and the owner rejects it.
 
 Retrieval for model calls (ADR-024 §3, step 12): each call, the
 failover call included, gets its own selection after its route is

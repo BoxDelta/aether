@@ -26,7 +26,8 @@ are in `docs/adr/`; a longer tour is in `docs/CODE_TOUR.md`.
     `memory_context.py` the memory a call gets and its backstop,
     `echo.py` the echo backstop.
 -   `memory/`: `store.py` the memory store, `retrieval.py` which memory
-    one model call may get, `restore.py` the memory repair after a
+    one model call may get, `proposals.py` model memory proposals,
+    `restore.py` the memory repair after a
     restore, `types.py` its types.
 -   `identity/aether.yaml`: the single AETHER identity.
 -   `dispatch/`: dispatcher prototype (ADR-030, dev tooling, not Core):
