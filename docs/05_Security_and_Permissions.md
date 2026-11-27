@@ -115,7 +115,9 @@ confidence is not a substitute for authorization.
     broken `repr`) is never printed raw: the handler writes one fixed
     stderr line with the exception type and the logging call's location
     only (#114). Records logged before logging is configured (at import
-    time) still use Python's own fallback. Database errors are
+    time) go to a replaced `logging.lastResort`: WARNING and above as
+    JSON redacted by pattern (no configured values are known yet), with
+    the same safe error path (#167). Database errors are
     reported from safe parts only (`core/db.py`, ADR-020).
 -   The Claude client takes its key and endpoint from AETHER's settings:
     `router/claude.py` passes the API key and the fixed base URL

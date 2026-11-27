@@ -205,8 +205,8 @@ class SafeStreamHandler(logging.StreamHandler):  # type: ignore[type-arg]
     call was (logger name, file, line, function: code locations, not data). The
     record's message and arguments are never written.
 
-    Limit: records logged before ``configure_logging`` runs (at import time) still go
-    to Python's ``lastResort`` handler, whose error path is the stdlib one.
+    Records logged before ``configure_logging`` runs go to ``logging.lastResort``,
+    which this module replaces with ``_LastResortHandler`` (#167).
     """
 
     def handleError(self, record: logging.LogRecord) -> None:
@@ -225,6 +225,30 @@ class SafeStreamHandler(logging.StreamHandler):  # type: ignore[type-arg]
         )
         with contextlib.suppress(Exception):  # nowhere left to report it
             sys.stderr.write(line + "\n")
+
+
+class _LastResortHandler(SafeStreamHandler):
+    """Python's fallback for records logged while no handler is configured (at import
+    time, before ``configure_logging``; #167). Like the stdlib one it writes WARNING
+    and above to the current ``sys.stderr``, but as redacted JSON (by pattern: no
+    secret values are known yet) and through ``SafeStreamHandler``'s error path, so
+    a record's raw message, arguments or traceback are never printed."""
+
+    def __init__(self) -> None:
+        super().__init__(sys.stderr)
+        self.setLevel(logging.WARNING)
+        self.setFormatter(JsonFormatter(Redactor()))
+
+    @property
+    def stream(self) -> TextIO:
+        return sys.stderr
+
+    @stream.setter
+    def stream(self, _value: TextIO) -> None:
+        pass  # always the current sys.stderr, as the stdlib fallback does
+
+
+logging.lastResort = _LastResortHandler()
 
 
 def configure_logging(settings: Settings, stream: TextIO | None = None) -> logging.Handler:

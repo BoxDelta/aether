@@ -291,3 +291,42 @@ def test_logging_still_works_after_a_failed_record(
 
 def test_configure_logging_installs_the_safe_handler() -> None:
     assert isinstance(configure_logging(settings(), stream=io.StringIO()), SafeStreamHandler)
+
+
+# --- the pre-configuration fallback (#167) ---------------------------------------------
+
+FAKE_ANTHROPIC_KEY = "sk-ant-api03-FAKE-early-log-0123456789abcd"  # gitleaks:allow
+
+
+def test_python_fallback_handler_is_aethers(capsys: pytest.CaptureFixture[str]) -> None:
+    import core.log
+
+    handler = logging.lastResort
+    assert isinstance(handler, core.log._LastResortHandler)
+    record = logging.LogRecord(
+        "early", logging.WARNING, __file__, 1, "key %s", (FAKE_ANTHROPIC_KEY,), None
+    )
+    handler.handle(record)
+    err = capsys.readouterr().err
+    assert json.loads(err)["message"] == f"key {REDACTED}"
+    assert FAKE_ANTHROPIC_KEY not in err
+
+
+def test_python_fallback_never_prints_a_record_that_fails(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    record = logging.LogRecord(
+        "early", logging.ERROR, __file__, 1, "%s %s", ("canary-early-arg",), None
+    )
+    logging.lastResort.handle(record)  # type: ignore[union-attr]
+    err = capsys.readouterr().err
+    assert json.loads(err)["message"] == "Log record could not be written"
+    assert "canary-early-arg" not in err and "Traceback" not in err
+
+
+def test_python_fallback_skips_below_warning(capsys: pytest.CaptureFixture[str]) -> None:
+    record = logging.LogRecord("early", logging.INFO, __file__, 1, "info", (), None)
+    assert logging.lastResort is not None
+    if record.levelno >= logging.lastResort.level:
+        logging.lastResort.handle(record)
+    assert capsys.readouterr().err == ""
