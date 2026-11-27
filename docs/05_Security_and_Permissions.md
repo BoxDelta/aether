@@ -763,8 +763,9 @@ shapes only; they cannot recognise personal data.
     old unencrypted volume and backups were removed, `aether_pgdata` was
     recreated as a bind to the volume's data folder (so even a compose
     run without the override, e.g. `-f docker-compose.yml`, uses the
-    encrypted data and can't start while it is locked), and the old
-    backup folder is empty and immutable. Freed blocks of the old data
+    encrypted data and can't start while it is locked), the old backup
+    folder is empty and immutable, and the owner removed the old snapper
+    snapshots. Freed blocks of the old data
     are not wiped (ADR-026 §7); it held no real memory content.
     -   **Fails closed, with the override loaded** (`compose.vault.yaml`,
         through `COMPOSE_FILE` in `.env` or `aether-vault`). With the volume

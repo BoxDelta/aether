@@ -10,8 +10,9 @@ reasons are in ADR-026.
     §7). Stages 0–5 were done on 2026-11-27 (results on #57); at the move
     the database held event metadata and 0 memory records. Stage 7 (#152)
     was done the same day: the old volume and backups are gone,
-    `aether_pgdata` is a bind to the volume's data folder, and the old
-    backup folder is empty and immutable. Keep `COMPOSE_FILE` in `.env`
+    `aether_pgdata` is a bind to the volume's data folder, the old
+    backup folder is empty and immutable, and the owner removed the old
+    snapper snapshots. Keep `COMPOSE_FILE` in `.env`
     anyway. If real memory text was ever written to the old data, treat
     it as exposed on this disk.
 -   Commands are fish, run from the repo root (`~/Projects/aether`) unless a
