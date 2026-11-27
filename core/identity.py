@@ -78,8 +78,8 @@ def render_system_prompt(
     """Build the system prompt for one model call (docs/07 §4).
 
     Order: identity → permitted memory context → task instructions. The identity
-    part is the same for every provider; ``model_notes[provider]`` (generated from
-    this file, never edited separately) is appended to it when present.
+    part is the same for every provider; ``model_notes[provider]`` (hand-written in
+    the same identity file, never anywhere else) is appended to it when present.
     """
     lines = [
         f"You are {identity.name}. {identity.role}",

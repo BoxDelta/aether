@@ -76,11 +76,12 @@ identity file; each change bumps `version`.
 
 ## 4. How it is applied
 
-1.  Core loads the identity file at startup and on change.
+1.  Core loads the identity file at startup; a change takes effect when
+    Core restarts (no live reload).
 2.  For each request, Core builds the system prompt from: identity →
     permitted memory context → task instructions.
-3.  Nexus may use a shorter variant for small local models, generated
-    from the same file, never edited separately.
+3.  Nexus may use a shorter variant for small local models
+    (`model_notes`), written in the same file, never anywhere else.
 4.  The identity version is logged with every model call so behavior
     changes can be traced.
 

@@ -30,5 +30,6 @@ user_context_policy:
     - personal
 
 # Optional per-provider adjustments, e.g. a shorter prompt for small local
-# models. Generated from this file, never edited separately (docs/07 §4).
+# models. Hand-written here, in the one identity file, never anywhere else
+# (docs/07 §4).
 model_notes: {}
