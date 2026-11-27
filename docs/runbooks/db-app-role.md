@@ -146,7 +146,8 @@ events are lost.
     If `DROP ROLE` says the role still has privileges, a leftover live
     test role may exist. List the roles with
     `docker compose exec postgres psql -U aether -d aether -c '\du'`,
-    and drop any `aether_app_test_…` role the same way first.
+    and drop any `aether_app_test_…` role the same way first. (The live
+    tests drop such leftovers themselves at the start of each run, #61.)
 
 3.  Point `DATABASE_URL` back at the owner and remove the migration line:
 

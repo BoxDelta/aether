@@ -1,12 +1,15 @@
 import asyncio
 import logging
 import os
+import re
 import secrets
 from collections.abc import Iterator
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import pytest
 from pydantic import SecretStr
+from sqlalchemy import text
 
 from core.config import Settings, get_settings
 from core.db import create_migration_engine, migration_url
@@ -132,6 +135,45 @@ async def _as_owner(owner: Settings, statement: str) -> None:
         await engine.dispose()
 
 
+TEST_ROLE_PREFIX = "aether_app_test_"
+_swept: list[bool] = []  # once per test session
+
+
+async def _sweep_leftover_test_roles(owner: Settings) -> list[str]:
+    """Drop ``aether_app_test_*`` roles a killed run left behind (#61): only those
+    with no open session; one that still owns or holds anything stays (the drop
+    fails and is skipped). Returns the dropped names."""
+    engine = create_migration_engine(owner)
+    dropped: list[str] = []
+    try:
+        async with engine.connect() as conn:
+            rows = await conn.execute(
+                text(
+                    "SELECT rolname FROM pg_roles r WHERE starts_with(rolname, :prefix)"
+                    " AND NOT EXISTS (SELECT 1 FROM pg_stat_activity a"
+                    " WHERE a.usename = r.rolname)"
+                ),
+                {"prefix": TEST_ROLE_PREFIX},
+            )
+            names = [name for (name,) in rows]
+        for name in names:
+            if not re.fullmatch(rf"{TEST_ROLE_PREFIX}[0-9a-f]{{12}}", name):
+                continue  # not one this fixture made
+            try:
+                await _as_owner_on(engine, f"DROP ROLE {name}")
+            except Exception:  # noqa: S112 - it owns or holds something: leave it
+                continue
+            dropped.append(name)
+    finally:
+        await engine.dispose()
+    return dropped
+
+
+async def _as_owner_on(engine: Any, statement: str) -> None:
+    async with engine.begin() as conn:
+        await conn.exec_driver_sql(statement)
+
+
 @pytest.fixture
 def live_app(live_owner: Settings) -> Iterator[Settings]:
     """Core's settings with a throwaway login role that is a member of the app role
@@ -143,7 +185,10 @@ def live_app(live_owner: Settings) -> Iterator[Settings]:
     """
     assert live_owner.database_url is not None
     owner_url = live_owner.database_url.get_secret_value()
-    role = f"aether_app_test_{secrets.token_hex(6)}"
+    if not _swept:
+        _swept.append(True)
+        asyncio.run(_sweep_leftover_test_roles(live_owner))
+    role = f"{TEST_ROLE_PREFIX}{secrets.token_hex(6)}"
     password = secrets.token_hex(24)
     try:
         asyncio.run(
