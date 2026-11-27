@@ -23,13 +23,13 @@ is public.
 
 1.  Keep ADR-010 as it is: GitHub only.
 2.  Plane as a read-only mirror of GitHub.
-    2b. One-way mirror built in n8n (chosen).
-3.  Plane's built-in two-way GitHub sync. It is a paid Pro feature and
+3.  One-way mirror built in n8n (chosen).
+4.  Plane's built-in two-way GitHub sync. It is a paid Pro feature and
     isn't in the self-hosted Community Edition, so it needs a paid plan.
 
 ## Decision
 
-Option 2b, with these limits:
+Option 3, with these limits:
 
 -   **GitHub stays the source of truth for agents.** Claude Code, Codex
     and the dispatcher read GitHub only, never Plane's API. ADR-010 still
@@ -60,7 +60,8 @@ Option 2b, with these limits:
 -   \- If n8n is off for more than 3 days, issues closed in that time stay
     open in Plane until edited on GitHub.
 -   \- The token expires every 90 days and must be renewed.
--   \- A task typed into the wrong Plane project becomes public.
+-   Everything in the Aether Plane project is a copy of a public GitHub
+    issue; nothing typed in Plane is sent to GitHub.
 
 ## Revisit when
 
