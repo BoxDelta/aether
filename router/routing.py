@@ -117,6 +117,15 @@ class Candidate:
         return options.allow_cloud or not (self.kind == "cloud" or self.needs_allow_cloud)
 
 
+# Marks a route to a local provider whose data leaves this network (ADR-032), so the
+# route reason (and the events that store it) tells it apart from a local send (#148).
+OFF_NETWORK_MARK = " [off-network host: data leaves this network]"
+
+
+def _net(candidate: Candidate) -> str:
+    return OFF_NETWORK_MARK if candidate.kind == "local" and candidate.needs_allow_cloud else ""
+
+
 @dataclass(frozen=True, slots=True)
 class RouteDecision:
     provider: str
@@ -223,7 +232,7 @@ def _override_route(
     reason = f"manual override: {name}"
     if match.kind == "local" and not (headroom is not None and headroom.ok):
         reason += f" (desktop VRAM reserve not met: {_room_text(headroom)})"
-    return RouteDecision(match.name, match.kind, reason)
+    return RouteDecision(match.name, match.kind, reason + _net(match))
 
 
 def choose_route(
@@ -252,7 +261,9 @@ def choose_route(
     ]
 
     if local and has_room:
-        return RouteDecision(local[0].name, "local", f"local preferred: {_room_text(headroom)}")
+        return RouteDecision(
+            local[0].name, "local", f"local preferred: {_room_text(headroom)}{_net(local[0])}"
+        )
     if cloud:
         why_not_local = (
             f"no local VRAM headroom ({_room_text(headroom)})"
@@ -265,7 +276,8 @@ def choose_route(
         return RouteDecision(
             local[0].name,
             "local",
-            f"local without VRAM headroom ({_room_text(headroom)}); {why_not_cloud}",
+            f"local without VRAM headroom ({_room_text(headroom)}); {why_not_cloud}"
+            f"{_net(local[0])}",
         )
     raise NoRoute(
         f"no provider: {_why_not('local', candidates, privacy, options)}; "

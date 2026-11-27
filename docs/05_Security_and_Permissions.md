@@ -451,8 +451,11 @@ proxy environment variables, so it only talks to the host it checked:
     most `personal` (Sensitive requests are refused), gets memory only
     with `allow_cloud` and up to Personal, and its sends get the content
     tripwire. It stays `kind="local"`, so with `allow_cloud` it is still
-    preferred over the cloud when it has headroom. Core logs one
-    fixed-text startup warning that carries no host or other value.
+    preferred over the cloud when it has headroom. Its route reason, in
+    the `/chat` reply and the `model.route.selected` event, ends with
+    "[off-network host: data leaves this network]", so an audit can tell
+    such a send from a local one (#148). Core logs one fixed-text startup
+    warning that carries no host or other value.
 -   `AETHER_OLLAMA_TRUST_HOST=true` (off by default) trusts such a host
     deliberately, for example a private overlay network; Core then logs
     that the opt-in is active.
