@@ -178,7 +178,10 @@ the design, follow the ADR numbers into `docs/adr/`.
     own text. Core writes them as the app role `aether_app`, which can't
     update, delete or truncate them (and Core refuses to start as the
     owner). Without `DATABASE_URL`, events are skipped with one startup
-    warning, and a failed write never affects the request. The events are
+    warning, and a failed write never affects the request. If the handler
+    hits an error routing didn't expect (a bug), it writes the events itself,
+    with a `request.failed` that names the error type only, before the
+    generic 500, since background tasks don't run then (#112). The events are
     built by two reporting hooks on `Router.handle()` (`on_decision`,
     `on_attempt_failed`). If building one raises, routing goes on, that one
     event is missing, and a metadata-only "Decision callback failed" or

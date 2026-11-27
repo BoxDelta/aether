@@ -53,6 +53,7 @@ from core.events import (
     call_completed,
     memory_retrieved,
     provider_unavailable,
+    request_crashed,
     request_failed,
     request_received,
     route_selected,
@@ -278,6 +279,20 @@ async def _propose(  # noqa: PLR0913 - one value per input
 chat_router = APIRouter()
 
 
+def _check_max_tokens(body: ChatRequest, cap: int) -> None:
+    if body.max_tokens is not None and body.max_tokens > cap:
+        # Same 422 shape as any validation error: location and message, no input.
+        raise RequestValidationError(
+            [
+                {
+                    "loc": ("body", "max_tokens"),
+                    "msg": f"Input should be less than or equal to {cap}",
+                    "type": "less_than_equal",
+                }
+            ]
+        )
+
+
 @chat_router.post(
     CHAT_PATH,
     response_model=ChatResponse,
@@ -302,18 +317,7 @@ async def chat(
     recorder: EventRecorder = state.events
     redact: Redactor = state.redactor
 
-    cap: int = state.settings.cloud_max_output_tokens
-    if body.max_tokens is not None and body.max_tokens > cap:
-        # Same 422 shape as any validation error: location and message, no input.
-        raise RequestValidationError(
-            [
-                {
-                    "loc": ("body", "max_tokens"),
-                    "msg": f"Input should be less than or equal to {cap}",
-                    "type": "less_than_equal",
-                }
-            ]
-        )
+    _check_max_tokens(body, state.settings.cloud_max_output_tokens)
 
     request = ModelRequest(
         messages=tuple(ModelMessage(role=m.role, content=m.content) for m in body.messages),
@@ -372,6 +376,13 @@ async def chat(
     except NoRoute as exc:
         events.append(request_failed(exc, request, options))
         return error_json(503, "NoRoute", redact(exc.reason))
+    except Exception as exc:
+        # A bug in routing or an adapter (#112). Background tasks don't run when the
+        # handler raises, so the events are written here (bounded, never raises),
+        # then the error goes on to the middleware's generic 500.
+        events.append(request_crashed(exc, request, options))
+        await recorder.record(events, request, memory_texts)
+        raise
 
     response = routed.response
     failover_from = None

@@ -26,6 +26,7 @@ memory content, secrets or tracebacks:
 
 import asyncio
 import logging
+import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -361,6 +362,29 @@ def provider_unavailable(
         error_type=attempt.error_type,
         error_message=_cap(attempt.message),
         route_reason=route_reason,
+        request_id=get_request_id(),
+        session_id=get_session_id(),
+    )
+
+
+UNEXPECTED_ERROR_REASON = "unexpected error in Core (a bug); the type is in error_type"
+_TYPE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+
+
+def request_crashed(exc: BaseException, request: ModelRequest, options: RouteOptions) -> Event:
+    """``request.failed`` for an exception routing didn't expect (#112): the type name
+    only, never the message, and a fixed reason. Same event type and columns as
+    ``request_failed``, so the schema doesn't change."""
+    name = type(exc).__name__
+    return Event(
+        event_type="request.failed",
+        actor="core",
+        outcome="error",
+        privacy=request.privacy,
+        route_reason=UNEXPECTED_ERROR_REASON,
+        error_type=name if _TYPE_NAME.fullmatch(name) else "Exception",
+        allow_cloud=options.allow_cloud,
+        override=options.override,
         request_id=get_request_id(),
         session_id=get_session_id(),
     )
