@@ -620,7 +620,8 @@ per-step issues are created as each step starts.
     ADR-023).
 14. Cloud ceiling to `personal` (after #8), and the cross-provider
     recall tests.
-15. Model proposals (`propose_memory`), if D7 is yes.
+15. Model proposals (`propose_memory`), if D7 is yes. How Core asks and
+    parses: ADR-033.
 16. Deletion and restore test and the restore runbook step (after #3).
 17. Encrypted volume for the Postgres data and the backups (#57). This
     is infrastructure, not a code PR, and must be done **before real

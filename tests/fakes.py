@@ -42,6 +42,7 @@ class FakeProvider(Provider):
     - ``available``: what ``check_available()`` says.
     - ``memory_limit``: ``ProviderInfo.memory_limit`` (default none: no memory).
     - ``off_network``: a local provider off this network (ADR-032).
+    - ``replies``: answer texts for successive calls, used before ``text``.
 
     ``calls`` counts calls, ``requests`` keeps each request, ``checks`` counts
     availability checks.
@@ -61,6 +62,7 @@ class FakeProvider(Provider):
         delay_s: float = 0.0,
         memory_limit: PrivacyLevel | None = None,
         off_network: bool = False,
+        replies: Sequence[str] | None = None,
     ) -> None:
         super().__init__(
             ProviderInfo(
@@ -82,6 +84,8 @@ class FakeProvider(Provider):
         self.calls = 0
         self.checks = 0
         self.requests: list[ModelRequest] = []
+        # Answer texts for successive calls, in order; once used up, the usual text.
+        self.replies = list(replies) if replies is not None else []
 
     async def _generate(self, request: ModelRequest) -> ModelResponse:
         self.calls += 1
@@ -90,7 +94,9 @@ class FakeProvider(Provider):
             await asyncio.sleep(self.delay_s)
         if self.error is not None:
             raise self.error
-        if self.text is not None:
+        if self.replies:
+            text = self.replies.pop(0)
+        elif self.text is not None:
             text = self.text
         else:
             text = "" if self.finish_reason == "refusal" else self.answer

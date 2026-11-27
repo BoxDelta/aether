@@ -313,8 +313,12 @@ def route_selected(decision: RouteDecision, request: ModelRequest, options: Rout
     )
 
 
-def call_completed(response: ModelResponse, request: ModelRequest) -> Event:
-    """Provider, model, finish reason, latency and token counts; never the text."""
+def call_completed(
+    response: ModelResponse, request: ModelRequest, *, route_reason: str | None = None
+) -> Event:
+    """Provider, model, finish reason, latency and token counts; never the text.
+    ``route_reason`` marks a call that is not the answer (the memory proposal call,
+    ADR-033)."""
     usage = response.usage
     return Event(
         event_type="model.call.completed",
@@ -325,6 +329,7 @@ def call_completed(response: ModelResponse, request: ModelRequest) -> Event:
         provider_kind=response.kind,
         model=response.model,
         finish_reason=response.finish_reason,
+        route_reason=route_reason,
         latency_ms=response.latency_ms,
         input_tokens=usage.input_tokens if usage else None,
         output_tokens=usage.output_tokens if usage else None,
@@ -342,8 +347,11 @@ def _event_attempt(attempt: Attempt) -> EventAttempt:
     )
 
 
-def provider_unavailable(attempt: Attempt, request: ModelRequest) -> Event:
-    """One failed call: type and scrubbed message only (``Attempt`` holds no exception)."""
+def provider_unavailable(
+    attempt: Attempt, request: ModelRequest, *, route_reason: str | None = None
+) -> Event:
+    """One failed call: type and scrubbed message only (``Attempt`` holds no exception).
+    ``route_reason`` as in ``call_completed``."""
     return Event(
         event_type="provider.unavailable",
         actor="router",
@@ -352,6 +360,7 @@ def provider_unavailable(attempt: Attempt, request: ModelRequest) -> Event:
         provider=attempt.provider,
         error_type=attempt.error_type,
         error_message=_cap(attempt.message),
+        route_reason=route_reason,
         request_id=get_request_id(),
         session_id=get_session_id(),
     )

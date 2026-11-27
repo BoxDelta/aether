@@ -442,6 +442,33 @@ class Router:
             fallback, request, options, first, on_attempt_failed, on_memory
         )
 
+    async def call_once(
+        self, provider_name: str, request: ModelRequest, options: RouteOptions
+    ) -> ModelResponse:
+        """One call to a named provider with **no memory** and no failover: the
+        memory proposal call (ADR-033). The same privacy rules as routing apply:
+        ``secret`` is never sent, the provider must allow the level, and a provider
+        off this network needs ``allow_cloud``. Raises ``NoRoute`` if not allowed
+        (nothing is sent) or ``ProviderError`` if the call fails."""
+        provider = self._by_name.get(provider_name)
+        if request.privacy == "secret":
+            raise NoRoute(NEVER_SENT_REASON)
+        if (
+            provider is None
+            or not provider.allows(request.privacy)
+            or (provider.info.needs_allow_cloud and not options.allow_cloud)
+        ):
+            raise NoRoute(f"{provider_name} may not take this request")
+        return await call_with_identity(
+            provider,
+            request,
+            self._identity,
+            secret_check=self._secret_check,
+            memory=None,
+            allow_cloud=options.allow_cloud,
+            include_sensitive=options.include_sensitive,
+        )
+
     async def _call(
         self,
         decision: RouteDecision,

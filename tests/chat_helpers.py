@@ -45,6 +45,9 @@ class Setup:
         memory: MemorySource | None = None,
         local_memory_limit: PrivacyLevel | None = None,
         cloud_memory_limit: PrivacyLevel | None = None,
+        store: Any = None,
+        local_replies: list[str] | None = None,
+        cloud_replies: list[str] | None = None,
     ) -> None:
         self.log = io.StringIO()
         self.local = FakeProvider(
@@ -56,6 +59,7 @@ class Setup:
             answer=ANSWER,
             usage=USAGE,
             memory_limit=local_memory_limit,
+            replies=local_replies,
         )
         self.cloud = FakeProvider(
             "claude",
@@ -66,6 +70,7 @@ class Setup:
             answer=ANSWER,
             usage=USAGE,
             memory_limit=cloud_memory_limit,
+            replies=cloud_replies,
         )
         identity = load_identity()
         settings = Settings(
@@ -91,6 +96,7 @@ class Setup:
             identity,
             router=router,
             events=EventRecorder(self.writer, timeout_s=recorder_timeout_s),
+            memory=store,
         )
         # create_app configured logging to stdout; capture it instead.
         from core.log import configure_logging

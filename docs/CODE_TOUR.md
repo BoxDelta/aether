@@ -76,7 +76,9 @@ the design, follow the ADR numbers into `docs/adr/`.
     ordering, at most 20 records and 4000 characters) and renders them
     for `memory_context`; each provider sets `ProviderInfo.memory_limit`
     (step 11). `MemoryRetriever` joins the two as the router's
-    `MemorySource` (step 12, below). `restore.py` (`python -m
+    `MemorySource` (step 12, below). `proposals.py` builds the model
+proposal call (latest user message only), parses its JSON reply as data
+and stores proposals as pending (ADR-033, step 15). `restore.py` (`python -m
     memory.restore`) repairs a restored copy from the live database's
     `memory.*` events before the swap (step 16, runbook §4).
 -   `scripts/`: the identity continuity run (`identity_continuity.py`), a
@@ -112,7 +114,8 @@ the design, follow the ADR numbers into `docs/adr/`.
 4.  **Validation and the privacy label.** `ChatRequest` (`core/chat.py`)
     validates the JSON. The caller sets `privacy`
     (public / personal / sensitive / secret); if they don't, it defaults to
-    `personal`. `allow_cloud` and `include_sensitive` default to `false`.
+    `personal`. `allow_cloud`, `include_sensitive` and `propose_memory`
+    default to `false`.
     Validation errors never
     echo the input (`validation_error_handler`, `core/errors.py`). The
     handler `chat()` turns the body into a `ModelRequest`
@@ -156,12 +159,17 @@ the design, follow the ADR numbers into `docs/adr/`.
     asks `decide()` once more without that provider, so every rule still
     applies to the fallback, and the fallback gets its own memory selection. A refusal or a cut-off answer is not an
     error and never fails over.
-9.  **Response.** `chat()` returns `ChatResponse` with the text, the
+9.  **Memory proposals (opt-in).** With `propose_memory`, after an answer
+    that finished normally, `_propose()` asks the same provider once more
+    (`Router.call_once`: no memory, no failover) with the latest user
+    message only, and stores what `memory/proposals.py` parses as pending
+    records (ADR-033). It never fails the answer.
+10. **Response.** `chat()` returns `ChatResponse` with the text, the
     provider, the route reason and token counts, or the shared error shape
     from `core/errors.py` (`RouteFailed` 502, `NoRoute` 503) that carries no
     exception text. Auth (401/503), the size limit (413) and validation
     (422) use the same shape.
-9.  **Events.** After the response is sent, a background task
+11. **Events.** After the response is sent, a background task
     (`EventRecorder.record()` → `EventWriter`, `core/events.py`) writes the
     events to Postgres: received, route selected, any failed attempt,
     completed or failed. Events hold metadata only, never prompt or answer

@@ -5,11 +5,12 @@ writer, on Core's engine, as the app role. The providers are fakes (with the rea
 adapters' memory limits); everything else is real: the store's full-text
 read, the selection, the prompt, the events in the database.
 
-A fact is proposed from request A (handled by one provider), approved by the
-owner through ``/memory/{id}/approve``, and recalled in request B (handled by the
-other), with a ``memory.context.retrieved`` event naming that provider and the
-record. Every record a test creates is deleted afterwards as the owner; events
-are append-only and stay (IDs and counts only). All content is invented canaries.
+A fact is proposed by the model that handled request A (``propose_memory``,
+ADR-033, step 15), approved by the owner through ``/memory/{id}/approve``,
+and recalled in request B (handled by the other), with a
+``memory.context.retrieved`` event naming that provider and the record. Every
+record a test creates is deleted afterwards as the owner; events are append-only
+and stay (IDs and counts only). All content is invented canaries.
 
 Run (fish):  env AETHER_DB_TESTS=1 uv run pytest -m db
 """
@@ -99,7 +100,7 @@ def core(live_app: Settings, live_owner: Settings) -> Iterator[tuple[Core, TestC
 
 
 def propose(live_app: Settings, content: str, provider: str, request_id: str) -> str:
-    """A pending fact from a model during ``request_id`` (nothing proposes yet, step 15)."""
+    """A pending fact from a model during ``request_id``, written straight to the store."""
 
     async def go() -> str:
         engine = create_engine(live_app)
@@ -142,9 +143,23 @@ def recall(
     fact = f"{PREFIX} the owner's tea is genmaicha via {save_via}"
     if save_via == "claude":
         c.free_gib = 0.1  # no local headroom: the cloud answers
-    a = chat(client, "remember my tea", allow_cloud=True)
+    saver = c.cloud if save_via == "claude" else c.local
+    proposal = {"content": fact, "category": "preference", "privacy": "personal"}
+    saver.replies = ["noted", json.dumps({"proposals": [proposal]})]
+    a = chat(client, f"remember: {fact}", allow_cloud=True, propose_memory=True)
     assert a.status_code == 200 and a.json()["provider"] == save_via, a.text
-    record_id = propose(live_app, fact, save_via, a.json()["request_id"])
+    assert a.json()["memory_proposals"] == 1
+    pending = client.get("/memory", params={"status": "pending"}).json()["records"]
+    mine = [r for r in pending if r["content"] == fact]
+    assert len(mine) == 1
+    record = mine[0]
+    assert (record["source"], record["source_provider"], record["privacy_source"]) == (
+        "model",
+        save_via,
+        "suggested",
+    )
+    assert record["source_request_id"] == a.json()["request_id"]
+    record_id = record["id"]
     approved = client.post(f"/memory/{record_id}/approve", json={"privacy": "personal"})
     assert approved.status_code == 200, approved.text
 
@@ -190,3 +205,44 @@ def test_live_pending_fact_is_not_recalled(
 
     assert b.status_code == 200
     assert fact not in (c.local.requests[-1].system or "")
+
+
+def test_live_proposals_are_pending_secret_shaped_ones_dropped(
+    core: tuple[Core, TestClient], live_owner: Settings
+) -> None:
+    from tests.chat_helpers import FAKE_KEY
+
+    c, client = core
+    fact = f"{PREFIX} the owner grows basil"
+    items = [
+        {"content": fact, "category": "project", "privacy": "public"},
+        {"content": f"my key is {FAKE_KEY}", "category": "reference", "privacy": "personal"},
+    ]
+    c.local.replies = ["ok", json.dumps({"proposals": items})]
+
+    a = chat(client, f"{PREFIX} I grow basil", propose_memory=True)
+
+    assert a.status_code == 200 and a.json()["memory_proposals"] == 1
+    rid = a.json()["request_id"]
+    assert is_safe_id(rid)
+    records = [
+        json.loads(r)
+        for r in owner_sql(
+            live_owner,
+            "SELECT row_to_json(m)::text FROM public.memory_records m"  # noqa: S608
+            f" WHERE source_request_id = '{rid}'",
+        )
+    ]
+    assert [(r["content"], r["status"], r["privacy"], r["source"]) for r in records] == [
+        (fact, "pending", "personal", "model")  # floored to the request's level
+    ]
+    events = [
+        json.loads(r)
+        for r in owner_sql(
+            live_owner,
+            "SELECT row_to_json(e)::text FROM events e WHERE event_type = 'memory.proposed'"  # noqa: S608
+            f" AND memory_record_id = '{UUID(records[0]['id'])}'",
+        )
+    ]
+    assert len(events) == 1 and events[0]["memory_source"] == "model"
+    assert PREFIX not in json.dumps(events) and FAKE_KEY not in json.dumps(events)

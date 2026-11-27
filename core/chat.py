@@ -26,6 +26,11 @@ Safety rules applied here:
   router (``include_sensitive`` defaults to false; Sensitive memory needs it), and
   one ``memory.context.retrieved`` event per call that could get memory. The
   events echo check covers the memory text sent as well as the request text.
+- Memory proposals (ADR-033, step 15 of #58): only with ``propose_memory: true``,
+  after an answer that finished normally, one more call to the same provider with
+  the latest user message only and no memory (``memory/proposals.py``). Proposals
+  are stored ``pending``; the reply carries only their count. A failure there
+  never fails the answer.
 - Access: bearer token, checked by core.auth before this module sees the request
   (ADR-021, #57).
 - Events: metadata only (core/events.py). A failed event write never fails the
@@ -54,10 +59,14 @@ from core.events import (
 )
 from core.log import Redactor
 from core.request_context import get_request_id
+from memory.proposals import parse, proposal_request, store_proposals
+from memory.store import MemoryStore
 from router.contract import (
     FinishReason,
     ModelRequest,
+    ModelResponse,
     PrivacyLevel,
+    ProviderError,
     ProviderKind,
     ProviderName,
     Role,
@@ -105,6 +114,9 @@ class ChatRequest(_Strict):
     # untrusted host whatever this says (ADR-024 D2, D4).
     include_sensitive: bool = False
     override: ProviderName | None = None
+    # Ask the answering model for memory proposals (ADR-033). They are stored as
+    # pending for the owner to approve; nothing is ever approved by a model.
+    propose_memory: bool = False
     # Optional output token limit for this request (#77). It applies to whichever
     # provider answers; it may lower the cloud cap (AETHER_CLOUD_MAX_OUTPUT_TOKENS)
     # but never raise it: a larger value is rejected with 422 in the handler.
@@ -130,6 +142,8 @@ class ChatResponse(BaseModel):
     input_tokens: int | None = None
     output_tokens: int | None = None
     latency_ms: float
+    # Proposals stored as pending (ADR-033); null when propose_memory was not set.
+    memory_proposals: int | None = None
 
 
 # --- size guard ----------------------------------------------------------
@@ -204,6 +218,61 @@ def _attempt_info(attempt: Attempt, redact: Redactor) -> AttemptInfo:
         error_type=attempt.error_type,
         message=redact(attempt.message),
     )
+
+
+# Marks the proposal call's own events, so they are never read as the answer's.
+PROPOSAL_REASON = "memory proposal call (ADR-033), not the answer"
+
+
+async def _propose(  # noqa: PLR0913 - one value per input
+    router: Router,
+    store: MemoryStore | None,
+    request: ModelRequest,
+    options: RouteOptions,
+    answer: ModelResponse,
+    events: list[Event],
+) -> int:
+    """Ask the answering provider for memory proposals and store them as pending
+    (ADR-033). Returns how many were stored. Never raises: proposals are optional.
+    Logs one metadata-only line with the counts."""
+    fields: dict[str, object] = {"provider": answer.provider}
+    proposed = dropped = 0
+    error_type: str | None = None
+    prop = proposal_request(request)
+    try:
+        if store is None:
+            error_type = "MemoryNotConfigured"
+        elif answer.finish_reason != "stop":
+            error_type = f"answer_{answer.finish_reason}"
+        elif prop is not None:
+            try:
+                reply = await router.call_once(answer.provider, prop, options)
+            except ProviderError as exc:
+                attempt = Attempt.from_error(exc)
+                events.append(provider_unavailable(attempt, prop, route_reason=PROPOSAL_REASON))
+                raise
+            events.append(call_completed(reply, prop, route_reason=PROPOSAL_REASON))
+            parsed = parse(reply.text) if reply.finish_reason == "stop" else None
+            if parsed is None:
+                dropped = 1
+            else:
+                stored = await store_proposals(
+                    store,
+                    parsed,
+                    floor=request.privacy,
+                    provider=answer.provider,
+                    request_id=get_request_id(),
+                )
+                proposed, dropped = stored.proposed, stored.dropped
+                error_type = stored.error_type
+    except Exception as exc:  # proposals never fail the answer
+        error_type = type(exc).__name__
+    level = logger.warning if error_type and not error_type.startswith("answer_") else logger.info
+    level(
+        "Memory proposals",
+        extra={**fields, "proposed": proposed, "dropped": dropped, "error_type": error_type},
+    )
+    return proposed
 
 
 chat_router = APIRouter()
@@ -310,6 +379,12 @@ async def chat(
         failover_from = _attempt_info(routed.failed_first, redact)
     events.append(call_completed(response, request))
 
+    proposals: int | None = None
+    if body.propose_memory:
+        proposals = await _propose(
+            router, getattr(state, "memory", None), request, options, response, events
+        )
+
     usage = response.usage
     return ChatResponse(
         request_id=get_request_id(),
@@ -323,4 +398,5 @@ async def chat(
         input_tokens=usage.input_tokens if usage else None,
         output_tokens=usage.output_tokens if usage else None,
         latency_ms=round(response.latency_ms, 1),
+        memory_proposals=proposals,
     )

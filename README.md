@@ -166,6 +166,13 @@ Claude and for an untrusted Ollama host (only when the request sets
 same secret check. Sensitive memory is sent only to a trusted
 Ollama host, and only when the request sets `"include_sensitive": true`.
 
+With `"propose_memory": true`, the model that answered is asked once more,
+with only your latest message and no memory, for facts worth remembering
+(ADR-033). They are stored as **pending**, never used until you approve
+them with a level (`GET /memory?status=pending`, then
+`POST /memory/{id}/approve`); the reply's `memory_proposals` says how many.
+It is one extra model call (on Claude, one more short paid call).
+
 ```fish
 set -l token (string replace -r '^AETHER_API_TOKEN=' '' (grep '^AETHER_API_TOKEN=' .env))
 curl -s http://127.0.0.1:8000/chat -H "authorization: Bearer $token" \
