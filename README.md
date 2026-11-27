@@ -363,8 +363,11 @@ real database and going back are in
     Run `aether-vault open` after each boot: while the volume is locked,
     Postgres doesn't start, the nightly backup refuses to run, and Core
     answers memory routes with 503 and `/chat` without memory. Both still
-    sit on the same disk as each other. The old unencrypted volume and
-    backups are removed in stage 7 (#152).
+    sit on the same disk as each other. Until stage 7 (#152) removes the
+    old unencrypted volume and backups, always run compose from this repo
+    with `COMPOSE_FILE` set in `.env` (or through `aether-vault`): a run
+    without the override starts the old database on the unencrypted disk,
+    and real memory written there can't be wiped.
 -   After a restore, `python -m memory.restore` repairs memory from the
     live database before the swap: records deleted since stay deleted,
     and records changed since come back as `pending` (marked `restored`)

@@ -207,8 +207,10 @@ for the highest level present.
   -----------------------------------------------------------------------
   Level         Meaning                       Allowed providers (default)
   ------------- ----------------------------- ---------------------------
-  Public        Already public or harmless    Any configured provider
-                (docs, general questions)     
+  Public        Already public or harmless    Any configured provider;
+                (docs, general questions)     the cloud and an untrusted
+                                              Ollama host only with
+                                              `allow_cloud`
 
   Personal      Ordinary preferences, project Local, and a cloud provider
                 notes, plans                  or untrusted Ollama host
@@ -216,9 +218,12 @@ for the highest level present.
                                               `allow_cloud` (no
                                               allowlist, #120)
 
-  Sensitive     Health, finances, private     A trusted local Ollama host
-                messages, other people's      only; as memory, only with
-                details                       the request's
+  Sensitive     Health, finances, private     A trusted Ollama host only
+                messages, other people's      (loopback or private
+                details                       address, or opted in with
+                                              `AETHER_OLLAMA_TRUST_HOST`);
+                                              as memory, only with the
+                                              request's
                                               `include_sensitive`
 
   Secret        Passwords, API keys, tokens,  Never sent to any model;
@@ -226,8 +231,8 @@ for the highest level present.
   -----------------------------------------------------------------------
 
 Unclassified content is treated as Personal. Routing tests must prove
-that Sensitive content never reaches a cloud adapter without approval
-and that Secret content never reaches any adapter.
+that Sensitive content never reaches a cloud adapter or an untrusted
+Ollama host, and that Secret content never reaches any adapter.
 
 In code, the level names and their order are defined once, in
 `router/contract.py` (`PrivacyLevel`). The non-Secret subset (identity
@@ -737,9 +742,15 @@ shapes only; they cannot recognise personal data.
     backups are on the volume, which the owner opens with `aether-vault
     open` after each boot. Both hold the events and full memory records
     (content, key, level and provenance). With #1, #12 and #3 already
-    done, this meets the ADR-024 §7 gate for storing real memory data.
-    Stage 7, removing the old unencrypted volume and backups, is still
-    open (#152, not before 2026-12-04, with the owner's approval).
+    done, this meets the ADR-024 §7 gate for storing real memory data,
+    **provided every compose run loads the override until stage 7**
+    (#152): a run without it (`-f docker-compose.yml`, another folder, a
+    lost `.env` line) starts the old database on the unencrypted
+    `aether_pgdata` volume, and real memory written there can't be wiped
+    from this disk (ADR-026 §5 layer 6, §7). Stage 7, removing the old
+    unencrypted volume and backups and rebinding that name to the
+    volume, is still open (#152, not before 2026-12-04, with the owner's
+    approval).
     -   **Fails closed, with the override loaded** (`compose.vault.yaml`,
         through `COMPOSE_FILE` in `.env` or `aether-vault`). With the volume
         locked or not mounted, Docker refuses to start Postgres: the bind
