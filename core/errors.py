@@ -107,6 +107,7 @@ def _routes_signature(routes: Any) -> tuple[object, ...]:
                     tuple(getattr(context, "tags", None) or ()),
                     getattr(context, "include_in_schema", None),
                     getattr(context, "deprecated", None),
+                    repr(getattr(context, "dependencies", None)),
                     repr(sorted((getattr(context, "responses", None) or {}).items(), key=str)),
                     _routes_signature(inner.routes),
                 )
@@ -117,8 +118,7 @@ def _routes_signature(routes: Any) -> tuple[object, ...]:
         dependant = getattr(route, "dependant", None)
         params: list[str] = []
         if dependant is not None:
-            for group in ("path_params", "query_params", "header_params", "cookie_params"):
-                params.extend(p.name for p in getattr(dependant, group, ()))
+            params = _param_names(dependant)
         signature.append(
             (
                 type(route).__name__,
@@ -128,10 +128,21 @@ def _routes_signature(routes: Any) -> tuple[object, ...]:
                 getattr(body, "annotation", None),
                 getattr(route, "response_model", None),
                 getattr(route, "include_in_schema", None),
+                repr(sorted((getattr(route, "responses", None) or {}).items(), key=str)),
                 tuple(params),
             )
         )
     return tuple(signature)
+
+
+def _param_names(dependant: Any) -> list[str]:
+    """Parameter names of a route, including those its sub-dependencies (Depends) add."""
+    names: list[str] = []
+    for group in ("path_params", "query_params", "header_params", "cookie_params"):
+        names.extend(p.name for p in getattr(dependant, group, ()))
+    for sub in getattr(dependant, "dependencies", ()):
+        names.extend(_param_names(sub))
+    return names
 
 
 def _names_from_schema(schema: dict[str, Any]) -> frozenset[str]:

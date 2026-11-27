@@ -680,3 +680,31 @@ def test_cores_app_shares_its_names_and_they_include_the_routers() -> None:
     names = api_field_names(a)
     assert names is api_field_names(b)
     assert {"messages", "propose_memory", "privacy", "query"} <= names
+
+
+def test_a_parameter_added_by_a_dependency_is_part_of_the_key() -> None:
+    from fastapi import Depends, FastAPI
+
+    from core.errors import api_field_names
+
+    def build(which: str) -> FastAPI:
+        if which == "a":
+
+            def dep(dep_param_a: int) -> int:
+                return dep_param_a
+        else:
+
+            def dep(dep_param_b: int) -> int:  # type: ignore[misc]
+                return dep_param_b
+
+        app = FastAPI()
+
+        @app.get("/d")
+        async def endpoint(value: int = Depends(dep)) -> None:
+            return None
+
+        return app
+
+    assert "dep_param_a" in api_field_names(build("a"))
+    names = api_field_names(build("b"))
+    assert "dep_param_b" in names and "dep_param_a" not in names
