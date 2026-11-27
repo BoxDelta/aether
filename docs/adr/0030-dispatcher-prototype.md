@@ -1,6 +1,6 @@
 # ADR-030: Dispatcher prototype during Phase 2
 
-**Status:** Proposed\
+**Status:** Accepted (owner, 2026-11-26)\
 **Date:** 2026-11-26\
 **Owner:** BoxDelta
 
@@ -100,6 +100,9 @@ Option 3, within the limits below.
     issue was opened by `BoxDelta` **and** the `dispatch:auto` label was
     added by `BoxDelta`. It checks who added the label in the issue's event history, not
     just whether the label is there. It checks again before each step.
+-   A test command (`python -m dispatch eval`) sorts a fixed set of past
+    issues to measure the rules and the model. It checks the author only,
+    because past issues no longer carry the label, and it never acts.
 -   It ignores comments, pull request text and any issue that doesn't
     pass the check above. The repository has one collaborator, so only
     the owner can edit the body of an owner's issue.
@@ -173,10 +176,14 @@ diff Aider produces. A match means `claude`, with no model call.
     ruleset needs no approvals. That is only a rule: the dispatcher's
     code has no merge call, and a test checks it never calls GitHub's
     merge endpoint.
--   All dispatcher secrets (GitHub token, LiteLLM master key, Langfuse
-    keys, Discord bot token and webhook URL) live in
-    `~/.config/aether-dispatch/.env` (mode 600), outside the
-    repository. Only their names go in `dispatch/README.md`.
+-   Dispatcher secrets live outside the repository in
+    `~/.config/aether-dispatch/`, split per service, each file mode 600:
+    `dispatch.env` (the dispatcher's own: GitHub token, LiteLLM key,
+    later the Discord bot token and webhook URL), `litellm.env`,
+    `llama-swap.env`, `langfuse.env` and `arcane.env`. Each service
+    reads only its own file; the dispatcher reads only `dispatch.env`
+    and refuses it if group or others can read it. Only the variable
+    names go in `dispatch/README.md`.
 
 ### Tracking
 

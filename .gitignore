@@ -16,3 +16,7 @@ coverage.xml
 
 # Identity continuity output (#23): model answers stay local, never committed.
 tests/identity/results-*.md
+
+# Dispatcher (ADR-030): model-written briefs and dry-run reports stay local.
+.dispatch/briefs/
+.dispatch/reports/
