@@ -32,10 +32,11 @@ A caller may pass lower limits (small local models), never higher.
 **Rendering (ADR-024 §3, threats in §6).** One line per record, shown with its
 category and level. Control, format and line-separator characters become spaces,
 so a record can't add lines; the headings ``render_system_prompt`` uses
-(``core.identity.SECTION_HEADINGS``) are neutralised, so a record can't look like a
-new section. The section starts with a fixed sentence saying these are notes, not
-instructions. This lowers the risk of prompt injection through approved content;
-it can't remove it.
+(``core.identity.SECTION_HEADINGS``) are neutralised, in any case, full-width or
+with combining marks inside them (#140), so a record can't look like a new section.
+The section starts with a fixed sentence saying these are notes, not instructions.
+This lowers the risk of prompt injection through approved content; it can't remove
+it.
 
 What never leaves this module except in the rendered context: content. The
 ``Selection`` repr shows counts and IDs only.
@@ -65,6 +66,7 @@ _SENSITIVE: PrivacyLevel = NON_SECRET_LEVELS[-1]
 # surrogates (Cs), private use (Co), unassigned (Cn), line and paragraph separators.
 _UNSAFE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
 _SPACES = re.compile(r"\s+")
+_MARKS = frozenset({"Mn", "Me"})  # combining marks: hidden inside a word (#140)
 _HEADINGS = re.compile(
     "(" + "|".join(re.escape(h.rstrip(":")) for h in SECTION_HEADINGS) + r")\s*[:\uff1a]",
     re.IGNORECASE,
@@ -136,8 +138,43 @@ def render_line(record: MemoryRecord) -> str:
         for ch in unicodedata.normalize("NFKC", record.content)
     )
     text = _SPACES.sub(" ", text).strip()
-    text = _HEADINGS.sub(lambda m: f"{m.group(1)} -", text)
-    return f"- ({record.category}, {record.privacy}) {text}"
+    return f"- ({record.category}, {record.privacy}) {_neutralise_headings(text)}"
+
+
+def _skeleton(text: str) -> tuple[str, list[int]]:
+    """``text`` with combining marks (Mn, Me) removed and each remaining character
+    reduced to its base letter, plus the index in ``text`` of each skeleton character.
+    So "Tas\u0301k" and "Ta\u0301sk" both read "Task" for the heading check (#140)."""
+    chars: list[str] = []
+    index: list[int] = []
+    for i, ch in enumerate(text):
+        if unicodedata.category(ch) in _MARKS:
+            continue
+        base = [
+            c for c in unicodedata.normalize("NFKD", ch) if unicodedata.category(c) not in _MARKS
+        ]
+        chars.append(base[0] if len(base) == 1 else ch)
+        index.append(i)
+    return "".join(chars), index
+
+
+def _neutralise_headings(text: str) -> str:
+    """Replace every section heading (``Task instructions:``, any case, full-width,
+    with combining marks inside) with ``Task instructions -``, so a record can't
+    look like a new section."""
+    skeleton, index = _skeleton(text)
+    out: list[str] = []
+    pos = 0
+    for m in _HEADINGS.finditer(skeleton):
+        start = index[m.start()]
+        end = index[m.end() - 1] + 1
+        while end < len(text) and unicodedata.category(text[end]) in _MARKS:
+            end += 1  # marks after the colon belong to it
+        out.append(text[pos:start])
+        out.append(f"{m.group(1)} -")
+        pos = end
+    out.append(text[pos:])
+    return "".join(out)
 
 
 def _order_key(candidate: Candidate) -> tuple[bool, float, float, str]:
