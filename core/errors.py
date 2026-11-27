@@ -86,32 +86,52 @@ _NAMES_BY_ROUTES: dict[tuple[object, ...], frozenset[str]] = {}
 
 
 def _route_signature(app: Any) -> tuple[object, ...]:
-    # Endpoints by module and qualified name, not by object, so nothing is kept alive
-    # and per-app closures of the same code still match.
-    def endpoint(route: Any) -> str | None:
-        fn = getattr(route, "endpoint", None)
-        return None if fn is None else f"{fn.__module__}.{fn.__qualname__}"
+    return _routes_signature(app.routes)
 
-    def inputs(route: Any) -> tuple[object, ...]:
-        # The body model and every parameter name, in case two routes share a
-        # function name but not their inputs.
+
+def _routes_signature(routes: Any) -> tuple[object, ...]:
+    """What decides a set of routes' schema: for each route its path, methods,
+    endpoint (by module and qualified name, so per-app closures of the same code
+    match), body and response models and parameter names; for each included router
+    its prefix, schema options and, recursively, its own routes. The models stay
+    referenced by the cache key, one entry per distinct route set."""
+    signature: list[object] = []
+    for route in routes:
+        inner = getattr(route, "original_router", None)
+        if inner is not None:  # include_router(): FastAPI wraps the router
+            context = getattr(route, "include_context", None)
+            signature.append(
+                (
+                    "router",
+                    getattr(context, "prefix", None),
+                    tuple(getattr(context, "tags", None) or ()),
+                    getattr(context, "include_in_schema", None),
+                    getattr(context, "deprecated", None),
+                    repr(sorted((getattr(context, "responses", None) or {}).items(), key=str)),
+                    _routes_signature(inner.routes),
+                )
+            )
+            continue
+        fn = getattr(route, "endpoint", None)
         body = getattr(getattr(route, "body_field", None), "field_info", None)
         dependant = getattr(route, "dependant", None)
         params: list[str] = []
         if dependant is not None:
             for group in ("path_params", "query_params", "header_params", "cookie_params"):
                 params.extend(p.name for p in getattr(dependant, group, ()))
-        return (getattr(body, "annotation", None), getattr(route, "response_model", None), *params)
-
-    return tuple(
-        (
-            getattr(route, "path", None),
-            tuple(sorted(getattr(route, "methods", None) or ())),
-            endpoint(route),
-            inputs(route),
+        signature.append(
+            (
+                type(route).__name__,
+                getattr(route, "path", None),
+                tuple(sorted(getattr(route, "methods", None) or ())),
+                None if fn is None else f"{fn.__module__}.{fn.__qualname__}",
+                getattr(body, "annotation", None),
+                getattr(route, "response_model", None),
+                getattr(route, "include_in_schema", None),
+                tuple(params),
+            )
         )
-        for route in app.routes
-    )
+    return tuple(signature)
 
 
 def _names_from_schema(schema: dict[str, Any]) -> frozenset[str]:
