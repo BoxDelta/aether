@@ -97,9 +97,8 @@ Option 3, within the limits below.
 ### Trust
 
 -   The dispatcher acts on an issue only when **both** are true: the
-    issue was opened by `BoxDelta` (or by the Plane integration account,
-    ADR-031), **and** the `dispatch:auto` label was added by `BoxDelta`.
-    It checks who added the label in the issue's event history, not
+    issue was opened by `BoxDelta` **and** the `dispatch:auto` label was
+    added by `BoxDelta`. It checks who added the label in the issue's event history, not
     just whether the label is there. It checks again before each step.
 -   It ignores comments, pull request text and any issue that doesn't
     pass the check above. The repository has one collaborator, so only
