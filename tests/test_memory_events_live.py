@@ -420,3 +420,22 @@ def test_owner_role_can_write_the_restore_actor(live_owner: Settings) -> None:
         return await try_insert(conn, {**RECORD, "actor": "restore"})
 
     assert in_rolled_back_tx(live_owner, body, owner=True) == "accepted"
+
+
+# --- include_sensitive on events (migration 0008, #144) --------------------------------
+
+
+def test_include_sensitive_is_stored_on_request_events_only(live_app: Settings) -> None:
+    async def body(conn: AsyncConnection) -> list[str]:
+        await require_events_table(conn)
+        version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar()
+        if version is None or version < "0008":
+            pytest.skip("the database is below migration 0008: run `uv run alembic upgrade head`")
+        return [
+            await try_insert(conn, {**BASE, "include_sensitive": True}),
+            await try_insert(conn, {**RECORD, "include_sensitive": False}),
+        ]
+
+    accepted, refused = in_rolled_back_tx(live_app, body)
+    assert accepted == "accepted"
+    assert refused.startswith("CheckViolation") and "include_sensitive" in refused

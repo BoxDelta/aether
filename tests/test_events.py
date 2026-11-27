@@ -345,3 +345,103 @@ def test_attempts_none_is_sql_null_not_json_null() -> None:
     column_type = events_table.c.attempts.type
     assert isinstance(column_type, JSONB)
     assert column_type.none_as_null is True
+
+
+# --- include_sensitive, the per-request approval (migration 0008, #144) ----------------
+
+
+@pytest.mark.parametrize("approved", [True, False])
+def test_request_events_record_include_sensitive(approved: bool) -> None:
+    from core.events import request_crashed
+    from router.routing import NoRoute, RouteDecision
+
+    options = RouteOptions(include_sensitive=approved)
+    request = make_request()
+    decision = RouteDecision("ollama", "local", "local preferred")
+    events = [
+        request_received(request, options),
+        route_selected(decision, request, options),
+        request_failed(NoRoute("no route"), request, options),
+        request_crashed(RuntimeError("x"), request, options),
+    ]
+    assert [to_row(e, REDACT)["include_sensitive"] for e in events] == [approved] * 4
+
+
+def test_a_memory_event_never_carries_include_sensitive() -> None:
+    from uuid import uuid4
+
+    with pytest.raises(ValueError, match="include_sensitive"):
+        Event(
+            event_type="memory.deleted",
+            actor="memory",
+            memory_record_id=uuid4(),
+            memory_category="preference",
+            memory_source="owner",
+            memory_level="personal",
+            include_sensitive=True,
+        )
+
+
+def test_migration_0008_matches_the_memory_event_names() -> None:
+    # Its CHECK tells memory events apart by the "memory." prefix.
+    from typing import get_args
+
+    from core.events import MEMORY_EVENT_TYPES, EventType
+
+    names: list[str] = []
+    for arg in get_args(EventType):
+        names.extend(get_args(arg) or [arg])
+    flat: list[str] = []
+    for name in names:
+        flat.extend(get_args(name) or [name])
+    assert {n for n in flat if n.startswith("memory.")} == set(MEMORY_EVENT_TYPES)
+    source = (REPO / "migrations/versions/0008_event_include_sensitive.py").read_text()
+    assert "NOT starts_with(event_type, 'memory.')" in source
+    assert "include_sensitive" in events_table.c
+
+
+def test_events_without_the_approval_leave_the_column_out() -> None:
+    # Keeps memory changes and other events working on a database before 0008.
+    from core.events import call_completed
+
+    response = ModelResponse(
+        text=ANSWER, provider="ollama", model="m", kind="local", latency_ms=1.0
+    )
+    row = to_row(call_completed(response, make_request()), REDACT)
+    assert "include_sensitive" not in row
+    assert "include_sensitive" in to_row(request_received(make_request(), OPTIONS), REDACT)
+
+
+def test_memory_events_are_inserted_without_the_column() -> None:
+    import asyncio
+    from typing import Any
+    from uuid import uuid4
+
+    from core.events import write_memory_event
+
+    seen: list[Any] = []
+
+    class Conn:
+        async def execute(self, statement: Any) -> Any:
+            seen.append(statement)
+
+            class Result:
+                def scalar_one(self) -> int:
+                    return 1
+
+            return Result()
+
+    event = Event(
+        event_type="memory.deleted",
+        actor="memory",
+        memory_record_id=uuid4(),
+        memory_category="preference",
+        memory_source="owner",
+        memory_level="personal",
+    )
+    asyncio.run(write_memory_event(Conn(), event))  # type: ignore[arg-type]
+    columns = {
+        c.key for c in seen[0].compile().statement.table.c if c.key in seen[0].compile().params
+    }
+    assert "include_sensitive" not in columns
+    assert "memory_level" in columns

@@ -274,7 +274,7 @@ traceback. When an event is written:
 
 Columns: `id`, `occurred_at`, `recorded_at`, `event_type`,
 `schema_version`, `actor`, `outcome`, `request_id`, `session_id`,
-`privacy`, `allow_cloud`, `override`, `provider`, `provider_kind`, `model`,
+`privacy`, `allow_cloud`, `include_sensitive` (migration 0008), `override`, `provider`, `provider_kind`, `model`,
 `route_reason`, `finish_reason`, `latency_ms`, `input_tokens`,
 `output_tokens`, `error_type`, `error_message`, `attempts` (array of at
 most two `{provider, error_type, message, retryable}`).

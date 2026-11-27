@@ -376,9 +376,10 @@ error message that contains a whole text sent in the call (a message,
 the system prompt, a memory record's content or its rendered line) of
 at least 8 characters is replaced before it is logged, stored or
 returned (`router/echo.py`). Partial quotes and shorter texts are not
-caught; adapters still build messages from safe parts only. Not yet
-recorded: `include_sensitive` itself (the per-request approval) is in no
-event; only the count of Sensitive records sent is (#144).
+caught; adapters still build messages from safe parts only.
+`include_sensitive` itself (the per-request approval) is recorded on the
+request-level events since migration 0008 (#144, §9), next to the count
+of Sensitive records sent.
 `GET /memory/export` returns one JSON document
 (`{"format": "aether-memory", "version": 1, "exported_at", "records"}`)
 with every column of every unexpired record: all levels, Sensitive
@@ -507,6 +508,12 @@ category was performed. - Start time, end time, and outcome. - Approval
 decision where applicable. - Evidence or output references.
 
 Avoid storing unnecessary sensitive payloads in audit logs.
+
+The per-request approvals are recorded on the request-level events
+(`request.received`, `model.route.selected`, `request.failed`):
+`allow_cloud`, and since migration 0008 `include_sensitive` (#144), so a
+request that approved Sensitive memory but got none still leaves a trace.
+Memory events never carry `include_sensitive` (a CHECK).
 
 ## 10. Sentinel independence
 

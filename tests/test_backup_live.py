@@ -416,3 +416,62 @@ def test_restore_check_flags_a_missing_restore_actor_trigger(
 
     asyncio.run(owner_run(owner, drop))
     assert restore_check(container, owner_user(live_owner), src) == "NOT OK: restore_actor_trigger"
+
+
+def test_a_fresh_database_stores_include_sensitive_on_request_events_only(
+    live_owner: Settings, live_app: Settings, databases: tuple[str, str]
+) -> None:
+    # Migration 0008 (#144) on a fresh copy, whatever revision the live database has.
+    src, _ = databases
+    owner = with_database(live_owner, src)
+    migrate(owner)
+    asyncio.run(owner_autocommit(live_owner, f"REVOKE ALL ON DATABASE {src} FROM PUBLIC"))
+    asyncio.run(owner_autocommit(live_owner, f"GRANT CONNECT ON DATABASE {src} TO aether_app"))
+    app = with_database(live_app, src)
+    request_event = EVENT.replace("actor)", "actor, include_sensitive)").replace(
+        "'core')", "'core', true)"
+    )
+    memory_event = (
+        RESTORE_EVENT.replace("'restore'", "'memory'")
+        .replace("memory_level)", "memory_level, include_sensitive)")
+        .replace("'personal')", "'personal', false)")
+    )
+    assert asyncio.run(as_app(app, request_event)) == "allowed"
+    assert asyncio.run(as_app(app, memory_event)) == CHECK_VIOLATION
+
+
+def test_migration_0008_downgrade_refuses_while_approvals_are_recorded(
+    live_owner: Settings, databases: tuple[str, str]
+) -> None:
+    src, dst = databases
+    config = Config(str(REPO / "alembic.ini"))
+
+    def to(revision: str, *, down: bool) -> Any:
+        def step(sync: Connection) -> None:
+            config.attributes["connection"] = sync
+            (command.downgrade if down else command.upgrade)(config, revision)
+
+        async def body(conn: AsyncConnection) -> None:
+            await conn.run_sync(step)
+
+        return body
+
+    # Nothing recorded: goes down and up cleanly.
+    clean = with_database(live_owner, dst)
+    migrate(clean)
+    asyncio.run(owner_run(clean, to("0007", down=True)))
+    asyncio.run(owner_run(clean, to("head", down=False)))
+
+    # An approval recorded: refused, nothing changes.
+    owner = with_database(live_owner, src)
+    migrate(owner)
+    recorded = EVENT.replace("actor)", "actor, include_sensitive)").replace(
+        "'core')", "'core', true)"
+    )
+
+    async def insert(conn: AsyncConnection) -> None:
+        await conn.execute(text(recorded))
+
+    asyncio.run(owner_run(owner, insert))
+    with pytest.raises(DBAPIError, match="downgrade refused"):
+        asyncio.run(owner_run(owner, to("0007", down=True)))
