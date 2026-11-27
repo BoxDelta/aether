@@ -32,6 +32,8 @@ Failover (#19), in ``Router.handle``:
   non-retryable error (auth, model not found, rejected request, bad response,
   privacy) does not.
 - A manual override never fails over.
+- The timeout (``timeout_s``) is per attempt, so a request that fails over can
+  take up to twice as long before it answers or fails (#121).
 - The fallback is chosen by ``decide()`` again with the failed provider
   excluded, so every rule above applies to it (``allow_cloud``, Sensitive,
   Secret, availability, headroom).
@@ -371,10 +373,20 @@ class Router:
                 and p.allows(privacy)
                 and (not p.info.needs_allow_cloud or options.allow_cloud)
             ]
+            if options.override is not None:
+                # An override is never substituted (rule 2), so nothing else is
+                # checked, and a cloud override runs no GPU probe (#121).
+                eligible = [p for p in eligible if p.name == options.override]
             need_probe = any(p.info.kind == "local" for p in eligible)
             headroom_task = asyncio.ensure_future(self._headroom()) if need_probe else None
-            statuses = await asyncio.gather(*(_available(p) for p in eligible))
-            headroom = await headroom_task if headroom_task is not None else None
+            try:
+                statuses = await asyncio.gather(*(_available(p) for p in eligible))
+                headroom = await headroom_task if headroom_task is not None else None
+            finally:
+                # Cancelled (a client disconnect) or failed: don't leave the probe
+                # task behind unawaited (#121).
+                if headroom_task is not None and not headroom_task.done():
+                    headroom_task.cancel()
 
             available = {p.name: ok for p, ok in zip(eligible, statuses, strict=True)}
             candidates = [
@@ -389,7 +401,8 @@ class Router:
             ]
             decision = choose_route(privacy, options, candidates, headroom)
         except NoRoute as exc:
-            logger.warning("No route", extra={**log_fields, "reason": exc.reason})
+            if not exclude:  # a failover search: the caller logs "No failover" (#121)
+                logger.warning("No route", extra={**log_fields, "reason": exc.reason})
             raise
         logger.info(
             "Route chosen",
