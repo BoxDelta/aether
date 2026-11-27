@@ -74,11 +74,9 @@ Exit criteria:
 
 ## Phase 2 --- Memory
 
-**Status:** In progress (since 2026-11-15; build order in ADR-024 §9,
-#58). As of 2026-11-27 every build step is done, including the
-clean-up of the old unencrypted data (#152, stage 7 of step 17). Exit
-check (`docs/runbooks/phase2-exit-check.md`): Part A (existing evidence)
-done; Part B (the owner's live run) not run yet.
+**Status:** Done (exit check passed on the real PC on 2026-11-27,
+`docs/runbooks/phase2-exit-check.md`; build order in ADR-024 §9, #58).
+Open Phase 2 follow-ups are tracked as `phase-2` issues.
 
 **Goal:** Cross-provider continuity, the core of AETHER.
 

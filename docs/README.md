@@ -2,7 +2,7 @@
 
 **Working tagline:** One identity. Many minds. Shared memory.\
 **Document set:** Initial engineering baseline\
-**Status:** Phases 0 and 1 done; Phase 2 (Memory) in progress (see
+**Status:** Phases 0, 1 and 2 (Memory) done; Phase 3 not started (see
 `04_Development_Roadmap.md`)\
 **Last updated:** 2026-11-26 (docs refresh, ADR-027 to ADR-029)
 
