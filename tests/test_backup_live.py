@@ -438,3 +438,40 @@ def test_a_fresh_database_stores_include_sensitive_on_request_events_only(
     )
     assert asyncio.run(as_app(app, request_event)) == "allowed"
     assert asyncio.run(as_app(app, memory_event)) == CHECK_VIOLATION
+
+
+def test_migration_0008_downgrade_refuses_while_approvals_are_recorded(
+    live_owner: Settings, databases: tuple[str, str]
+) -> None:
+    src, dst = databases
+    config = Config(str(REPO / "alembic.ini"))
+
+    def to(revision: str, *, down: bool) -> Any:
+        def step(sync: Connection) -> None:
+            config.attributes["connection"] = sync
+            (command.downgrade if down else command.upgrade)(config, revision)
+
+        async def body(conn: AsyncConnection) -> None:
+            await conn.run_sync(step)
+
+        return body
+
+    # Nothing recorded: goes down and up cleanly.
+    clean = with_database(live_owner, dst)
+    migrate(clean)
+    asyncio.run(owner_run(clean, to("0007", down=True)))
+    asyncio.run(owner_run(clean, to("head", down=False)))
+
+    # An approval recorded: refused, nothing changes.
+    owner = with_database(live_owner, src)
+    migrate(owner)
+    recorded = EVENT.replace("actor)", "actor, include_sensitive)").replace(
+        "'core')", "'core', true)"
+    )
+
+    async def insert(conn: AsyncConnection) -> None:
+        await conn.execute(text(recorded))
+
+    asyncio.run(owner_run(owner, insert))
+    with pytest.raises(DBAPIError, match="downgrade refused"):
+        asyncio.run(owner_run(owner, to("0007", down=True)))

@@ -15,8 +15,9 @@ What changes:
 Unchanged: every other column, CHECK, index and trigger, and the app role's rights
 (table-level grants cover the new column).
 
-Downgrade: drops exactly the constraint and the column (the recorded approvals are
-lost; nothing else changes).
+Downgrade: refuses, with an error and no change, while any event records
+``include_sensitive`` (events is append-only audit data); otherwise drops exactly
+the constraint and the column.
 
 Revision ID: 0008
 Revises: 0007
@@ -46,5 +47,19 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # events is append-only audit data: never drop recorded approvals silently.
+    found = f"SELECT 1 FROM {TABLE} WHERE {COLUMN} IS NOT NULL"  # noqa: S608 - constants
+    op.execute(
+        f"""
+        DO $$
+        BEGIN
+            IF EXISTS ({found}) THEN
+                RAISE EXCEPTION 'downgrade refused: events record include_sensitive; '
+                    'dropping the column would delete audit data';
+            END IF;
+        END
+        $$
+        """
+    )
     op.drop_constraint(CHECK, TABLE, type_="check")
     op.drop_column(TABLE, COLUMN)
