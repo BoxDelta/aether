@@ -6,7 +6,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from dispatch import classify
+from dispatch import classify, github
 from dispatch.github import Issue
 from router import hardware
 from tests.dispatch.helpers import chat_reply, make_settings, route_json
@@ -187,3 +187,19 @@ def test_gpu_frees_up_while_waiting() -> None:
     headroom = classify.wait_for_gpu(lambda: next(snapshots), slept.append)
     assert headroom.ok
     assert len(slept) == 2
+
+
+def test_parser_rejects_duplicate_keys() -> None:
+    assert classify.parse_answer('{"route": "claude", "route": "local", "reason": "x"}') is None
+
+
+@pytest.mark.parametrize("var", ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"])
+def test_proxy_variables_are_ignored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, var: str
+) -> None:
+    monkeypatch.setenv(var, "http://127.0.0.1:9")
+    settings = make_settings(tmp_path)
+    with classify.make_client(settings) as llm, github.make_client(settings) as gh:
+        assert not llm._trust_env
+        assert not gh._trust_env
+        assert llm._mounts == {} and gh._mounts == {}

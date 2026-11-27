@@ -88,3 +88,8 @@ def test_main_reports_config_error(
     monkeypatch.setenv("DISPATCH_ENV_FILE", str(tmp_path / "missing.env"))
     assert cli.main(["triage"]) == 2
     assert "config error" in capsys.readouterr().err
+
+
+def test_reports_dir_is_at_repo_root() -> None:
+    root = Path(__file__).resolve().parents[2]
+    assert cli.REPORTS_DIR.relative_to(root) == Path(".dispatch/reports")

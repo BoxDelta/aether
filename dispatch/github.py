@@ -58,6 +58,7 @@ def make_client(
         },
         timeout=TIMEOUT_S,
         follow_redirects=False,
+        trust_env=False,  # no proxy, CA bundle or netrc from the shell (docs/05 §5)
         event_hooks={"request": [_refuse_writes]},
         transport=transport,
     )

@@ -6,6 +6,7 @@ missed one could let a local model touch a guarded area.
 """
 
 import re
+import unicodedata
 from collections.abc import Iterable
 
 # Paths from ADR-030. Directories end in '/'. ``docs/05_`` covers docs/05_*.
@@ -48,8 +49,10 @@ def _path_pattern(path: str) -> re.Pattern[str]:
         body = r"docs/05(?!\d)"  # issue text says "docs/05 §2" as often as the file name
     elif path.startswith(".") and path.endswith("/"):
         body = re.escape(path[:-1]) + r"(?:/|" + _END + ")"  # ".github" alone counts too
+    elif path.count("/") > 1:
+        body = re.escape(path[:-1]) + r"(?:/|(?![\w.-]))"  # "docs/adr" without the slash too
     elif path.endswith("/"):
-        body = re.escape(path)
+        body = re.escape(path)  # "router/", not the word "router"
     else:
         body = re.escape(path) + _END
     return re.compile(_EDGE + body, re.IGNORECASE)
@@ -105,8 +108,15 @@ def label_rule(labels: Iterable[str]) -> str | None:
     return None
 
 
+def normalize(text: str) -> str:
+    """NFKC, minus format characters, so zero-width or fullwidth tricks still match."""
+    folded = unicodedata.normalize("NFKC", text)
+    return "".join(ch for ch in folded if unicodedata.category(ch) != "Cf")
+
+
 def text_rule(text: str) -> str | None:
     """The rule a title or body matches by naming a listed path or keyword."""
+    text = normalize(text)
     for path, pattern in _PATH_PATTERNS:
         if pattern.search(text):
             return f"mentions {path}"

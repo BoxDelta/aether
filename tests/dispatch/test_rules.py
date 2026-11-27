@@ -102,3 +102,20 @@ def test_ordinary_text_does_not_match(text: str) -> None:
 )
 def test_ordinary_paths_do_not_match(path: str) -> None:
     assert rules.path_rule(path) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "see docs/adr for it",
+        "edit router\u200b/routing.py",
+        "edit " + "".join(chr(ord(c) + 0xFEE0) for c in "router") + "/routing.py",
+    ],
+)
+def test_normalized_text_still_matches(text: str) -> None:
+    assert rules.text_rule(text) is not None
+
+
+@pytest.mark.parametrize("text", ["the Memory API pages", "Router: guard a callback"])
+def test_bare_words_are_not_paths(text: str) -> None:
+    assert rules.text_rule(text) is None

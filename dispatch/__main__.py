@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from dispatch import classify, github
 from dispatch.config import ConfigError, DispatchSettings, load_settings
 
-REPORTS_DIR = Path(".dispatch/reports")
+REPORTS_DIR = Path(__file__).resolve().parents[1] / ".dispatch" / "reports"
 
 
 @dataclass(frozen=True, slots=True)

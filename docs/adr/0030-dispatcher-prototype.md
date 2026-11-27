@@ -100,6 +100,9 @@ Option 3, within the limits below.
     issue was opened by `BoxDelta` **and** the `dispatch:auto` label was
     added by `BoxDelta`. It checks who added the label in the issue's event history, not
     just whether the label is there. It checks again before each step.
+-   A test command (`python -m dispatch eval`) sorts a fixed set of past
+    issues to measure the rules and the model. It checks the author only,
+    because past issues no longer carry the label, and it never acts.
 -   It ignores comments, pull request text and any issue that doesn't
     pass the check above. The repository has one collaborator, so only
     the owner can edit the body of an owner's issue.

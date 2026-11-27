@@ -64,11 +64,22 @@ def clean_reason(text: str) -> str:
     return line[:MAX_REASON_CHARS]
 
 
+class _DuplicateKeyError(ValueError):
+    pass
+
+
+def _no_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    keys = [key for key, _ in pairs]
+    if len(keys) != len(set(keys)):
+        raise _DuplicateKeyError
+    return dict(pairs)
+
+
 def parse_answer(content: str) -> tuple[Route, str] | None:
     """Exactly ``{"route": "local"|"claude", "reason": "<text>"}``, else None."""
     try:
-        data = json.loads(content.strip())
-    except (json.JSONDecodeError, RecursionError):
+        data = json.loads(content.strip(), object_pairs_hook=_no_duplicates)
+    except (ValueError, RecursionError):  # JSONDecodeError and duplicate keys
         return None
     if not isinstance(data, dict) or set(data) != {"route", "reason"}:
         return None
@@ -113,6 +124,7 @@ def make_client(
         headers={"Authorization": f"Bearer {settings.dispatch_litellm_key.get_secret_value()}"},
         timeout=TIMEOUT_S,
         follow_redirects=False,
+        trust_env=False,  # no proxy or netrc from the shell (docs/05 §5)
         transport=transport,
     )
 
