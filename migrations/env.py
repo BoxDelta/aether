@@ -26,8 +26,8 @@ settings = get_settings()
 configure_logging(settings)
 
 # Migrations are written by hand and autogenerate is not used, so no metadata is
-# set. Tests check the code against the migrations instead (test_events.py,
-# test_memory_store.py).
+# set. Tests check the code against the migrations instead
+# (test_memory_store.py, test_memory_events.py).
 target_metadata = None
 
 
