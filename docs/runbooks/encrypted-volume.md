@@ -78,6 +78,7 @@ docker compose exec -T postgres psql -U aether -d aether -Atc 'SELECT count(*), 
 # expect: two numbers, e.g. 14|44 (more if Core ran since). Note both.
 docker compose exec -T postgres psql -U aether -d aether -Atc 'SELECT count(*) FROM memory_records'
 # expect: one number (invented test records only). Note it.
+uv run alembic current          # expect: … (head). If not: uv run alembic upgrade head
 ```
 
 ## Stage 1. The container file (no sudo)
@@ -261,6 +262,9 @@ uv run python -m core.backup --label premove
 # expect: one JSON line, "Backup completed", file aether-<time>-premove.dump
 set backup (path sort ~/.local/share/aether/backups/aether-*-premove.dump)[-1]
 path basename $backup
+docker compose exec -T postgres psql -U aether -d aether -Atc 'SELECT count(*), max(id) FROM events'
+docker compose exec -T postgres psql -U aether -d aether -Atc 'SELECT count(*) FROM memory_records'
+# Note these three numbers: they are what the backup holds (4e checks them).
 ```
 
 **4b. Install the helper.** It is a fish function with no secrets. It
@@ -316,9 +320,9 @@ docker compose exec -T postgres pg_restore -U aether -d aether_restore_check --e
 
 ```fish
 docker compose exec -T postgres psql -U aether -d aether_restore_check -Atc 'SELECT count(*), max(id) FROM events'
-# expect: the numbers from stage 0, unless Core ran between stage 0 and 4a
+# expect: the event numbers noted after the premove backup (4a)
 docker compose exec -T postgres psql -U aether -d aether_restore_check -Atc 'SELECT count(*) FROM memory_records'
-# expect: the memory count from stage 0
+# expect: the memory count noted in 4a
 docker compose exec -T postgres psql -U aether -d aether_restore_check -At < scripts/restore_check.sql
 # expect: ok
 ```
@@ -346,10 +350,15 @@ kept running.
 **Rollback (stage 4), at any point before stage 5.**
 
 -   Nothing was written to the old volume since 4a.
--   If you started Core at the end of 4f, events written since then exist
-    only on the volume. To keep them, back up first (with the volume open)
-    and restore that backup into the old database afterwards
-    (`db-backup-restore.md` section 4).
+-   If you started Core at the end of 4f, events and memory records
+    written since then exist only on the volume. To keep them, back up
+    first (with the volume open) and restore that backup into the old
+    database afterwards (`db-backup-restore.md` section 4).
+    **Not after real memory data exists:** that restore writes it in
+    plain text onto the bare disk for good (ADR-026 §7). Roll back only
+    while memory holds invented data, or export and delete the real
+    records first. The memory repair (`db-backup-restore.md` §4 step 3b)
+    doesn't apply here: skip it.
 -   Otherwise nothing is lost.
 
 ```fish
@@ -427,9 +436,14 @@ Then follow R2 to R5 there. `restore_check.sql` must print `ok`.
 -   Undo the configuration: remove the `COMPOSE_FILE` and
     `AETHER_BACKUP_DIR` lines from `.env`.
 -   Then do stage 4's rollback.
--   **Everything written since stage 4** (new events) exists only on the
-    volume. To keep it, first back it up, then restore that backup into
-    the old database (`db-backup-restore.md` section 4).
+-   **Everything written since stage 4** (new events and memory records)
+    exists only on the volume. To keep it, first back it up, then restore
+    that backup into the old database (`db-backup-restore.md` section 4).
+    **Not after real memory data exists:** that restore writes it in
+    plain text onto the bare disk for good (ADR-026 §7). Roll back only
+    while memory holds invented data, or export and delete the real
+    records first. The memory repair (`db-backup-restore.md` §4 step 3b)
+    doesn't apply here: skip it.
 
 ## Stage 6. Daily routine
 
@@ -464,7 +478,7 @@ What each step removes, and what it can't:
     -   Deleting frees the blocks but doesn't overwrite them. On btrfs and
         an SSD they can't be reliably wiped, and snapshots may still hold
         them.
-    -   That is acceptable only because there is no memory content in it
+    -   That is acceptable only because there is no real memory content in it
         (ADR-026 §7).
 
 ```fish
@@ -541,5 +555,9 @@ See ADR-026 §8 for the full list. In short:
     -   swap on disk and hibernation;
     -   data written before the move;
     -   memory text you type into shell commands;
+    -   memory sent or copied out on purpose: to the model provider a
+        call uses, the export file wherever you save it (keep it off
+        synced folders, delete it when done), and `/memory` output in
+        terminal scrollback or Claude Code transcripts;
     -   the backups' location: they are on the same physical disk as the
         data. An off-machine encrypted copy is a separate issue.

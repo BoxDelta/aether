@@ -237,7 +237,7 @@ anticipated, once the owner has run `docs/runbooks/encrypted-volume.md`.
         (D4): an encrypted off-machine copy is a separate follow-up.
     -   A forgotten passphrase loses the data and its backups together.
     -   Old unencrypted backups are deleted after the move but can't be
-        securely wiped on btrfs or an SSD. They hold event metadata only,
+        securely wiped on btrfs or an SSD. They hold event metadata and invented memory records only,
         which is why the move must happen before real memory data.
     -   With the volume closed at 03:30, that night's backup fails and is
         not retried until it is started by hand or the next night.

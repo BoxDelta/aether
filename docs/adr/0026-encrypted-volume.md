@@ -15,8 +15,10 @@ converted in place, and no repartitioning is needed.
 
 The host is Arch / GNOME on btrfs, with the fish shell. Postgres runs in
 Docker (ADR-020), and backups run from a systemd user timer (ADR-025).
-Today the database holds 14 events (max id 44): metadata only, with no
-memory content.
+When this ADR was written (2026-11) the database held 14 events (max
+id 44): metadata only, with no memory content. Since then the memory API
+and retrieval are on main (ADR-024), with invented test records only
+until this move.
 
 The main danger is not the encryption itself. It is a silent fallback:
 the volume is locked or not mounted, and Docker or a backup writes to the
@@ -182,9 +184,10 @@ locked, or Postgres is not started). This is unchanged:
 -   A fresh cluster, if one were ever created anyway, has no `aether_app`
     role. Core would get `auth_failed`; it never writes to an empty
     database as the app role.
--   The memory API (ADR-024 step 6) must answer 503 when the database is
-    unreachable, never an empty list or "not found". This is a
-    requirement for step 6, recorded in a follow-up issue.
+-   The memory routes answer 503 (`MemoryUnavailable`, #80, docs/05
+    §7.1), never an empty list or "not found", and `/chat` answers
+    without memory (retrieval fails, is logged as "Memory retrieval
+    failed", and the call goes on).
 
 ### 6. Backups
 
@@ -211,11 +214,11 @@ locked, or Postgres is not started). This is unchanged:
 ### 7. Moving the existing data
 
 -   First a verified, labelled backup (`core.backup --label premove`), and
-    the event count and max id are written down.
+    the event count, max id and memory record count are written down.
 -   Then a **new**, empty Postgres on the volume, and the documented
     restore into it (ADR-025: new cluster, `CREATE ROLE aether_app`, drill
     into `aether_restore_check`, rename, `set-app-password`).
--   Checks: events 14 / max id 44 (or the numbers written down),
+-   Checks: the event count, max id and memory record count written down,
     `restore_check.sql` prints `ok`, `core.db` connects as `aether_app`,
     `alembic current` is head. Only then switch compose over.
 -   The old Docker volume `aether_pgdata` is **kept**, untouched, as the
@@ -268,8 +271,11 @@ What is not covered, and what to do:
         example `invalid input syntax for type …: "…"`, or a syntax error
         near a token). The memory store sends values as bind parameters
         and checks them first, so these are unlikely, but not impossible.
--   **Core's logs and journald.** Core never logs content (docs/05 §9,
-    the store's own rule). Covered by Core's code, not by the volume.
+-   **Core's logs and journald.** Core doesn't log memory content
+    (docs/05 §7.1, the store's rule). Covered by Core's code, not by the
+    volume. Limit (docs/05 §7.1): the echo check (`router/echo.py`)
+    doesn't catch a provider error that quotes only part of the text it
+    was sent, so a fragment can reach Core's logs or events.
 -   **Core dumps** (`/var/lib/systemd/coredump`). A crash dump of Postgres
     or Core can hold memory text. Optional: `Storage=none` in
     `/etc/systemd/coredump.conf.d/`.
@@ -288,6 +294,20 @@ What is not covered, and what to do:
     move. They are kept by the snapshot tool's retention; the runbook
     lists how to check.
 -   **The web UI and browser caches.** Future (web UI); not covered here.
+
+Sent or copied out on purpose (by design, not by the volume):
+
+-   **Model calls.** Retrieval sends memory to the chosen provider: the
+    local Ollama server (whose own logs can hold prompts if debug logging
+    is on), an off-network Ollama host with `allow_cloud` (ADR-032), or
+    Anthropic with `allow_cloud` (personal at most).
+-   **Export.** `GET /memory/export` returns every record; the file is
+    wherever you save it, usually on the unencrypted disk. Keep it off
+    synced or shared folders (docs/05 §7.1) and delete it when done.
+-   **API responses.** `/memory` output lands in terminal scrollback,
+    in Claude Code session transcripts under `~/.claude`, and in any
+    channel it is pasted into. Telegram replies never carry memory data
+    (CLAUDE.md).
 
 ### 9. Opt-in now, the default later
 

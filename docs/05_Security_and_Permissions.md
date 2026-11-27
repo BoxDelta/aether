@@ -715,8 +715,9 @@ shapes only; they cannot recognise personal data.
         until the runbook's stage 7 recreates that name as a bind to the
         volume. After that, it can't create a database on the bare disk
         either. The nightly backup refuses to run (exit 1, one `err`
-        journal line). Core still starts with events skipped, and `/ready`
-        reports `degraded` with database `unreachable`.
+        journal line). Core still starts with events skipped, `/ready`
+        reports `degraded` with database `unreachable`, the memory routes
+        answer 503, and `/chat` answers without memory.
     -   **Encrypted:** the Postgres data, the backups and psql history in
         the container (`PSQL_HISTORY`), while the volume is locked or the
         PC is off.
@@ -729,6 +730,13 @@ shapes only; they cannot recognise personal data.
             snapshots). Deleting it is not wiping it on btrfs or an SSD,
             which is acceptable only because, before the move, it holds
             event metadata and invented memory data only.
+        -   memory sent or copied out on purpose: to model providers by
+            retrieval (local Ollama, whose logs can hold prompts with
+            debug logging on; the cloud or an off-network Ollama host
+            with `allow_cloud`), the export file wherever it is saved
+            (§7.1: keep it off synced or shared folders), and `/memory`
+            output in terminal scrollback or Claude Code transcripts
+            (ADR-026 §8).
     -   Postgres's error log lives in Docker's log on the unencrypted
         disk. With the volume's override it no longer carries DETAIL
         lines (rows, keys) or the failing statement
