@@ -1,5 +1,5 @@
 function aether-vault --description 'Open/close the AETHER encrypted volume and start/stop Postgres on it (ADR-026)'
-    # ADR-026, #57. Install (once, stage 5 of docs/runbooks/encrypted-volume.md):
+    # ADR-026, #57. Install (once, stage 4b of docs/runbooks/encrypted-volume.md):
     #   cp scripts/aether-vault.fish ~/.config/fish/functions/
     # Usage: aether-vault open | close | status
     #
