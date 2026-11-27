@@ -73,8 +73,10 @@ the security-reviewer subagent, not the local path.
 3. Memory save proposals from chat appear as approve/reject cards.
 
 ### Step 4b: Topics (ADR-039)
-1. `chats` table (one main chat, many topics) and `chat_id` on
-   messages.
+1. `chats` and `messages` tables, added in Step 4 (ADR-039): one main
+   chat, many topics; each message has `chat_id`, role, privacy level,
+   provider and timestamps. Chat history is included in backups
+   (ADR-025) and in the export and delete controls.
 2. Aether creates topics; "New topic" link above the reply with
    "Use an existing one" (merge).
 3. Routing of main-chat messages on the local model; "Added to" link and

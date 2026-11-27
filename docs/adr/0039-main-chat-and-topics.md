@@ -53,8 +53,10 @@ Option 3.
 
 ## Consequences
 
--   New `chats` table (the main chat and topics) in Postgres (ADR-011); messages
-    carry a `chat_id`.
+-   Step 4 of docs/08 adds two tables in Postgres (ADR-011): `chats`
+    (the main chat and topics) and `messages` (each with `chat_id`,
+    role, privacy level, provider and timestamps). Chat history is
+    included in backups (ADR-025) and in the export and delete controls.
 -   Wrong routing is the main risk: the link above every routed reply and
     the Move option keep it visible and easy to fix. Misroutes are logged
     so the routing rules can be tuned.

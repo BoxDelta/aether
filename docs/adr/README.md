@@ -39,7 +39,8 @@ ADR-009 onward have their own files here.
 -   **ADR-019:** uv for Python tooling, mypy for type checks. Accepted.
 -   **ADR-020:** Postgres setup: Docker Compose, asyncpg, Alembic.
     Accepted.
--   **ADR-021:** How clients authenticate to Core (`/chat`). Accepted.
+-   **ADR-021:** How clients authenticate to Core (`/chat`). Superseded by
+    ADR-035.
 -   **ADR-022:** Go public via a new repo from a clean snapshot.
     Accepted (2026-11-14).
 -   **ADR-023:** Ollama is local only on a loopback or private host.

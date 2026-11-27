@@ -8,7 +8,8 @@
 
 The owner will run one agent soon (the dispatcher, ADR-030) and maybe
 more later, and wants Aether to see and manage them "like a parent".
-ADR-009 keeps v1 small, ADR-005 (agent framework) is still open, and
+ADR-009 keeps v1 small, ADR-005 (Accepted: a thin AETHER-owned
+orchestrator, no agent framework in v1) applies, and
 docs/04 prioritization rule 6 says not to build subsystems as separate
 agents by default.
 
@@ -16,8 +17,8 @@ agents by default.
 
 1.  No agent support in v1. Agents stay invisible to Aether.
 2.  Aether hosts and runs agents itself (spawns processes, owns their
-    loops). Rejected for v1: needs ADR-005, isolation work and a larger
-    Automata.
+    loops). Rejected for v1: it would conflict with ADR-005, and needs
+    isolation work and a larger Automata.
 3.  Agents run on their own and connect to Core as supervised clients
     (chosen).
 
@@ -60,5 +61,4 @@ to register.
 
 ## Revisit when
 
--   ADR-005 is decided, or an agent needs Aether to start and run it
-    (option 2, Future).
+-   ADR-005 is revisited, or an agent needs Aether to start and run it.

@@ -1,6 +1,6 @@
 # ADR-021: How clients authenticate to Core (/chat)
 
-**Status:** Accepted (option 2, bearer token; implemented in #57)\
+**Status:** Superseded by ADR-035 (was Accepted: option 2, bearer token; implemented in #57)\
 **Date:** 2026-11-14\
 **Owner:** BoxDelta
 
