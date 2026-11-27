@@ -45,6 +45,43 @@ logger = logging.getLogger("aether.core.request")
 _ERROR_BODY = b'{"detail":"Internal Server Error"}'
 
 
+CHAIN_MAX_LINKS = 10  # chained causes and group members logged, at most
+CHAIN_MAX_FRAMES = 30  # per link: the innermost frames, where it was raised
+
+
+def exception_chain(exc: BaseException) -> str | None:
+    """Type and frames of each exception linked to ``exc`` (#164), never a message:
+    its explicit cause, its implicit context (unless suppressed with ``from None``)
+    and the members of an exception group, depth first, at most ``CHAIN_MAX_LINKS``
+    links of at most ``CHAIN_MAX_FRAMES`` frames each, and each
+    exception once. ``None`` if there are none."""
+    parts: list[str] = []
+    seen = {id(exc)}
+    pending: list[tuple[str, BaseException]] = list(reversed(_links(exc)))
+    while pending and len(parts) < CHAIN_MAX_LINKS:
+        how, linked = pending.pop()
+        if id(linked) in seen:
+            continue
+        seen.add(id(linked))
+        frames = "".join(traceback.format_tb(linked.__traceback__, limit=-CHAIN_MAX_FRAMES))
+        parts.append(f"--- {how}: {type(linked).__name__} ---\n{frames}")
+        pending.extend(reversed(_links(linked)))
+    if any(id(linked) not in seen for _, linked in pending):
+        parts.append("--- more links not logged ---\n")
+    return "".join(parts) or None
+
+
+def _links(exc: BaseException) -> list[tuple[str, BaseException]]:
+    links: list[tuple[str, BaseException]] = []
+    if isinstance(exc, BaseExceptionGroup):
+        links.extend(("group member", member) for member in exc.exceptions)
+    if exc.__cause__ is not None:
+        links.append(("caused by", exc.__cause__))
+    elif exc.__context__ is not None and not exc.__suppress_context__:
+        links.append(("while handling", exc.__context__))
+    return links
+
+
 class UnhandledRequestError(Exception):
     """What the server sees instead of an unhandled exception: its type name only."""
 
@@ -122,12 +159,17 @@ class RequestContextMiddleware:
             # this exception happens after they are reset. Type and frames only: the
             # message can hold values (#124). The frames' source lines are code.
             error_type = type(exc).__name__
+            try:
+                chain = exception_chain(exc)
+            except Exception:
+                chain = "<chain unavailable>"
             logger.error(
                 "Unhandled exception",
                 extra={
                     "path": scope.get("path"),
                     "error_type": error_type,
                     "frames": "".join(traceback.format_tb(exc.__traceback__)),
+                    "chain": chain,
                 },
             )
             # Starlette builds its 500 response outside this middleware, so it would
