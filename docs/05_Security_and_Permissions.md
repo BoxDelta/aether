@@ -157,7 +157,8 @@ confidence is not a substitute for authorization.
     `aether` (`DATABASE_MIGRATION_URL`) runs migrations only. Nothing is
     granted to PUBLIC. Core refuses to start, and `/ready` reports
     `misconfigured`, if its role is a superuser, owns the database or any
-    table or function, can create objects, holds TRUNCATE or TRIGGER on
+    table or function, can create objects or temporary tables (#176),
+    holds TRUNCATE or TRIGGER on
     any table, holds UPDATE or DELETE on any table other than
     `public.memory_records`, or is the same as the migration role (tested
     live). Database passwords

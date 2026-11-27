@@ -303,6 +303,9 @@ def test_migration_engine_is_the_owner(live_owner: Settings) -> None:
         "GRANT UPDATE ON events TO {role}",
         "GRANT TRIGGER ON events TO {role}",
         "GRANT CREATE ON SCHEMA public TO {role}",
+        # #176: a temporary table can shadow a table name for this session.
+        "GRANT TEMPORARY ON DATABASE {database} TO {role}",
+        "GRANT TEMPORARY ON DATABASE {database} TO PUBLIC",
     ],
 )
 def test_a_wrongly_granted_app_role_is_refused(
@@ -310,7 +313,8 @@ def test_a_wrongly_granted_app_role_is_refused(
 ) -> None:
     assert live_app.database_url is not None
     role = urlsplit(live_app.database_url.get_secret_value()).username
-    statement = grant.format(role=role)
+    database = urlsplit(live_app.database_url.get_secret_value()).path.lstrip("/")
+    statement = grant.format(role=role, database=database)
     revoke = statement.replace("GRANT", "REVOKE", 1).replace(" TO ", " FROM ")
 
     async def run(sql: str) -> None:

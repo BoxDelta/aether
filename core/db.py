@@ -54,7 +54,8 @@ SAME_ROLE_MESSAGE = (
 
 # True when the connected role could change or drop what it should only append to:
 # special attributes; owning the database or any non-system table or function;
-# CREATE on the database or any non-system schema; predefined roles that write
+# CREATE or TEMPORARY on the database (a temporary table can shadow a table name,
+# migration 0003 revokes both, #176) or CREATE on any non-system schema; predefined roles that write
 # any table or reach the server's files or programs; TRUNCATE or TRIGGER on any
 # non-system table; or UPDATE (on the table or any column) or DELETE on any
 # non-system table except ``public.memory_records`` (MUTABLE_TABLE: Core corrects and
@@ -70,7 +71,7 @@ PRIVILEGE_QUERY = """
 SELECT r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication
     OR r.rolbypassrls
     OR pg_has_role(current_user, d.datdba, 'MEMBER')
-    OR has_database_privilege(current_user, d.oid, 'CREATE')
+    OR has_database_privilege(current_user, d.oid, 'CREATE, TEMPORARY')
     OR pg_has_role(current_user, 'pg_write_all_data', 'MEMBER')
     OR pg_has_role(current_user, 'pg_write_server_files', 'MEMBER')
     OR pg_has_role(current_user, 'pg_execute_server_program', 'MEMBER')

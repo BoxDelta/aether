@@ -548,3 +548,8 @@ def test_privilege_query_exempts_only_memory_records_from_update_and_delete() ->
     # Ownership and CREATE are still checked without any exception.
     assert "pg_has_role(current_user, c.relowner, 'MEMBER') OR" in q
     assert "has_schema_privilege(current_user, n.oid, 'CREATE')" in q
+
+
+def test_privilege_query_refuses_temporary_on_the_database() -> None:
+    # A temporary table can shadow a table name for the session (#176).
+    assert "has_database_privilege(current_user, d.oid, 'CREATE, TEMPORARY')" in _query()
