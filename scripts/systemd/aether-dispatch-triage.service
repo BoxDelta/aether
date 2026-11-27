@@ -1,7 +1,9 @@
 # Template (ADR-030, #135): dispatcher dry run, posting new results to Discord.
 # A systemd *user* service. Not installed by the repo. Install steps:
-# dispatch/README.md. Runs from the working clone, so it runs whatever branch is
-# checked out there. It reads only ~/.config/aether-dispatch/dispatch.env.
+# dispatch/README.md. Runs from a main-only clone (~/Projects/aether-dispatch),
+# never the working clone, so only merged, reviewed code runs with the
+# dispatcher's credentials (like aether-backup.service, ADR-025 D8). It reads
+# only ~/.config/aether-dispatch/dispatch.env.
 [Unit]
 Description=AETHER dispatcher dry-run triage (posts to Discord)
 Documentation=https://github.com/BoxDelta/aether/blob/main/dispatch/README.md
@@ -10,9 +12,14 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=%h/Projects/aether
-# uv is usually in ~/.local/bin; nvidia-smi is in /usr/bin.
+WorkingDirectory=%h/Projects/aether-dispatch
+# uv is usually in ~/.local/bin; nvidia-smi and git are in /usr/bin.
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin
+# Refuse to run unless the clone is on main with no local changes (tracked or
+# untracked; git-ignored files such as .dispatch/ don't count).
+ExecStartPre=/bin/sh -c 'test "$$(git -C %h/Projects/aether-dispatch branch --show-current)" = main && test -z "$$(git -C %h/Projects/aether-dispatch status --porcelain)"'
+# Then bring it up to date with merged code only; a non-fast-forward fails the run.
+ExecStartPre=/usr/bin/git -C %h/Projects/aether-dispatch pull --ff-only origin main
 ExecStart=/usr/bin/env uv run python -m dispatch triage --notify
 # Reports and state it writes are private.
 UMask=0077

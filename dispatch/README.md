@@ -65,23 +65,43 @@ suppressed.
 
 ### Timer (fish)
 
-Every 15 minutes as a systemd user timer, from `~/Projects/aether` (owner
-decision). It runs whatever branch that clone has checked out, unattended,
-with `dispatch.env` loaded, and `uv run` installs whatever that branch's
-`uv.lock` says. Branch code has not passed Sentinel's boundary tests yet.
-Stop the timer before checking out untrusted or experimental branches.
+Every 15 minutes as a systemd user timer, from a **main-only clone**
+(`~/Projects/aether-dispatch`), never the working clone, so only merged,
+reviewed code runs with the dispatcher's credentials (like the backup
+timer, ADR-025 D8). Before each run the service checks that the clone is
+on `main` with no local changes, then runs
+`git pull --ff-only origin main`. If either fails, the dispatcher does
+not run. Its `.dispatch/` state and reports live in that clone.
 
-Install:
+Create the clone (once):
+
+```fish
+git clone https://github.com/BoxDelta/aether.git ~/Projects/aether-dispatch
+cd ~/Projects/aether-dispatch
+git branch --show-current            # main
+uv sync --frozen                     # its own virtual environment (.venv)
+cd ~/Projects/aether
+```
+
+Install and enable the timer:
 
 ```fish
 mkdir -p ~/.config/systemd/user
 cp scripts/systemd/aether-dispatch-triage.service scripts/systemd/aether-dispatch-triage.timer ~/.config/systemd/user/
+grep WorkingDirectory ~/.config/systemd/user/aether-dispatch-triage.service   # %h/Projects/aether-dispatch
 systemctl --user daemon-reload
+systemctl --user start aether-dispatch-triage.service      # one run now
 systemctl --user enable --now aether-dispatch-triage.timer
-systemctl --user list-timers aether-dispatch-triage.timer
 ```
 
-Logs: `journalctl --user -u aether-dispatch-triage.service -n 50`
+Check it:
+
+```fish
+systemctl --user list-timers aether-dispatch-triage.timer
+systemctl --user status aether-dispatch-triage.service --no-pager
+journalctl --user -u aether-dispatch-triage.service -n 50 --no-pager
+git -C ~/Projects/aether-dispatch status --short --branch   # ## main...origin/main, nothing else
+```
 
 Remove:
 
@@ -89,6 +109,8 @@ Remove:
 systemctl --user disable --now aether-dispatch-triage.timer
 rm ~/.config/systemd/user/aether-dispatch-triage.service ~/.config/systemd/user/aether-dispatch-triage.timer
 systemctl --user daemon-reload
+# Optional: also delete the clone, with its posted-issue state and reports.
+rm -rf ~/Projects/aether-dispatch
 ```
 
 ## Settings

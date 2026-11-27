@@ -170,11 +170,10 @@ diff Aider produces. A match means `claude`, with no model call.
     characters, mentions off). The issue body and code are never put in
     the post, but a model-written reason may quote up to 200 characters
     of the issue.
--   The dry run runs every 15 minutes from a systemd user timer in the
-    working clone (owner decision 2026-11-26), not a main-only clone as
-    for backups (ADR-025 D8). It runs whatever branch is checked out,
-    with `dispatch.env` loaded. Accepted for the dry run; revisit before
-    step 4b gives the timer any write path.
+-   The dry-run timer runs every 15 minutes from a main-only clone
+    (`~/Projects/aether-dispatch`), like the backup timer (ADR-025 D8),
+    so only merged, reviewed code runs with the dispatcher's
+    credentials.
 
 ### Credentials
 
