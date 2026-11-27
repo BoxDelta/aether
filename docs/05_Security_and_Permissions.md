@@ -127,8 +127,9 @@ confidence is not a substitute for authorization.
 -   Events hold metadata only: IDs, privacy level, route decision and
     reason, scrubbed error type/message, latency, token counts. They never
     hold prompts, answers, memory content, secrets or tracebacks. This is
-    enforced by typed columns with CHECK constraints, redaction on write,
-    and tests (`core/events.py`, docs/01 §7). Memory events (migration
+    enforced by typed columns with CHECK constraints, redaction on write
+    (before free text is cut to 500 characters, so a secret across the
+    cut is still masked, #115), and tests (`core/events.py`, docs/01 §7). Memory events (migration
     0005, ADR-024 §5) add only IDs, category, source, levels and counts,
     never memory content, keys, corrected text, search queries or
     rejection reasons, and are written in the same transaction as the
