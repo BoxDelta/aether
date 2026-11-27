@@ -7,9 +7,11 @@ Read a doc only when the task touches it: 05 for secrets/permissions/
 tools/routing, 04 for scope questions, docs/adr/ before architecture
 changes (never contradict an Accepted ADR; propose a new one). Never
 bypass `.claude/settings.json` or `.pre-commit-config.yaml` (`--no-verify` etc.).
-Current phase: Phase 2 (Memory). Work only on it unless the owner says
-otherwise; no Future items (3D graph, Android app, Oracle, Vault service,
-AI review, hosted gateway) unless asked.
+Current phase: Phase 3 (Web UI, tools and daily use; docs/04). Work only
+on it unless the owner says otherwise. When the owner asks to work through
+issues, start with the open `phase-2` follow-ups. No Future items (3D
+graph, native Android app, Oracle, Vault service, AI review, hosted
+gateway) unless asked.
 
 ## Model choice
 

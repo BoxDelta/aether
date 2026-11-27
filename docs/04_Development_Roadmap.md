@@ -99,7 +99,9 @@ Exit criteria:
 
 ## Phase 3 --- Web UI, tools and daily use
 
-**Status:** Not started.
+**Status:** In progress (since 2026-11-27). Build order: to be agreed
+(a new ADR, like ADR-024 §9 for Phase 2). Open `phase-2` issues stay
+the follow-up backlog.
 
 **Goal:** Make AETHER usable every day from the PC and the phone.
 

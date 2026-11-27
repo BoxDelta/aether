@@ -20,8 +20,8 @@ store and its owner API (`/memory`: list, search, create, approve,
 correct, delete and export) exist, approved memory goes into model
 calls within each provider's privacy limit, models can propose memory for
 you to approve, and the database and backups are on an encrypted volume.
-The Phase 2 exit check passed on 2026-11-27. A web UI
-comes in Phase 3. Phase status lines are in
+The Phase 2 exit check passed on 2026-11-27. Phase 3 (a web UI,
+phone access and tools) has started. Phase status lines are in
 [`docs/04_Development_Roadmap.md`](docs/04_Development_Roadmap.md). It is
 not production-ready, and it is built for a single user on their own
 machine.
