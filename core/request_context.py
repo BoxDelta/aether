@@ -45,6 +45,41 @@ logger = logging.getLogger("aether.core.request")
 _ERROR_BODY = b'{"detail":"Internal Server Error"}'
 
 
+CHAIN_MAX_LINKS = 10  # chained causes and group members logged, at most
+
+
+def exception_chain(exc: BaseException) -> str | None:
+    """Type and frames of each exception linked to ``exc`` (#164), never a message:
+    its explicit cause, its implicit context (unless suppressed with ``from None``)
+    and the members of an exception group, depth first, at most ``CHAIN_MAX_LINKS``
+    links and each exception once. ``None`` if there are none."""
+    parts: list[str] = []
+    seen = {id(exc)}
+    pending: list[tuple[str, BaseException]] = list(reversed(_links(exc)))
+    while pending and len(parts) < CHAIN_MAX_LINKS:
+        how, linked = pending.pop()
+        if id(linked) in seen:
+            continue
+        seen.add(id(linked))
+        frames = "".join(traceback.format_tb(linked.__traceback__))
+        parts.append(f"--- {how}: {type(linked).__name__} ---\n{frames}")
+        pending.extend(reversed(_links(linked)))
+    if pending and len(parts) == CHAIN_MAX_LINKS:
+        parts.append("--- more links not logged ---\n")
+    return "".join(parts) or None
+
+
+def _links(exc: BaseException) -> list[tuple[str, BaseException]]:
+    links: list[tuple[str, BaseException]] = []
+    if isinstance(exc, BaseExceptionGroup):
+        links.extend(("group member", member) for member in exc.exceptions)
+    if exc.__cause__ is not None:
+        links.append(("caused by", exc.__cause__))
+    elif exc.__context__ is not None and not exc.__suppress_context__:
+        links.append(("while handling", exc.__context__))
+    return links
+
+
 class UnhandledRequestError(Exception):
     """What the server sees instead of an unhandled exception: its type name only."""
 
@@ -128,6 +163,7 @@ class RequestContextMiddleware:
                     "path": scope.get("path"),
                     "error_type": error_type,
                     "frames": "".join(traceback.format_tb(exc.__traceback__)),
+                    "chain": exception_chain(exc),
                 },
             )
             # Starlette builds its 500 response outside this middleware, so it would

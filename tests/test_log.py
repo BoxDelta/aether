@@ -151,6 +151,19 @@ def app_and_stream() -> tuple[FastAPI, io.StringIO]:
         record_text = "-".join(("RECORD", "VALUE", "CANARY", "7731"))  # built at run time
         raise ValueError(record_text)
 
+    @app.get("/_test/chain")
+    async def chain() -> None:
+        # Built at run time: the logged frames' source lines are code.
+        canary = "-".join(("CHAIN", "CANARY", "4410"))
+
+        def driver() -> None:
+            raise ConnectionError(f"cause {canary}")
+
+        try:
+            driver()
+        except ConnectionError as exc:
+            raise RuntimeError(f"outer {canary}") from exc
+
     return app, out
 
 
@@ -361,3 +374,18 @@ def test_python_fallback_redacts_a_traceback(capsys: pytest.CaptureFixture[str])
     err = capsys.readouterr().err
     assert REDACTED in json.loads(err)["exc_info"]
     assert FAKE_ANTHROPIC_KEY not in err
+
+
+def test_unhandled_exception_logs_its_cause_without_messages(
+    app_and_stream: tuple[FastAPI, io.StringIO], capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A wrapped driver error: where the cause happened is kept, never its text (#164).
+    app, out = app_and_stream
+    TestClient(app, headers=AUTH, raise_server_exceptions=False).get("/_test/chain")
+
+    [record] = [r for r in lines(out) if r["message"] == "Unhandled exception"]
+    assert record["error_type"] == "RuntimeError"
+    assert "--- caused by: ConnectionError ---" in record["chain"]
+    assert "driver" in record["chain"]
+    for text in (out.getvalue(), *capsys.readouterr()):
+        assert "-".join(("CHAIN", "CANARY", "4410")) not in text

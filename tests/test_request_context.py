@@ -242,3 +242,73 @@ def test_the_servers_own_log_of_the_stand_in_has_no_message(
     assert "UnhandledRequestError" in text
     assert "secret internal detail" not in text
     assert "During handling" not in text and "direct cause" not in text
+
+
+# --- the chain of linked exceptions (#164) ----------------------------------------------
+
+
+def _raised(exc: BaseException) -> BaseException:
+    try:
+        raise exc
+    except BaseException as caught:
+        return caught
+
+
+def test_chain_lists_cause_context_and_group_members_by_type() -> None:
+    from core.request_context import exception_chain
+
+    def message(name: str) -> str:
+        return "-".join(("MSG", name, "9120"))  # built at run time, never in the source
+
+    try:
+        try:
+            raise KeyError(message("ctx"))
+        except KeyError:
+            raise ValueError(message("cause"))  # noqa: B904 - an implicit context on purpose
+    except ValueError as inner:
+        member = _raised(OSError(message("member")))
+        assert isinstance(member, OSError)
+        group = ExceptionGroup(message("group"), [inner, member])
+    outer = RuntimeError(message("outer"))
+    outer.__cause__ = group
+
+    chain = exception_chain(outer)
+    assert chain is not None
+    headers = [line for line in chain.splitlines() if line.startswith("---")]
+    assert headers == [
+        "--- caused by: ExceptionGroup ---",
+        "--- group member: ValueError ---",
+        "--- while handling: KeyError ---",
+        "--- group member: OSError ---",
+    ]
+    for name in ("ctx", "cause", "member", "group", "outer"):
+        assert message(name) not in chain
+
+
+def test_chain_respects_from_none_and_has_no_links_for_a_plain_error() -> None:
+    from core.request_context import exception_chain
+
+    assert exception_chain(_raised(RuntimeError("x"))) is None
+    try:
+        try:
+            raise KeyError("hidden")
+        except KeyError:
+            raise RuntimeError("x") from None
+    except RuntimeError as exc:
+        assert exception_chain(exc) is None
+
+
+def test_chain_is_bounded_and_survives_a_cycle() -> None:
+    from core.request_context import CHAIN_MAX_LINKS, exception_chain
+
+    head = RuntimeError("head")
+    current: BaseException = head
+    for _ in range(CHAIN_MAX_LINKS + 5):
+        nxt = ValueError("link")
+        current.__cause__ = nxt
+        current = nxt
+    current.__cause__ = head  # a cycle back to the start
+    chain = exception_chain(head)
+    assert chain is not None
+    assert chain.count("--- caused by:") == CHAIN_MAX_LINKS
+    assert chain.endswith("--- more links not logged ---\n")
