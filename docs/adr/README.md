@@ -57,5 +57,5 @@ ADR-009 onward have their own files here.
 -   **ADR-029:** End-of-phase code-health review. Proposed (2026-11-26).
 -   **ADR-030:** Dispatcher prototype during Phase 2. Proposed
     (2026-11-26).
--   **ADR-031:** Plane as a two-way view of GitHub Issues; partly
+-   **ADR-031:** Plane as a one-way mirror of GitHub Issues; partly
     supersedes ADR-010. Proposed (2026-11-26).
