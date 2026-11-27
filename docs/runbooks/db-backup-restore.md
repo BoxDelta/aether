@@ -211,9 +211,10 @@ docker compose exec -T postgres psql -U aether -d aether_restore_check -At < scr
 A backup taken before migration `0004` (the `version_num` above is
 `0003`) has no `memory_records` table, so the check prints
 `NOT OK: memory_table` and nothing else. That is expected for such a
-backup. If you replace the database with it (section 4), run
-`uv run alembic upgrade head` right after the swap (step 4), before the
-checks in step 5; the check then says `ok`. Any other failing name is a
+backup. If you replace the database with it (section 4), the memory
+repair (step 3b) upgrades the copy to the current head first; without
+step 3b, run `uv run alembic upgrade head` right after the swap (step 4),
+before the checks in step 5. The check then says `ok`. Any other failing name is a
 real problem: don't swap.
 
 **R5. End of a drill.** Drop the throwaway database. This only removes
@@ -231,15 +232,13 @@ docker compose exec -T postgres dropdb -U aether aether_restore_check
 > changes. The old database is **kept** under another name, so you can go
 > back, and nothing is dropped in this section.
 >
-> Memory records exist since the memory API (ADR-024 step 6). The ADR-024
-> §4 steps (re-delete, re-check levels, re-insert memory events, read
-> from `aether_before_restore`) go between R4 and the swap; they're added
-> to this runbook in build step 16 (#58). Until then a swap brings back
-> memory records deleted after the backup and undoes later corrections
-> and level changes, with nothing to repair it: a record raised to
-> `sensitive` goes back to its lower level, so once retrieval exists it
-> could be sent at that level. That is acceptable only while memory holds
-> invented data: real data waits for #57 and these restore steps (step 16).
+> Memory: a restored copy brings back records deleted after the backup,
+> lowers levels raised after it and undoes corrections. Step 3b repairs
+> the copy from the live database **before** the swap (ADR-024 §4,
+> `memory/restore.py`). Skip it only if the live database is gone; then
+> every deletion, level raise and correction after the backup is lost,
+> and deleted records are back: review `/memory` before starting Core
+> with real requests.
 
 1.  Do the drill (section 3, R1 to R4) and keep `aether_restore_check`;
     `restore_check.sql` must say `ok` (or only `NOT OK: memory_table` for
@@ -254,6 +253,34 @@ docker compose exec -T postgres dropdb -U aether aether_restore_check
     ```fish
     uv run python -m core.backup --label prerestore
     ```
+
+3b. **Repair memory in the copy** (ADR-024 §4). With Core stopped, it
+    reads the `memory.*` events the live database has after the backup
+    (metadata only), then, in the copy and in one transaction: deletes
+    again every record deleted, rejected or expired since; sets every
+    record approved or corrected since back to `pending`, at the higher
+    of its restored and its newest level, marked `restored` (kept until
+    you review it, never expires, not counted toward the 50-proposal
+    limit); inserts the saved events again; and records its own changes
+    as events with `actor="restore"`. Read-only checks come first: it
+    refuses unless it is the owner role, the copy is a restored AETHER
+    database (never `postgres` or a template), and the copy's events are
+    the live events up to its newest one (wrong database or backup, or
+    already repaired). Only then does it upgrade the copy to the current
+    migration head. Dry run first (it refuses a copy that is behind head,
+    since it changes nothing; then run it for real):
+
+    ```fish
+    uv run python -m memory.restore --into aether_restore_check --dry-run
+    uv run python -m memory.restore --into aether_restore_check
+    ```
+
+    **Expect:** the output ends with one `Memory repair completed` line
+    (Alembic may print `Running upgrade …` lines before it) with counts only:
+    `events_copied`, `deleted_again`, `set_pending`, `restored_total`
+    (records for you to review) and `other_events_lost` (request and
+    routing events after the backup, which are not copied). Records
+    created after the backup are not in the copy and are lost.
 4.  Swap the names. The current database becomes `aether_before_restore`.
 
     ```fish
@@ -273,7 +300,10 @@ docker compose exec -T postgres dropdb -U aether aether_restore_check
     ```
 
     Then start Core, check `/ready`, and start the timer again:
-    `systemctl --user start aether-backup.timer`.
+    `systemctl --user start aether-backup.timer`. Review the restored
+    records: `GET /memory?status=pending` lists them with
+    `"restored": true`; approve each with its level (re-check the text:
+    corrections after the backup could not be recovered) or reject it.
 
 6.  Keep `aether_before_restore` until you're sure, then drop it.
     **Dropping it deletes the pre-restore data for good**, except for the

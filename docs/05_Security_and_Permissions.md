@@ -133,9 +133,9 @@ confidence is not a substitute for authorization.
     exist rather than delete audit rows. A memory event can't carry the
     free-text columns (route reason, error message, attempts), by CHECK.
     **Known limitation:** `actor="restore"` is a label, not proof: the
-    app role can also write it. Enforcing it (for example by the
-    connecting role) belongs to the restore runbook step (ADR-024 §9
-    step 16).
+    app role can also write it. The restore repair
+    (`memory/restore.py`, step 16) runs as the owner role, but nothing
+    enforces that yet (#150).
 -   Database roles (#1, #12, ADR-020 addition 2026-11-16): Core connects
     as `aether_app` (`DATABASE_URL`), which has only CONNECT, schema
     USAGE, INSERT and SELECT on `events`, SELECT on `alembic_version`,
@@ -294,9 +294,10 @@ before a list or a create at most once a minute (and, unthrottled,
 before the owner sets a key), so an expired record
 can stay on disk until the next list or create. The clean-up runs as
 part of the read: if it fails, the list or create fails too (503 or
-500), never an empty or stale answer. Not yet handled: records a restore
-sets back to `pending` would expire at once; build step 16 adds their
-"restored" marker and exempts it (#67).
+500), never an empty or stale answer. A record a restore sets back to
+`pending` is marked `restored` (migration 0006): it never expires and
+doesn't count toward the 50-proposal limit, until the owner approves or
+rejects it (approving clears the marker).
 
 Retrieval for model calls (ADR-024 §3, step 12): each call, the
 failover call included, gets its own selection after its route is
@@ -752,8 +753,11 @@ shapes only; they cannot recognise personal data.
     them, about 5 weeks with daily backups (ADR-024 §4). A restore brings
     back the past; the runbook (`docs/runbooks/db-backup-restore.md`)
     restores into a new database first, checks row counts, triggers and
-    grants (`scripts/restore_check.sql`), and replaces the real database
-    only by renaming, keeping the old one. The safety backup taken before
+    grants (`scripts/restore_check.sql`), repairs memory in the copy
+    from the live database's events (`memory/restore.py`: deletes again,
+    sets records changed since back to `pending` at the higher level,
+    marked `restored`), and replaces the real database only by renaming,
+    keeping the old one. The safety backup taken before
     a restore and the kept old database are outside retention and must
     be deleted by hand within 5 weeks, or a deleted record survives in
     them.

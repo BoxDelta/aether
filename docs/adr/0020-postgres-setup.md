@@ -134,7 +134,7 @@ narrow exception.
 
 ## Addition (2026-11-17): data on the encrypted volume (#57, ADR-026)
 
-Applies once ADR-026 is accepted; until then it describes the proposal.
+ADR-026 was accepted on 2026-11-27; this applies from the move (encrypted-volume runbook stage 4).
 The runtime above (the named volume `aether_pgdata`) is kept as the
 default, and as the original decision. ADR-026 adds an opt-in override,
 `compose.vault.yaml`. The owner turns it on with

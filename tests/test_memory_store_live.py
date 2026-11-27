@@ -1295,3 +1295,52 @@ def test_retriever_needs_a_store() -> None:
 
     with pytest.raises(TypeError):
         MemoryRetriever(object(), ("public",))  # type: ignore[arg-type]
+
+
+def test_deleted_rejected_and_expired_records_are_never_selected_or_exported(
+    store: Run[Any], live_owner: Settings
+) -> None:
+    """Exit 3 (ADR-024 §8): after delete, reject or expiry the record is gone from
+    reads, retrieval and export, and no event column holds its content."""
+    after = last_event_id(live_owner)
+
+    async def body(s: MemoryStore) -> dict[str, Any]:
+        gone = await s.create(
+            owner_record("gone", category="project", content=f"{PREFIX} heron gone")
+        )
+        pending = await s.create(proposal("rej", content=f"{PREFIX} heron rejected"))
+        await s.create(
+            owner_record(
+                "exp",
+                category="project",
+                content=f"{PREFIX} heron expired",
+                expires_at=datetime.now(UTC) + timedelta(seconds=1),
+            )
+        )
+        await s.delete(gone.id, actor="owner")
+        await s.reject(pending.id, actor="owner")
+        await asyncio.sleep(1.5)
+        expired = await s.expire()
+        candidates = await s.retrieval_candidates("heron", max_level="sensitive")
+        exported = await s.export(actor="owner")
+        return {
+            "expired": expired,
+            "selected": [c.record.content for c in candidates if PREFIX in c.record.content],
+            "exported": [r.content for r in exported.records if "heron" in r.content],
+            "gone": gone.id,
+        }
+
+    out = store(body)
+
+    assert out["expired"] >= 1
+    assert out["selected"] == [] and out["exported"] == []
+    events = events_after(live_owner, after)
+    kinds = {e["event_type"] for e in events}
+    assert {"memory.deleted", "memory.rejected", "memory.expired"} <= kinds
+    assert f"{PREFIX} heron" not in json.dumps(events)
+
+    async def get_gone(s: MemoryStore) -> None:
+        await s.get(out["gone"])
+
+    with pytest.raises(RecordNotFound):
+        store(get_gone)

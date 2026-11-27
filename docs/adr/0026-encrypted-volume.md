@@ -1,6 +1,6 @@
 # ADR-026: Encrypted volume for the Postgres data and the backups
 
-**Status:** Proposed (owner chose the container file, option 2, on #57)\
+**Status:** Accepted (owner, 2026-11-27; owner chose the container file, option 2, on #57)\
 **Date:** 2026-11-17\
 **Owner:** BoxDelta
 

@@ -204,7 +204,7 @@ D1 to D7 are accepted exactly as recommended. D8 takes the alternative.
 
 ## Addition (2026-11-17): backups on the encrypted volume (#57, ADR-026)
 
-Applies once ADR-026 is accepted; until then it describes the proposal.
+ADR-026 was accepted on 2026-11-27; this applies from the move (encrypted-volume runbook stage 4).
 The decisions above are kept. Only the location changes, as D4
 anticipated, once the owner has run `docs/runbooks/encrypted-volume.md`.
 "Not encrypted at rest, yet" above stays true until then.

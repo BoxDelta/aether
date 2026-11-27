@@ -40,7 +40,9 @@ the design, follow the ADR numbers into `docs/adr/`.
     it, nothing more. `0005_memory_events.py` adds the `memory.*` event
     types and their typed, content-free columns to `events` (ADR-024
     §5), widens `actor` to `memory` and `restore`, and changes no grants;
-    its downgrade refuses while memory events exist.
+    its downgrade refuses while memory events exist. `0006_memory_restored.py`
+    adds the `restored` marker (pending only) for records a restore sets
+    back to `pending`.
 -   `memory/`: the memory store (`store.py`, ADR-024 step 4) and its
     fixed value sets (`types.py`: categories, statuses, sources).
     `MemoryStore` creates, gets, lists, corrects, approves and
@@ -74,7 +76,9 @@ the design, follow the ADR numbers into `docs/adr/`.
     ordering, at most 20 records and 4000 characters) and renders them
     for `memory_context`; each provider sets `ProviderInfo.memory_limit`
     (step 11). `MemoryRetriever` joins the two as the router's
-    `MemorySource` (step 12, below).
+    `MemorySource` (step 12, below). `restore.py` (`python -m
+    memory.restore`) repairs a restored copy from the live database's
+    `memory.*` events before the swap (step 16, runbook §4).
 -   `scripts/`: the identity continuity run (`identity_continuity.py`), a
     backup copy of the owner's `safemerge` fish function (never sourced),
     the systemd user timer templates for backups (`systemd/`, installed by

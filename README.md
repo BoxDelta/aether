@@ -352,6 +352,10 @@ real database and going back are in
     invented data in memory. Afterwards both are in one LUKS2 container
     file, unlocked with `aether-vault open` after each boot, and still on
     the same disk as each other.
+-   After a restore, `python -m memory.restore` repairs memory from the
+    live database before the swap: records deleted since stay deleted,
+    and records changed since come back as `pending` (marked `restored`)
+    for you to review.
 -   A deleted record stays in backups until the last backup taken before
     the delete is pruned: about 5 weeks with daily backups.
 -   Roles aren't in a backup; a restore onto a new cluster recreates

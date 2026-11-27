@@ -460,7 +460,11 @@ def test_store_matches_migration_0004() -> None:
     assert get_args(memory_types.PrivacySource) == migration.PRIVACY_SOURCES
     source = (REPO / "migrations/versions/0004_memory_records.py").read_text()
     assert f"key ~ '^{KEY_PATTERN}$'" in source
-    assert set(MemoryRecord.model_fields) == set(re.findall(r'sa\.Column\(\s*"(\w+)"', source))
+    columns = set(re.findall(r'sa\.Column\(\s*"(\w+)"', source))
+    # 0006 adds the restored marker (step 16).
+    later = (REPO / "migrations/versions/0006_memory_restored.py").read_text()
+    columns |= set(re.findall(r'sa\.Column\(\s*"(\w+)"', later))
+    assert set(MemoryRecord.model_fields) == columns
 
 
 # --- the search query filter (#92) ----------------------------------------------------
