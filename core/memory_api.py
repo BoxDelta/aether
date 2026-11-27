@@ -4,8 +4,9 @@ export (ADR-024 §2, §4; steps 6, 8, 9 and 10 of #58).
 - ``GET /memory``: list, filtered only by ``status``, ``category`` and ``privacy``
   (fixed values, not content), paged.
 - ``GET /memory/{id}``: one record.
-- ``POST /memory/search``: by ``key`` and/or a text ``query``, in the body: the
-  uvicorn access log records the query string, and a key or a phrase is content.
+- ``POST /memory/search``: by ``key`` and/or a text ``query``, in the body: a URL
+  is the wrong place for content (the access log drops ``/memory`` query strings,
+  ``core.log.AccessLogQueryFilter`` (#93), but proxies and shell history don't).
 - ``POST /memory``: the owner creates an approved record. ``privacy`` is required
   (422 without it, never defaulted, Decision D1); ``secret`` and secret-shaped
   content are refused by the store (docs/05 §7.1).

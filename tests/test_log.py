@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from core.app import create_app
 from core.config import Settings
-from core.log import REDACTED, Redactor, configure_logging
+from core.log import REDACTED, AccessLogQueryFilter, Redactor, configure_logging
 from core.request_context import REQUEST_ID_HEADER, SESSION_ID_HEADER
 
 # Fake keys for tests only.
@@ -183,3 +183,35 @@ def test_third_party_loggers_stay_quiet_at_debug() -> None:
     assert logging.getLogger().level == logging.DEBUG
     for name in ("anthropic", "httpx", "httpx2", "httpcore", "ollama"):
         assert logging.getLogger(name).level == logging.WARNING
+
+
+# --- memory query strings stay out of the access log (#93) -----------------------------
+
+
+@pytest.mark.parametrize(
+    ("path", "logged"),
+    [
+        ("/memory?key=canary.secret_key", "/memory?<query removed>"),
+        ("/memory?query=my+private+phrase", "/memory?<query removed>"),
+        ("/memory/export?privacy=public", "/memory/export?<query removed>"),
+        ("/memory/0b9e4c1e?x=1", "/memory/0b9e4c1e?<query removed>"),
+        ("/memory", "/memory"),
+        ("/chat?debug=1", "/chat?debug=1"),  # other paths unchanged
+        ("/memoryless?a=1", "/memoryless?a=1"),
+    ],
+)
+def test_access_log_drops_memory_query_strings(stream: io.StringIO, path: str, logged: str) -> None:
+    access = logging.getLogger("uvicorn.access")
+    access.setLevel(logging.INFO)
+    # The exact call uvicorn makes (uvicorn/protocols/http/h11_impl.py).
+    access.info('%s - "%s %s HTTP/%s" %d', "127.0.0.1:5555", "GET", path, "1.1", 422)
+    [record] = [r for r in lines(stream) if r["logger"] == "uvicorn.access"]
+    assert record["message"] == f'127.0.0.1:5555 - "GET {logged} HTTP/1.1" 422'
+    assert "canary" not in stream.getvalue() and "private" not in stream.getvalue()
+
+
+def test_the_access_log_filter_is_installed_once() -> None:
+    for _ in range(3):
+        configure_logging(settings(), stream=io.StringIO())
+    access = logging.getLogger("uvicorn.access")
+    assert sum(isinstance(f, AccessLogQueryFilter) for f in access.filters) == 1

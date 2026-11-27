@@ -372,10 +372,13 @@ as the list; the export deletes nothing and runs no clean-up. One
 `memory.exported` event records the count only (no IDs, levels or
 content), in the same transaction as the read: if the event can't be
 written, no export is returned. Logs carry the count only.
-Limits: a `key` or `query` put in the `GET /memory` URL by mistake is
-refused with 422, but uvicorn's access log has already recorded the URL
-(redacted for secrets only), so the refusal makes the mistake loud, not
-unlogged (#93).
+A `key` or `query` put in the `GET /memory` URL by mistake is refused
+with 422, and the access log drops the query string of requests to
+`/memory` and its sub-paths: it logs `?<query removed>` instead
+(`AccessLogQueryFilter`, `core/log.py`, #93). Limits: text put in the
+path itself (`GET /memory/<text>`) is still logged, as is the query of a
+path that doesn't route to memory (`//memory`, `/MEMORY`, a percent-encoded
+`?`).
 
 **Secret-shaped content is never stored (ADR-024 §1, #70).** Whatever its
 label, the store refuses content that looks like a secret, on create,
