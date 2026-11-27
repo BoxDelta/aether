@@ -347,8 +347,11 @@ real database and going back are in
 -   Backups are **not encrypted at rest** until #57, and sit on the same
     disk as the database. Since the memory API (`POST /memory`) they
     hold full memory records too (content, key, level and provenance),
-    in plain text. Until #57 and the restore steps of build step 16
-    (#58) are done, store only invented data in memory.
+    in plain text. Until #57 is done, store only invented data in memory.
+-   After a restore, `python -m memory.restore` repairs memory from the
+    live database before the swap: records deleted since stay deleted,
+    and records changed since come back as `pending` (marked `restored`)
+    for you to review.
 -   A deleted record stays in backups until the last backup taken before
     the delete is pruned: about 5 weeks with daily backups.
 -   Roles aren't in a backup; a restore onto a new cluster recreates

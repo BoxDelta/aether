@@ -45,10 +45,11 @@ migration 0004 are the backstop:
   still be deleted. ``expire`` deletes every expired record, with one
   ``memory.expired`` event each; ``list`` and ``create`` run it first, at most once
   every ``SWEEP_INTERVAL_S`` per store (no scheduler), and an owner create or an
-  update that sets a key runs it unthrottled first. Known gap for step 16: a
-  record a restore sets back to ``pending`` keeps its old ``created_at``, so it
-  would expire at once; step 16 adds the "restored" marker and exempts it (#67).
-- **Limit** (D8): at most ``PENDING_MAX`` unexpired pending records. One more from
+  update that sets a key runs it unthrottled first. A ``restored`` record (set
+  back to ``pending`` by a restore, ``memory/restore.py``) never expires: it keeps
+  its old ``created_at`` and waits for the owner (migration 0006, #67).
+- **Limit** (D8): at most ``PENDING_MAX`` unexpired pending records, restored ones
+  not counted. One more from
   a model or a tool raises ``PendingLimit``; the proposer drops it and counts.
 - **Approve replaces a key** (ADR-024 §1, #67): if another approved record has the
   key the approved record ends up with, that record is deleted in the same
@@ -458,6 +459,9 @@ class MemoryRecord(BaseModel):
     updated_at: datetime
     approved_at: datetime | None
     expires_at: datetime | None
+    # Set back to pending by a restore (ADR-024 §4, migration 0006): kept until the
+    # owner reviews it, never expires, not counted toward PENDING_MAX.
+    restored: bool = False
 
 
 class MemoryExport(BaseModel):
@@ -471,9 +475,10 @@ class MemoryExport(BaseModel):
 
 
 _COLUMNS = ", ".join(MemoryRecord.model_fields)
+# A restored record never expires (ADR-024 §4): it waits for the owner's review.
 _EXPIRED = (
-    "((expires_at IS NOT NULL AND expires_at <= now())"
-    f" OR (status = 'pending' AND created_at <= now() - interval '{PENDING_DAYS} days'))"
+    "(NOT restored AND ((expires_at IS NOT NULL AND expires_at <= now())"
+    f" OR (status = 'pending' AND created_at <= now() - interval '{PENDING_DAYS} days')))"
 )
 _NOT_EXPIRED = f"NOT {_EXPIRED}"
 _META = "id, category, source, privacy"  # the columns an event may describe
@@ -639,7 +644,8 @@ class MemoryStore:
                 # Serialise proposals so two can't both pass the count at 49.
                 await conn.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _PENDING_LOCK})
                 count_sql = (
-                    f"SELECT count(*) FROM {TABLE} WHERE status = 'pending' AND {_NOT_EXPIRED}"  # noqa: S608
+                    f"SELECT count(*) FROM {TABLE} WHERE status = 'pending'"  # noqa: S608
+                    f" AND NOT restored AND {_NOT_EXPIRED}"
                 )
                 if (await conn.scalar(text(count_sql)) or 0) >= PENDING_MAX:
                     raise PendingLimit
@@ -745,7 +751,9 @@ class MemoryStore:
             raise InvalidRecord("approval", "must be an Approval")
         columns = approval.columns()
         self._refuse_secrets(columns, "approve")
-        extra = ", status = 'approved', privacy_source = 'owner', approved_at = now()"
+        extra = (
+            ", status = 'approved', privacy_source = 'owner', approved_at = now(), restored = false"
+        )
 
         async def change(conn: AsyncConnection) -> MemoryRecord:
             status, _, current_key = await self._lock(conn, record_id)
