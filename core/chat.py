@@ -323,7 +323,7 @@ def _check_max_tokens(body: ChatRequest, cap: int) -> None:
 )
 async def chat(
     body: ChatRequest, http_request: Request, background: BackgroundTasks
-) -> ChatResponse | JSONResponse:
+) -> JSONResponse:
     state = http_request.app.state
     router: Router = state.router
     recorder: EventRecorder = state.events
@@ -393,7 +393,11 @@ async def chat(
         raise
 
     try:
-        return await _answer(body, state, router, routed, request, options, events, redact)
+        answer = await _answer(body, state, router, routed, request, options, events, redact)
+        # Serialised here, not by FastAPI after the handler returns, so an error in it
+        # is still recorded below (#165). FastAPI attaches the background task (the
+        # events) to a returned response.
+        return JSONResponse(answer.model_dump(mode="json", by_alias=True))
     except Exception as exc:  # after a call that may have been paid for: keep its events
         await _record_crash(exc, recorder, events, request, options, memory_texts)
         raise

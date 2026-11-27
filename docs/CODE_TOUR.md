@@ -192,7 +192,9 @@ the design, follow the ADR numbers into `docs/adr/`.
     hits an error it didn't expect (a bug in routing, an adapter or the
     answer), it writes the events itself,
     with a `request.failed` that names the error type only, before the
-    generic 500, since background tasks don't run then (#112). The events are
+    generic 500, since background tasks don't run then (#112). The
+    handler serialises the answer itself (a `JSONResponse`), so an error
+    there is covered too (#165). The events are
     built by two reporting hooks on `Router.handle()` (`on_decision`,
     `on_attempt_failed`). If building one raises, routing goes on, that one
     event is missing, and a metadata-only "Decision callback failed" or
