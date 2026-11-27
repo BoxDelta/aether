@@ -10,6 +10,8 @@ It never writes to GitHub.
 -   `uv run python -m dispatch triage`: sort every open `dispatch:auto`
     issue.
 -   `uv run python -m dispatch triage --issue 123`: sort one issue.
+-   `uv run python -m dispatch triage --notify`: sort only issues not
+    posted before and post each result to Discord (see below).
 -   `uv run python -m dispatch eval tests/dispatch/fixtures/triage_set.yaml`:
     sort a fixed set of past issues and compare with the expected route.
     Exit code 1 if any issue misses.
@@ -39,6 +41,78 @@ It never writes to GitHub.
     `{"route": "local"|"claude", "reason": "..."}`; anything else, a
     timeout or an HTTP error means `claude`.
 
+## Discord posts (until the 4a review on 2026-12-03)
+
+`triage --notify` posts one message per sorted issue to the webhook:
+`#<n> → <route> (<step>): <reason>` and the issue link. The issue title,
+body and code are never put in the message, but a model-written reason
+may quote up to 200 characters of them. The reason is cleaned (one line, at most 200
+characters), `@` is removed and Discord markdown is escaped; mentions are
+always off (`allowed_mentions: {"parse": []}`) and link previews are
+suppressed.
+
+-   Posted issue numbers are kept in `.dispatch/state.json` (git-ignored,
+    written atomically). The state is checked before the trust check, the
+    rules and the model, so a posted issue never causes a model call.
+-   An issue is recorded only when Discord accepts the post. If Discord
+    fails, the run prints a short error and carries on; the issue is tried
+    again on the next run. Nothing retries in a loop.
+-   Issues skipped by the trust check are never posted.
+-   One `--notify` run at a time (`.dispatch/notify.lock`); a second run
+    stops at once.
+-   A broken state file stops the run (`state error`) rather than posting
+    everything again. Delete it to start over.
+
+### Timer (fish)
+
+Every 15 minutes as a systemd user timer, from a **main-only clone**
+(`~/Projects/aether-dispatch`), never the working clone, so only merged,
+reviewed code runs with the dispatcher's credentials (like the backup
+timer, ADR-025 D8). Before each run the service checks that the clone is
+on `main` with no local changes, then runs
+`git pull --ff-only origin main`. If either fails, the dispatcher does
+not run. Its `.dispatch/` state and reports live in that clone.
+
+Create the clone (once):
+
+```fish
+git clone https://github.com/BoxDelta/aether.git ~/Projects/aether-dispatch
+cd ~/Projects/aether-dispatch
+git branch --show-current            # main
+uv sync --frozen                     # its own virtual environment (.venv)
+cd ~/Projects/aether
+```
+
+Install and enable the timer:
+
+```fish
+mkdir -p ~/.config/systemd/user
+cp scripts/systemd/aether-dispatch-triage.service scripts/systemd/aether-dispatch-triage.timer ~/.config/systemd/user/
+grep WorkingDirectory ~/.config/systemd/user/aether-dispatch-triage.service   # %h/Projects/aether-dispatch
+systemctl --user daemon-reload
+systemctl --user start aether-dispatch-triage.service      # one run now
+systemctl --user enable --now aether-dispatch-triage.timer
+```
+
+Check it:
+
+```fish
+systemctl --user list-timers aether-dispatch-triage.timer
+systemctl --user status aether-dispatch-triage.service --no-pager
+journalctl --user -u aether-dispatch-triage.service -n 50 --no-pager
+git -C ~/Projects/aether-dispatch status --short --branch   # ## main...origin/main, nothing else
+```
+
+Remove:
+
+```fish
+systemctl --user disable --now aether-dispatch-triage.timer
+rm ~/.config/systemd/user/aether-dispatch-triage.service ~/.config/systemd/user/aether-dispatch-triage.timer
+systemctl --user daemon-reload
+# Optional: also delete the clone, with its posted-issue state and reports.
+rm -rf ~/Projects/aether-dispatch
+```
+
 ## Settings
 
 Read only from the file named by `DISPATCH_ENV_FILE` (default
@@ -52,6 +126,8 @@ environment. The file must be mode 600. Variable names:
     for example `http://127.0.0.1:4000`.
 -   `DISPATCH_OWNER`: the owner's GitHub login.
 -   `DISPATCH_REPO`: the repository name.
+-   `DISPATCH_DISCORD_WEBHOOK`: optional, needed only for `--notify`. Must
+    be `https://discord.com/api/webhooks/...`. The URL is a credential.
 
 The other services keep their own files in the same folder
 (`litellm.env`, `llama-swap.env`, `langfuse.env`, `arcane.env`).

@@ -15,7 +15,7 @@ import httpx
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
-from dispatch import classify, github
+from dispatch import classify, github, notify
 from dispatch.config import ConfigError, DispatchSettings, load_settings
 
 REPORTS_DIR = Path(__file__).resolve().parents[1] / ".dispatch" / "reports"
@@ -65,8 +65,14 @@ Triage = Callable[[github.Issue], classify.Decision]
 
 
 def triage_rows(
-    gh: httpx.Client, settings: DispatchSettings, triage: Triage, number: int | None
+    gh: httpx.Client,
+    settings: DispatchSettings,
+    triage: Triage,
+    number: int | None,
+    skip: frozenset[int] = frozenset(),
 ) -> list[Row]:
+    """Rows for trusted, sorted issues. Issues in ``skip`` (already posted) are left
+    out before the trust check, the rules and the model."""
     if number is None:
         issues = github.list_auto_issues(gh, settings)
     else:
@@ -76,6 +82,8 @@ def triage_rows(
         issues = [one]
     rows = []
     for issue in issues:
+        if issue.number in skip:
+            continue
         trust = github.check_trust(gh, settings, issue)  # again, right before the step
         if not trust.ok:
             rows.append(Row(issue.number, "-", "trust", trust.reason))
@@ -111,6 +119,26 @@ def eval_rows(
     return lines, matches
 
 
+def post_new(
+    rows: Sequence[Row],
+    settings: DispatchSettings,
+    discord: httpx.Client,
+    posted: set[int],
+    state_file: Path = notify.STATE_FILE,
+) -> int:
+    """Post each sorted row once; record it only when Discord accepted it."""
+    sent = 0
+    for row in rows:
+        if row.step == "trust":
+            continue  # not sorted: checked again next run, never posted
+        content = notify.format_message(settings, row.issue, row.route, row.step, row.reason)
+        if notify.deliver(discord, settings, content):
+            posted.add(row.issue)
+            notify.save_posted(posted, state_file)
+            sent += 1
+    return sent
+
+
 def load_eval_set(path: Path) -> EvalSet:
     return EvalSet.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
 
@@ -120,9 +148,45 @@ def _parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     triage = sub.add_parser("triage", help="dry-run sort of dispatch:auto issues")
     triage.add_argument("--issue", type=int, help="sort one issue (both owner checks apply)")
+    triage.add_argument(
+        "--notify", action="store_true", help="post issues not posted before to Discord"
+    )
     evaluate = sub.add_parser("eval", help="sort a fixed set of past issues")
     evaluate.add_argument("path", type=Path)
     return parser
+
+
+def _run_triage(
+    gh: httpx.Client, settings: DispatchSettings, triage: Triage, args: argparse.Namespace
+) -> int:
+    if not args.notify:
+        table = format_table(triage_rows(gh, settings, triage, args.issue))
+        print(table)
+        print(f"\nreport: {write_report(table, datetime.now().astimezone())}")
+        return 0
+    try:
+        with notify.run_lock():
+            return _notify_run(gh, settings, triage, args)
+    except notify.Busy:
+        print("another --notify run is in progress")
+        return 0
+
+
+def _notify_run(
+    gh: httpx.Client, settings: DispatchSettings, triage: Triage, args: argparse.Namespace
+) -> int:
+    posted = notify.load_posted()  # before the trust check, the rules and the model
+    rows = triage_rows(gh, settings, triage, args.issue, frozenset(posted))
+    if not rows:
+        print("nothing new")
+        return 0
+    table = format_table(rows)
+    print(table)
+    print(f"\nreport: {write_report(table, datetime.now().astimezone())}")
+    with notify.make_client() as discord:
+        sent = post_new(rows, settings, discord, posted)
+    print(f"discord: posted {sent}")
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -131,6 +195,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         settings = load_settings()
     except ConfigError as exc:
         print(f"config error: {exc}", file=sys.stderr)
+        return 2
+    if args.command == "triage" and args.notify and settings.dispatch_discord_webhook is None:
+        print("config error: --notify needs DISPATCH_DISCORD_WEBHOOK", file=sys.stderr)
         return 2
     with github.make_client(settings) as gh, classify.make_client(settings) as llm:
         gate = classify.GpuGate()  # one per run
@@ -144,13 +211,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 lines, matches = eval_rows(gh, settings, triage, eval_set)
                 print("\n".join(lines))
                 return 0 if matches == len(eval_set.issues) else 1
-            table = format_table(triage_rows(gh, settings, triage, args.issue))
+            return _run_triage(gh, settings, triage, args)
         except github.GitHubError as exc:
             print(f"github error: {exc}", file=sys.stderr)
             return 2
-    print(table)
-    print(f"\nreport: {write_report(table, datetime.now().astimezone())}")
-    return 0
+        except notify.StateError as exc:
+            print(f"state error: {exc}", file=sys.stderr)
+            return 2
 
 
 if __name__ == "__main__":

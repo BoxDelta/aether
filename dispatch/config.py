@@ -36,6 +36,8 @@ class DispatchSettings(BaseSettings):
     dispatch_litellm_url: str
     dispatch_owner: str
     dispatch_repo: str
+    # Optional: only `triage --notify` needs it (ADR-030, #135). A credential.
+    dispatch_discord_webhook: SecretStr | None = None
 
     @classmethod
     def settings_customise_sources(
@@ -68,6 +70,42 @@ class DispatchSettings(BaseSettings):
         if not _is_loopback(parts.hostname):
             raise ValueError("must point at a loopback address")
         return value.rstrip("/")
+
+    @field_validator("dispatch_discord_webhook", mode="before")
+    @classmethod
+    def _empty_is_none(cls, value: object) -> object:
+        return None if value == "" else value
+
+    @field_validator("dispatch_discord_webhook")
+    @classmethod
+    def _discord_webhook(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None and not is_discord_webhook(value.get_secret_value()):
+            # The message never repeats the value: the URL is the credential.
+            raise ValueError("must be https://discord.com/api/webhooks/...")
+        return value
+
+
+WEBHOOK_HOST = "discord.com"
+WEBHOOK_PATH = "/api/webhooks/"
+_WEBHOOK_PATH = re.compile(r"/api/webhooks/\d+/[A-Za-z0-9_-]+")
+
+
+def is_discord_webhook(url: str) -> bool:
+    """https, host exactly discord.com (no port or user info), path /api/webhooks/..."""
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return False
+    return (
+        parts.scheme == "https"
+        and parts.netloc == WEBHOOK_HOST
+        and parts.hostname == WEBHOOK_HOST
+        and port is None
+        and _WEBHOOK_PATH.fullmatch(parts.path) is not None
+        and not parts.query
+        and not parts.fragment
+    )
 
 
 def _is_loopback(host: str) -> bool:

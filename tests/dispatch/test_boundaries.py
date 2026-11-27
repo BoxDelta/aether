@@ -2,7 +2,8 @@
 
 ADR-030 §Credentials: the token could merge a passing PR, so the code must have
 no merge call. In step 4a the dispatcher makes no GitHub write at all; its only
-non-GET call is the one POST to LiteLLM in classify.py.
+non-GET calls are the POST to LiteLLM in classify.py and the Discord webhook POST
+in notify.py (#135).
 """
 
 import ast
@@ -16,7 +17,10 @@ DISPATCH = ROOT / "dispatch"
 MODULES = sorted(DISPATCH.glob("*.py"))
 WRITE_ATTRS = frozenset({"post", "patch", "put", "delete", "request", "send", "stream"})
 WRITE_WORDS = re.compile(r"\b(POST|PATCH|PUT|DELETE)\b")
-ALLOWED_CALL = ("classify.py", "post", "/chat/completions")
+ALLOWED_CALLS = [
+    ("classify.py", "post", "/chat/completions"),
+    ("notify.py", "post", None),  # the webhook URL from settings, checked below
+]
 
 
 def _calls(path: Path) -> list[tuple[str, str, str | None]]:
@@ -44,9 +48,29 @@ def test_modules_found() -> None:
     assert {p.name for p in MODULES} >= {"github.py", "classify.py", "rules.py", "__main__.py"}
 
 
-def test_only_write_call_is_the_litellm_post() -> None:
+def test_only_write_calls_are_litellm_and_webhook() -> None:
     calls = [call for path in MODULES for call in _calls(path)]
-    assert calls == [ALLOWED_CALL]
+    assert sorted(calls, key=str) == sorted(ALLOWED_CALLS, key=str)
+
+
+def test_webhook_post_uses_the_validated_webhook_only() -> None:
+    tree = ast.parse((DISPATCH / "notify.py").read_text("utf-8"))
+    posts = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "post"
+    ]
+    assert len(posts) == 1
+    assert ast.unparse(posts[0].args[0]) == "webhook.get_secret_value()"
+
+
+def test_notify_has_no_github_client_or_token() -> None:
+    source = (DISPATCH / "notify.py").read_text("utf-8")
+    assert "dispatch.github" not in source
+    assert "dispatch_github_token" not in source
+    assert "api.github.com" not in source
 
 
 def test_no_write_method_names_in_strings() -> None:
