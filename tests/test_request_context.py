@@ -13,6 +13,7 @@ from core.request_context import (
     REQUEST_ID_HEADER,
     SESSION_ID_HEADER,
     RequestContextMiddleware,
+    UnhandledRequestError,
     get_request_id,
     get_session_id,
     is_safe_id,
@@ -129,10 +130,16 @@ def test_request_id_present_on_unhandled_error(app: FastAPI) -> None:
     assert "secret internal detail" not in response.text
 
 
-def test_unhandled_error_is_still_raised(client: TestClient) -> None:
-    # The exception must reach the server so it is logged, not swallowed.
-    with pytest.raises(RuntimeError, match="secret internal detail"):
+def test_unhandled_error_still_reaches_the_server_without_its_message(
+    client: TestClient,
+) -> None:
+    # The error must reach the server so it is logged, not swallowed; but as a
+    # stand-in with the type only, so the server's log has no message (#124).
+    with pytest.raises(UnhandledRequestError) as raised:
         client.get("/_test/boom")
+    assert raised.value.error_type == "RuntimeError"
+    assert "secret internal detail" not in str(raised.value)
+    assert raised.value.__cause__ is None and raised.value.__suppress_context__
 
 
 def test_an_error_after_the_response_started_sends_no_second_response() -> None:
@@ -151,7 +158,7 @@ def test_an_error_after_the_response_started_sends_no_second_response() -> None:
         sent.append(message)
 
     scope: Scope = {"type": "http", "path": "/x", "headers": []}
-    with pytest.raises(RuntimeError, match="midstream failure"):
+    with pytest.raises(UnhandledRequestError, match="RuntimeError"):
         asyncio.run(RequestContextMiddleware(failing_app)(scope, receive, send))
 
     assert [m["type"] for m in sent] == ["http.response.start"]

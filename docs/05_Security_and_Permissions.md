@@ -99,6 +99,11 @@ confidence is not a substitute for authorization.
     and each attempt's provider, error type and scrubbed message. Never
     exception text, `__cause__` or a traceback. Validation errors never
     echo the submitted input.
+-   An unhandled exception answers a generic 500 and is logged with its
+    type and stack frames only, never its message, which can hold request
+    or response values. The server sees a stand-in
+    (`UnhandledRequestError`, type name only), so its own log has no
+    message either (`core/request_context.py`, #124).
 -   Logs redact configured secrets by value (`ANTHROPIC_API_KEY`,
     `AETHER_API_TOKEN`, and the `DATABASE_URL` and
     `DATABASE_MIGRATION_URL` passwords as written and percent-decoded), Anthropic-key-shaped strings, `Bearer <credential>`

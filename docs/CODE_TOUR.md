@@ -105,7 +105,7 @@ the design, follow the ADR numbers into `docs/adr/`.
 1.  **Request ID.** `RequestContextMiddleware` (`core/request_context.py`)
     gives the request an ID, which appears in logs, events and the
     response. It also turns any unhandled error into a generic 500 with no
-    details.
+    details, and logs only its type and frames, never its message.
 2.  **Auth.** `BearerAuth` (`core/auth.py`) checks `Authorization: Bearer
     <AETHER_API_TOKEN>` in constant time before any body is read. With no
     valid token configured, every route except `/health` answers 503: Core
