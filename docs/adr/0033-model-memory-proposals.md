@@ -1,6 +1,6 @@
 # ADR-033: How a model proposes memory (`propose_memory`)
 
-**Status:** Proposed (2026-11-27). Implements ADR-024 §2 and D7 (accepted:
+**Status:** Accepted (owner, 2026-11-27): option A. Implements ADR-024 §2 and D7 (accepted:
 model proposals only when a request opts in); step 15 of #58.\
 **Date:** 2026-11-27\
 **Owner:** BoxDelta

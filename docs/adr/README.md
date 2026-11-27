@@ -62,4 +62,4 @@ ADR-009 onward have their own files here.
 -   **ADR-032:** An untrusted Ollama host needs `allow_cloud`, like the
     cloud (#22; amends ADR-023 §5). Accepted (owner, 2026-11-27).
 -   **ADR-033:** How a model proposes memory (`propose_memory`; ADR-024
-    D7, step 15). Proposed (2026-11-27).
+    D7, step 15). Accepted (owner, 2026-11-27).
