@@ -44,7 +44,11 @@ the security-reviewer subagent, not the local path.
 
 ### Step 0: Close Phase 2
 1. Phase 2 exit check (the three exit criteria in `04`), with test output.
-2. Report-only code-health review; tidy the findings.
+2. Report-only code-health review; tidy the findings. Fix the open
+   Phase 1 code-health findings first, before the UI builds on them:
+   #36 (`create_app()` reconfigures global logging), #39 (log field
+   names, one record per provider failure) and #40 (smaller findings
+   backlog).
 3. Merge ADRs 034 to 037.
 4. Sentinel track part A (section 3a).
 
@@ -52,7 +56,12 @@ the security-reviewer subagent, not the local path.
 1. Login, session cookie, logout, CSRF; service tokens with scopes for n8n.
 2. Every existing Core endpoint requires auth (tested: no token means 401).
 3. Chat endpoint that streams the reply over SSE.
-4. Security headers; Core bound to localhost.
+4. Strict security headers: a Content-Security-Policy with no inline
+   script and `frame-ancestors 'none'`. No external CDNs: fonts and
+   icons are bundled with the app. Core stays bound to localhost.
+5. Hardening, required before phone access (Step 5): #4 (no `server`
+   header, no query strings in access logs, log destination and
+   rotation) and #11 (limit on failed token attempts).
 
 ### Step 2: Runtime tasks
 1. `tasks` table in the same Postgres (ADR-011) with the statuses in
@@ -92,6 +101,14 @@ the security-reviewer subagent, not the local path.
 1. List and search memory with privacy level and provenance shown.
 2. Correct, delete, export, using the Phase 2 APIs.
 3. Pending proposals queue.
+
+### Step 6b: Read APIs for Activity and Status
+1. `GET /events`: filters (type, request, task), paging, metadata only,
+   the same columns as the table. Tested: it returns exactly the
+   recorded rows.
+2. `GET /status`: health, readiness, provider availability, the GPU/RAM
+   probe.
+3. Both are built and tested before their views (Steps 7 and 8).
 
 ### Step 7: Activity view
 1. Reads the `events` table only; filters by type, request, task.
@@ -136,9 +153,12 @@ the security-reviewer subagent, not the local path.
 4. Register the dispatcher as the first agent.
 
 ### Step 12: Phase 3 exit
-1. One to two weeks of daily use from PC and phone.
-2. Exit criteria checked with test output.
-3. Code-health review and tidy.
+1. Docs update: docs/01, 02, 05, 06, CODE_TOUR, QUICK_REF and README
+   match what was built.
+2. Exit-check runbook at `docs/runbooks/phase3-exit-check.md`.
+3. One to two weeks of daily use from PC and phone.
+4. Exit criteria checked with the runbook, with test output.
+5. Code-health review and tidy.
 
 ## 3a. Sentinel track (deterministic checks only)
 
