@@ -25,6 +25,9 @@ are in `docs/adr/`; a longer tour is in `docs/CODE_TOUR.md`.
     `claude.py` (cloud), `hardware.py` GPU/RAM probe.
 -   `memory/`: `store.py` the memory store, `types.py` its types.
 -   `identity/aether.yaml`: the single AETHER identity.
+-   `dispatch/`: dispatcher prototype (ADR-030, dev tooling, not Core):
+    `config.py`, `github.py` (read-only), `rules.py` (always-Claude list),
+    `classify.py`, `__main__.py`. See `dispatch/README.md`.
 -   `scripts/`: `safemerge.fish`, `identity_continuity.py`, systemd units.
 
 ## Tests

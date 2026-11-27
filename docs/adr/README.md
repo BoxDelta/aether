@@ -55,7 +55,7 @@ ADR-009 onward have their own files here.
 -   **ADR-028:** OpenRouter as an OpenAI-compatible provider adapter.
     Proposed (2026-11-26); build after Phase 2 exit criteria pass.
 -   **ADR-029:** End-of-phase code-health review. Proposed (2026-11-26).
--   **ADR-030:** Dispatcher prototype during Phase 2. Proposed
-    (2026-11-26).
+-   **ADR-030:** Dispatcher prototype during Phase 2. Accepted (owner,
+    2026-11-26).
 -   **ADR-031:** Plane as a one-way mirror of GitHub Issues; partly
     supersedes ADR-010. Proposed (2026-11-26).

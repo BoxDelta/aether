@@ -1,6 +1,6 @@
 # ADR-030: Dispatcher prototype during Phase 2
 
-**Status:** Proposed\
+**Status:** Accepted (owner, 2026-11-26)\
 **Date:** 2026-11-26\
 **Owner:** BoxDelta
 
@@ -173,10 +173,14 @@ diff Aider produces. A match means `claude`, with no model call.
     ruleset needs no approvals. That is only a rule: the dispatcher's
     code has no merge call, and a test checks it never calls GitHub's
     merge endpoint.
--   All dispatcher secrets (GitHub token, LiteLLM master key, Langfuse
-    keys, Discord bot token and webhook URL) live in
-    `~/.config/aether-dispatch/.env` (mode 600), outside the
-    repository. Only their names go in `dispatch/README.md`.
+-   Dispatcher secrets live outside the repository in
+    `~/.config/aether-dispatch/`, split per service, each file mode 600:
+    `dispatch.env` (the dispatcher's own: GitHub token, LiteLLM key,
+    later the Discord bot token and webhook URL), `litellm.env`,
+    `llama-swap.env`, `langfuse.env` and `arcane.env`. Each service
+    reads only its own file; the dispatcher reads only `dispatch.env`
+    and refuses it if group or others can read it. Only the variable
+    names go in `dispatch/README.md`.
 
 ### Tracking
 
