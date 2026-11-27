@@ -42,7 +42,7 @@ Memory (ADR-024 §3, step 12 of #58), in ``Router._call``: with a ``MemorySource
 every call, the fallback included, gets its own selection, made after its route is
 chosen, for the provider that will receive it, with that provider's
 ``memory_limit_for(allow_cloud=...)``. A failover from a trusted local host to the
-cloud therefore drops Sensitive and Personal records. Routing itself uses the
+cloud therefore drops Sensitive records. Routing itself uses the
 request's own level; memory never changes the route. If the source fails or takes
 longer than ``MEMORY_TIMEOUT_S``, the call goes ahead without memory (one
 metadata-only warning). ``on_memory`` reports each

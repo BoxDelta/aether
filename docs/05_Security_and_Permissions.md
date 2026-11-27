@@ -303,7 +303,8 @@ failover call included, gets its own selection after its route is
 chosen, for the provider that receives it: approved, unexpired records
 in `include_by_default` (Public, Personal), Sensitive only with the
 request's `include_sensitive`, never Secret, and never above the
-provider's `memory_limit` (the cloud: Public only, and nothing without
+provider's `memory_limit` (the cloud: up to Personal, since the
+content tripwire (#8) checks memory text too, and nothing without
 `allow_cloud`; an untrusted Ollama host: Public only; a trusted one: up to
 Sensitive). The request sent carries the effective level (the higher of
 the request's and its memory's). `call_with_identity` checks every

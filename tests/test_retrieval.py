@@ -404,8 +404,9 @@ def test_unknown_kind_is_treated_as_cloud() -> None:
     assert info.memory_limit_for(allow_cloud=False) is None
 
 
-def test_claude_provider_gets_public_memory_only() -> None:
-    assert ClaudeProvider(None, "m").info.memory_limit == "public"
+def test_claude_provider_gets_personal_memory_at_most() -> None:
+    # ADR-024 D3: personal after #8 (step 14); never sensitive.
+    assert ClaudeProvider(None, "m").info.memory_limit == "personal"
 
 
 @pytest.mark.parametrize(
@@ -437,7 +438,7 @@ def test_ollama_opt_in_trust_gives_sensitive_memory() -> None:
 @pytest.mark.parametrize(
     ("name", "info", "ceiling"),
     [
-        ("claude", ClaudeProvider(None, "m").info, "public"),
+        ("claude", ClaudeProvider(None, "m").info, "personal"),
         ("ollama-trusted", OllamaProvider("http://localhost:11434", "m").info, "sensitive"),
         ("ollama-untrusted", OllamaProvider("https://gpu.example.org", "m").info, "public"),
     ],
