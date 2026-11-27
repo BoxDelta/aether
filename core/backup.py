@@ -74,6 +74,10 @@ KEEP_WEEKLY = 4
 
 DUMP_TIMEOUT_S = 30 * 60
 VERIFY_TIMEOUT_S = 10 * 60
+# The tools also run under ``timeout`` inside the container, a minute sooner: when
+# the client's timeout fires it kills only ``docker exec``, so without this the dump
+# could keep running in the container and overlap the next run (#117).
+_IN_CONTAINER_MARGIN_S = 60
 
 _NAME = r"[a-z_][a-z0-9_]{0,62}"
 _CONTAINER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
@@ -188,7 +192,13 @@ def prune(folder: Path, database: str, *, protect: Path | None = None) -> tuple[
     pruned = 0
     for backup in backups:
         if backup.path not in kept:
-            backup.path.unlink()
+            try:
+                backup.path.unlink()
+            except OSError as exc:
+                # The new backup is already verified and in place: a file that can't be
+                # removed is a warning, not a failed backup (#117). Never the path.
+                logger.warning("Old backup not pruned", extra={"error_type": type(exc).__name__})
+                continue
             pruned += 1
     return len(kept), pruned
 
@@ -269,10 +279,16 @@ def _run(
     )
 
 
+def _in_container_timeout(seconds: float) -> list[str]:
+    return ["timeout", str(int(seconds) - _IN_CONTAINER_MARGIN_S)]
+
+
 def dump_argv(container: str, database: str, user: str) -> list[str]:
-    """``pg_dump`` inside the container over its local socket. No password, no URL."""
+    """``pg_dump`` inside the container over its local socket, under the container's
+    own ``timeout``. No password, no URL."""
     return [
         "docker", "exec", "-i", container,
+        *_in_container_timeout(DUMP_TIMEOUT_S),
         "pg_dump", "--format=custom", "--no-password", f"--username={user}",
         f"--dbname={database}",
     ]  # fmt: skip
@@ -281,13 +297,19 @@ def dump_argv(container: str, database: str, user: str) -> list[str]:
 def list_argv(container: str) -> list[str]:
     """``pg_restore --list`` inside the container, reading the archive from stdin:
     the table of contents only."""
-    return ["docker", "exec", "-i", container, "pg_restore", "--list"]
+    return [
+        "docker", "exec", "-i", container, *_in_container_timeout(VERIFY_TIMEOUT_S),
+        "pg_restore", "--list",
+    ]  # fmt: skip
 
 
 def read_argv(container: str) -> list[str]:
     """``pg_restore`` to /dev/null inside the container: reads and decompresses
     every data block, so a cut-off or corrupt archive fails. Connects to nothing."""
-    return ["docker", "exec", "-i", container, "pg_restore", "--file=/dev/null"]
+    return [
+        "docker", "exec", "-i", container, *_in_container_timeout(VERIFY_TIMEOUT_S),
+        "pg_restore", "--file=/dev/null",
+    ]  # fmt: skip
 
 
 def _check_name(kind: str, value: str, pattern: re.Pattern[str]) -> None:
@@ -402,7 +424,9 @@ def main(argv: list[str] | None = None, *, settings: Settings | None = None) -> 
     try:
         settings = settings if settings is not None else get_settings()
     except Exception as exc:  # a bad setting: one safe line, no traceback
-        configure_logging(Settings(_env_file=None))
+        # Defaults without reading .env or the environment again: a bad variable
+        # would raise here too, with a traceback (#117).
+        configure_logging(Settings.model_construct())
         logger.error("Backup failed", extra={"stage": "config", "error_type": type(exc).__name__})
         return 1
     configure_logging(settings)
