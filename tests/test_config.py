@@ -109,3 +109,57 @@ def test_app_starts_without_api_key() -> None:
 
     assert app.state.settings.anthropic_api_key is None
     assert TestClient(app).get("/health").status_code == 200
+
+
+def test_ollama_memory_limits_default_to_none_and_empty_is_none() -> None:
+    s = Settings(
+        _env_file=None,
+        aether_ollama_memory_max_records="",  # type: ignore[arg-type]
+        aether_ollama_memory_max_chars=" ",  # type: ignore[arg-type]
+    )
+    assert s.aether_ollama_memory_max_records is None
+    assert s.aether_ollama_memory_max_chars is None
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("aether_ollama_memory_max_records", 0),
+        ("aether_ollama_memory_max_records", 21),
+        ("aether_ollama_memory_max_chars", 0),
+        ("aether_ollama_memory_max_chars", 4001),
+    ],
+)
+def test_ollama_memory_limits_may_only_be_lowered(name: str, value: int) -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **{name: value})  # type: ignore[arg-type]
+
+
+def test_ollama_memory_limits_reach_the_provider() -> None:
+    from router.ollama import OllamaProvider
+
+    s = Settings(
+        _env_file=None,
+        aether_ollama_memory_max_records=5,
+        aether_ollama_memory_max_chars=1500,
+    )
+    info = OllamaProvider.from_settings(s).info
+    assert (info.memory_max_records, info.memory_max_chars) == (5, 1500)
+
+
+def test_memory_size_limit_bounds_are_one_definition() -> None:
+    from memory.retrieval import MAX_CHARS, MAX_RECORDS
+    from router.contract import MEMORY_MAX_CHARS, MEMORY_MAX_RECORDS
+
+    fields = Settings.model_fields
+    assert (MAX_RECORDS, MAX_CHARS) == (MEMORY_MAX_RECORDS, MEMORY_MAX_CHARS)
+    assert any(
+        getattr(m, "le", None) == MEMORY_MAX_RECORDS
+        for m in fields["aether_ollama_memory_max_records"].metadata
+    )
+    assert any(
+        getattr(m, "le", None) == MEMORY_MAX_CHARS
+        for m in fields["aether_ollama_memory_max_chars"].metadata
+    )

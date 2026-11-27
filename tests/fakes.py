@@ -63,6 +63,8 @@ class FakeProvider(Provider):
         memory_limit: PrivacyLevel | None = None,
         off_network: bool = False,
         replies: Sequence[str] | None = None,
+        memory_max_records: int | None = None,
+        memory_max_chars: int | None = None,
     ) -> None:
         super().__init__(
             ProviderInfo(
@@ -72,6 +74,8 @@ class FakeProvider(Provider):
                 max_privacy="sensitive" if kind == "local" and not off_network else "personal",
                 memory_limit=memory_limit,
                 off_network=off_network,
+                memory_max_records=memory_max_records,
+                memory_max_chars=memory_max_chars,
             )
         )
         self.error = error

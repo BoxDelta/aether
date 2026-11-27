@@ -31,6 +31,11 @@ from pydantic import (
 # Provider names are short identifiers, safe to echo in reasons, logs and events.
 # The one definition (#33); the events table's CHECK constraint keeps a frozen copy.
 PROVIDER_NAME_PATTERN = r"[a-z0-9_-]{1,32}"
+# Memory size limits per call (ADR-024 D9). Defined here, the base of the router,
+# so ProviderInfo can bound a provider's own lower limits; memory/retrieval.py uses
+# the same values (MAX_RECORDS, MAX_CHARS).
+MEMORY_MAX_RECORDS = 20
+MEMORY_MAX_CHARS = 4000  # rendered lines, without the fixed sentence
 ProviderName = Annotated[str, StringConstraints(pattern=rf"^{PROVIDER_NAME_PATTERN}$")]
 
 # The one place the privacy level names are listed (docs/05 §7.1, #58), lowest first.
@@ -112,6 +117,11 @@ class ProviderInfo(_Frozen):
     # so selection never guesses trust from kind and max_privacy. None (the default):
     # no memory at all, so a provider that doesn't set it fails closed.
     memory_limit: NonSecretLevel | None = None
+    # Lower memory size limits for this provider (ADR-024 D9, #143), e.g. a small
+    # local model with a short context. None: the defaults (MEMORY_MAX_RECORDS,
+    # MEMORY_MAX_CHARS). Never above them.
+    memory_max_records: Annotated[int, Field(ge=1, le=MEMORY_MAX_RECORDS)] | None = None
+    memory_max_chars: Annotated[int, Field(ge=1, le=MEMORY_MAX_CHARS)] | None = None
     # A local provider whose data leaves this machine and network: an Ollama host
     # that is not trusted (ADR-023) and not trusted by the owner's opt-in. Treated
     # like the cloud for privacy, not for routing order (ADR-032): it needs
