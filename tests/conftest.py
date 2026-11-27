@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import secrets
+import time
 from collections.abc import Iterator
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -136,12 +137,19 @@ async def _as_owner(owner: Settings, statement: str) -> None:
 
 
 TEST_ROLE_PREFIX = "aether_app_test_"
+SWEEP_MIN_AGE_S = 3600  # a younger test role may belong to a run going on now
 _swept: list[bool] = []  # once per test session
+
+
+def role_comment(at: float | None = None) -> str:
+    """The note on each test role: when it was made (epoch seconds)."""
+    return f"aether live test {int(time.time() if at is None else at)}"
 
 
 async def _sweep_leftover_test_roles(owner: Settings) -> list[str]:
     """Drop ``aether_app_test_*`` roles a killed run left behind (#61): only those
-    with no open session; one that still owns or holds anything stays (the drop
+    in the fixture's exact name shape, with no open session and made more than
+    ``SWEEP_MIN_AGE_S`` ago; one that still owns or holds anything stays (the drop
     fails and is skipped). Returns the dropped names."""
     engine = create_migration_engine(owner)
     dropped: list[str] = []
@@ -152,8 +160,13 @@ async def _sweep_leftover_test_roles(owner: Settings) -> list[str]:
                     "SELECT rolname FROM pg_roles r WHERE starts_with(rolname, :prefix)"
                     " AND NOT EXISTS (SELECT 1 FROM pg_stat_activity a"
                     " WHERE a.usename = r.rolname)"
+                    # Made by this fixture over an hour ago (or before it noted the
+                    # time): a run going on at the same time keeps its role.
+                    " AND COALESCE(substring(shobj_description(r.oid, 'pg_authid')"
+                    " FROM '^aether live test ([0-9]+)$')::bigint, 0)"
+                    " < extract(epoch FROM now()) - :min_age"
                 ),
-                {"prefix": TEST_ROLE_PREFIX},
+                {"prefix": TEST_ROLE_PREFIX, "min_age": SWEEP_MIN_AGE_S},
             )
             names = [name for (name,) in rows]
         for name in names:
@@ -198,6 +211,7 @@ def live_app(live_owner: Settings) -> Iterator[Settings]:
                 f"PASSWORD '{scram_verifier(password)}'",
             )
         )
+        asyncio.run(_as_owner(live_owner, f"COMMENT ON ROLE {role} IS '{role_comment()}'"))
     except Exception as exc:
         pytest.fail(
             f"cannot create a test login role in {APP_ROLE} ({type(exc).__name__}); "

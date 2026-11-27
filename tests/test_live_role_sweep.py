@@ -2,14 +2,17 @@
 
 import asyncio
 import secrets
+import time
 
 from core.config import Settings
 from core.db_admin import scram_verifier
 from tests.conftest import (
     LIVE_DB,
+    SWEEP_MIN_AGE_S,
     TEST_ROLE_PREFIX,
     _as_owner,
     _sweep_leftover_test_roles,
+    role_comment,
 )
 
 pytestmark = LIVE_DB
@@ -35,18 +38,25 @@ def _role_exists(owner: Settings, name: str) -> bool:
 
 
 def test_a_leftover_test_role_is_dropped_and_others_are_kept(live_owner: Settings) -> None:
-    leftover = f"{TEST_ROLE_PREFIX}{secrets.token_hex(6)}"
+    old = f"{TEST_ROLE_PREFIX}{secrets.token_hex(6)}"
+    unnoted = f"{TEST_ROLE_PREFIX}{secrets.token_hex(6)}"  # made before the note existed
+    recent = f"{TEST_ROLE_PREFIX}{secrets.token_hex(6)}"  # another run, going on now
     lookalike = f"{TEST_ROLE_PREFIX}keep_{secrets.token_hex(3)}"  # not the fixture's shape
+    names = (old, unnoted, recent, lookalike)
     verifier = scram_verifier(secrets.token_hex(24))
-    for name in (leftover, lookalike):
+    for name in names:
         asyncio.run(_as_owner(live_owner, f"CREATE ROLE {name} LOGIN PASSWORD '{verifier}'"))
+    long_ago = role_comment(time.time() - SWEEP_MIN_AGE_S - 60)
+    asyncio.run(_as_owner(live_owner, f"COMMENT ON ROLE {old} IS '{long_ago}'"))
+    asyncio.run(_as_owner(live_owner, f"COMMENT ON ROLE {recent} IS '{role_comment()}'"))
     try:
         dropped = asyncio.run(_sweep_leftover_test_roles(live_owner))
-        assert leftover in dropped
-        assert not _role_exists(live_owner, leftover)
+        assert old in dropped and unnoted in dropped
+        assert not _role_exists(live_owner, old)
+        assert _role_exists(live_owner, recent)
         assert _role_exists(live_owner, lookalike)
     finally:
-        for name in (leftover, lookalike):
+        for name in names:
             asyncio.run(_as_owner(live_owner, f"DROP ROLE IF EXISTS {name}"))
 
 
