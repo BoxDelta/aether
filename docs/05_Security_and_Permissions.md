@@ -305,8 +305,11 @@ finished normally (`stop`). Core then makes **one more call to the
 provider that answered**, through `call_with_identity` (identity, the #8
 tripwire, the echo scrub, `max_privacy`) with the same `allow_cloud`,
 **no memory**, and only the **latest user message**: not the answer,
-earlier turns or memory, so a proposal can only restate what the owner
-just wrote. The reply is parsed as data: one JSON object
+earlier turns or memory, so a proposal can only draw on what the owner
+just wrote. A proposal is still model text: it can be wrong or invented,
+and outside text pasted into the message can steer it (§6); that is why
+it is pending. The call asks for at most 512 output tokens (fewer if the
+request's `max_tokens` is lower). The reply is parsed as data: one JSON object
 (`{"proposals": [...]}`, one Markdown fence tolerated), each item exactly
 `content`, `category`, `privacy`, a known category, never `secret`, at
 most 3, no duplicates; anything else is dropped. The stored level is the
@@ -316,8 +319,11 @@ can't make the owner's text look more public. Records are `pending`,
 normal checks (length, `SecretCheck`, 50 pending). A proposal call error,
 an unusable reply or a store error never fails the answer: the reply's
 `memory_proposals` count is 0, and one log line gives counts and an
-error type, never text. The proposal call has its own
-`model.call.completed` (or `provider.unavailable`) event; no failover.
+error type, never text; records stored before a store failure stay and
+are counted. The proposal call has its own `model.call.completed` (or
+`provider.unavailable`) event, marked with the fixed `route_reason`
+"memory proposal call (ADR-033), not the answer"; a refusal before
+sending writes none. No failover.
 Limit: secret-shaped text in a format `SecretCheck` doesn't know can be
 proposed; it stays pending, is never retrieved, and the owner rejects it.
 

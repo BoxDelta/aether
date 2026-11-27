@@ -24,6 +24,7 @@ from typing import Any, cast, get_args
 from memory.store import (
     InvalidRecord,
     MemoryStore,
+    MemoryStoreError,
     NewRecord,
     PendingLimit,
 )
@@ -70,6 +71,9 @@ class Parsed:
 class Stored:
     proposed: int
     dropped: int
+    # The store error that stopped storing (type name only), if any. Records stored
+    # before it stay stored and are counted in ``proposed``.
+    error_type: str | None = None
 
 
 def latest_user_message(request: ModelRequest) -> str | None:
@@ -81,7 +85,8 @@ def latest_user_message(request: ModelRequest) -> str | None:
 
 def proposal_request(request: ModelRequest) -> ModelRequest | None:
     """The proposal call: the fixed instruction and the latest user message, at the
-    request's own level. None if the request has no user message."""
+    request's own level, with at most ``PROPOSAL_MAX_TOKENS`` output tokens (fewer
+    if the request asked for fewer). None if the request has no user message."""
     text = latest_user_message(request)
     if text is None:
         return None
@@ -89,7 +94,7 @@ def proposal_request(request: ModelRequest) -> ModelRequest | None:
         messages=(Message(role="user", content=text),),
         system=INSTRUCTIONS,
         privacy=request.privacy,
-        max_tokens=PROPOSAL_MAX_TOKENS,
+        max_tokens=min(PROPOSAL_MAX_TOKENS, request.max_tokens or PROPOSAL_MAX_TOKENS),
         temperature=0.0,
         timeout_s=PROPOSAL_TIMEOUT_S,
     )
@@ -161,7 +166,8 @@ async def store_proposals(
 ) -> Stored:
     """Store each proposal as ``pending``. A record the store refuses (too long,
     looks like a secret, an invalid field) or the pending limit counts as dropped.
-    Any other store error (database down) propagates; the caller logs it."""
+    Any other store error (database down) stops storing: the rest count as dropped,
+    and ``error_type`` names it. Never raises a store error."""
     proposed = 0
     dropped = parsed.dropped
     for index, proposal in enumerate(parsed.proposals):
@@ -181,5 +187,8 @@ async def store_proposals(
         except InvalidRecord:
             dropped += 1
             continue
+        except MemoryStoreError as exc:
+            remaining = len(parsed.proposals) - index
+            return Stored(proposed, dropped + remaining, type(exc).__name__)
         proposed += 1
     return Stored(proposed, dropped)

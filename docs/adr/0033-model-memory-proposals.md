@@ -49,9 +49,12 @@ Trade-offs:
     `allow_cloud`; nothing new leaves the machine, because the provider
     already received this text. **No memory is sent with it.**
 4.  **From the latest user message only.** Not the answer, not earlier
-    turns and not memory. So a proposal can only restate what the owner
-    just wrote. The model's own claims and retrieved memory can't come
-    back as new "facts".
+    turns and not memory. So a proposal can only draw on what the owner
+    just wrote. The model's earlier claims and retrieved memory aren't
+    given to it. A proposal is still model text: the model can phrase it
+    wrongly or invent it, and outside text pasted into the message (an
+    email, a web page) can steer it (docs/05 §6). That is why every
+    proposal is pending.
 5.  **Strict format.** The model returns only
     `{"proposals": [{"content": "...", "category": "...", "privacy": "..."}]}`,
     optionally inside one Markdown code fence. Anything else counts as one
@@ -72,14 +75,19 @@ Trade-offs:
 8.  **Never fails the answer.** A proposal call error, timeout, unparsable
     reply or store error means 0 proposals. One metadata-only log line
     gives the counts (proposed, dropped) and an error type, never text.
-    The proposal call gets its own `model.call.completed` event, or a
-    `provider.unavailable` event on failure, so cost and latency stay
-    visible. No failover: proposals are optional.
+    If the store fails part-way, records already stored stay stored and
+    are counted. The proposal call gets its own `model.call.completed`
+    event, or a `provider.unavailable` event on failure, with the fixed
+    `route_reason` "memory proposal call (ADR-033), not the answer", so
+    cost and latency stay visible and it is never read as the answer. A
+    refusal before anything is sent (`NoRoute`) writes no event, only the
+    log line. No failover: proposals are optional.
 9.  **The reply says how many.** `ChatResponse.memory_proposals` is the
     number stored as pending, or `null` when not requested. The owner
     reviews them with `GET /memory?status=pending`.
 10. **Bounded.** The proposal call uses `temperature` 0, at most 512
-    output tokens, and a 30 s timeout.
+    output tokens (fewer if the request's `max_tokens` is lower; the cloud
+    cap still applies), and a 30 s timeout.
 
 ## Consequences
 
@@ -88,8 +96,9 @@ Trade-offs:
 -   Phase 2 exit 1's wording (a fact saved while one provider handled a
     request is recalled by the other) can now be shown end to end. Saving
     still needs the owner's approval, as ADR-024 requires.
--   Poisoning is limited to what the owner typed in that message, and the
-    owner approves every record with a stated level.
+-   Poisoning is limited to what the model makes of that one message
+    (including anything pasted into it). Every record stays pending until
+    the owner approves it with a stated level.
 -   Limit: a model can still phrase a proposal wrongly or merge two facts.
     The owner can correct content, category and key when approving.
 -   Limit: secret-shaped content in a format `SecretCheck` doesn't know can

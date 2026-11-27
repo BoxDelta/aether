@@ -220,6 +220,10 @@ def _attempt_info(attempt: Attempt, redact: Redactor) -> AttemptInfo:
     )
 
 
+# Marks the proposal call's own events, so they are never read as the answer's.
+PROPOSAL_REASON = "memory proposal call (ADR-033), not the answer"
+
+
 async def _propose(  # noqa: PLR0913 - one value per input
     router: Router,
     store: MemoryStore | None,
@@ -244,9 +248,10 @@ async def _propose(  # noqa: PLR0913 - one value per input
             try:
                 reply = await router.call_once(answer.provider, prop, options)
             except ProviderError as exc:
-                events.append(provider_unavailable(Attempt.from_error(exc), prop))
+                attempt = Attempt.from_error(exc)
+                events.append(provider_unavailable(attempt, prop, route_reason=PROPOSAL_REASON))
                 raise
-            events.append(call_completed(reply, prop))
+            events.append(call_completed(reply, prop, route_reason=PROPOSAL_REASON))
             parsed = parse(reply.text) if reply.finish_reason == "stop" else None
             if parsed is None:
                 dropped = 1
@@ -259,6 +264,7 @@ async def _propose(  # noqa: PLR0913 - one value per input
                     request_id=get_request_id(),
                 )
                 proposed, dropped = stored.proposed, stored.dropped
+                error_type = stored.error_type
     except Exception as exc:  # proposals never fail the answer
         error_type = type(exc).__name__
     level = logger.warning if error_type and not error_type.startswith("answer_") else logger.info

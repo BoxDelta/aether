@@ -1,6 +1,6 @@
 """Model memory proposals (ADR-033; step 15 of #58): parsing, the level floor,
 storing, ``Router.call_once`` and ``/chat`` with ``propose_memory``. No database:
-a fake store. The live store path is in tests/test_memory_proposals_live.py.
+a fake store. The live store path is in tests/test_memory_recall_live.py.
 """
 
 import asyncio
@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from core.chat import PROPOSAL_REASON
 from core.identity import MEMORY_HEADING, Identity, load_identity
 from memory.proposals import (
     INSTRUCTIONS,
@@ -212,10 +213,23 @@ def test_an_over_long_proposal_is_dropped_before_the_store() -> None:
     assert (stored.proposed, stored.dropped, store.created) == (0, 1, [])
 
 
-def test_a_database_failure_propagates() -> None:
-    store = FakeStore(fail={0: StoreUnavailable("down")})
-    with pytest.raises(StoreUnavailable):
-        _store(Parsed((Proposal("tea", "project", "personal"),), 0), store)
+def test_a_database_failure_keeps_what_was_stored_and_counts_the_rest() -> None:
+    proposals = tuple(Proposal(f"fact {i}", "project", "personal") for i in range(3))
+    store = FakeStore(fail={1: StoreUnavailable("down")})
+
+    stored = _store(Parsed(proposals, 0), store)
+
+    assert (stored.proposed, stored.dropped, stored.error_type) == (1, 2, "StoreUnavailable")
+
+
+def test_the_requests_own_max_tokens_lowers_the_proposal_limit() -> None:
+    def prop(max_tokens: int | None) -> Any:
+        req = ModelRequest(messages=(Message(role="user", content="x"),), max_tokens=max_tokens)
+        return proposal_request(req)
+
+    assert prop(50).max_tokens == 50
+    assert prop(None).max_tokens == PROPOSAL_MAX_TOKENS
+    assert prop(4000).max_tokens == PROPOSAL_MAX_TOKENS
 
 
 # --- Router.call_once -------------------------------------------------------------------
@@ -254,6 +268,7 @@ def test_call_once_sends_no_memory(identity: Identity) -> None:
         ("claude", "sensitive", True),  # above the cloud's max
         ("ollama", "secret", True),  # never sent
         ("nobody", "public", True),  # unknown provider
+        ("remote", "personal", False),  # an off-network Ollama host needs allow_cloud
     ],
 )
 def test_call_once_refuses_what_routing_would_refuse(
@@ -261,12 +276,31 @@ def test_call_once_refuses_what_routing_would_refuse(
 ) -> None:
     local = FakeProvider("ollama", "local")
     cloud = FakeProvider("claude", "cloud")
-    r = _router(identity, local, cloud)
+    remote = FakeProvider("remote", "local", off_network=True)
+    r = _router(identity, local, cloud, remote)
 
     with pytest.raises(NoRoute):
         asyncio.run(r.call_once(name, _req(privacy), RouteOptions(allow_cloud=allow_cloud)))
 
-    assert local.calls == cloud.calls == 0
+    assert local.calls == cloud.calls == remote.calls == 0
+
+
+@pytest.mark.parametrize("kind", ["cloud", "off_network"])
+def test_call_once_keeps_the_content_tripwire(identity: Identity, kind: str) -> None:
+    from router.contract import SecretContentRefused
+    from tests.chat_helpers import FAKE_KEY
+
+    p = (
+        FakeProvider("claude", "cloud")
+        if kind == "cloud"
+        else FakeProvider("remote", "local", off_network=True)
+    )
+    r = _router(identity, p)
+    req = ModelRequest(messages=(Message(role="user", content=f"key {FAKE_KEY}"),))
+
+    with pytest.raises(SecretContentRefused):
+        asyncio.run(r.call_once(p.name, req, RouteOptions(allow_cloud=True)))
+    assert p.calls == 0
 
 
 # --- /chat ---------------------------------------------------------------------------
@@ -299,8 +333,8 @@ def test_propose_memory_stores_pending_proposals_from_the_answering_provider() -
     assert [n.source for n in store.created] == ["model", "model"]
     assert all(n.source_provider == "ollama" for n in store.created)
     # Both calls have an event; no proposal text in any event or log line.
-    kinds = [r["event_type"] for r in setup.rows]
-    assert kinds.count("model.call.completed") == 2
+    completed = [r for r in setup.rows if r["event_type"] == "model.call.completed"]
+    assert [r["route_reason"] for r in completed] == [None, PROPOSAL_REASON]
     assert CANARY not in json.dumps(setup.rows, default=str)
     assert CANARY not in setup.log.getvalue()
     lines = [r for r in setup.log_records() if r["message"] == "Memory proposals"]
@@ -340,7 +374,8 @@ def test_no_proposal_call_after_a_refusal_or_a_cut_off_answer(finish: Any) -> No
 def test_a_failed_proposal_call_never_fails_the_answer() -> None:
     store = FakeStore()
     setup = Setup(store=store, local_replies=["the answer"])
-    error = ProviderUnavailable("ollama", "connection refused")
+    # The error quotes the whole message sent: the echo scrub must remove it.
+    error = ProviderUnavailable("ollama", f"bad input: {PROMPT}")
 
     async def fail_second(request: ModelRequest) -> Any:
         if setup.local.calls >= 1:
@@ -358,6 +393,10 @@ def test_a_failed_proposal_call_never_fails_the_answer() -> None:
     assert setup.cloud.calls == 0  # no failover for proposals
     kinds = [r["event_type"] for r in setup.rows]
     assert "provider.unavailable" in kinds and "request.failed" not in kinds
+    failed = next(r for r in setup.rows if r["event_type"] == "provider.unavailable")
+    assert failed["route_reason"].startswith("memory proposal call")
+    everything = json.dumps(setup.rows, default=str) + setup.log.getvalue() + response.text
+    assert "PRIVATE-PROMPT-MARKER" not in everything
 
 
 @pytest.mark.parametrize(
@@ -398,6 +437,33 @@ def test_a_store_outage_never_fails_the_answer() -> None:
     assert response.status_code == 200 and response.json()["memory_proposals"] == 0
     line = next(r for r in setup.log_records() if r["message"] == "Memory proposals")
     assert line["error_type"] == "StoreUnavailable"
+    assert CANARY not in json.dumps(setup.rows, default=str) + setup.log.getvalue()
+
+
+def test_a_partial_store_outage_reports_what_was_stored() -> None:
+    store = FakeStore(fail={1: StoreUnavailable("down")})
+    setup = Setup(store=store, local_replies=["a", reply(item(), item("two"), item("three"))])
+
+    body = setup.post(propose_memory=True).json()
+
+    assert body["memory_proposals"] == 1
+    line = next(r for r in setup.log_records() if r["message"] == "Memory proposals")
+    assert (line["proposed"], line["dropped"], line["error_type"]) == (1, 2, "StoreUnavailable")
+
+
+def test_after_failover_the_fallback_proposes_and_the_cloud_still_needs_allow_cloud() -> None:
+    store = FakeStore()
+    setup = Setup(
+        store=store,
+        local_error=ProviderUnavailable("ollama", "down"),
+        cloud_replies=["cloud answer", reply(item())],
+    )
+
+    body = setup.post(propose_memory=True, allow_cloud=True).json()
+
+    assert (body["provider"], body["memory_proposals"]) == ("claude", 1)
+    assert [n.source_provider for n in store.created] == ["claude"]
+    assert setup.local.calls == 1  # the proposal call went to the fallback only
 
 
 def test_proposal_ids_are_never_approved_by_a_model() -> None:
