@@ -1,8 +1,9 @@
 """The memory store (ADR-024 §1, §2, §4; step 4 of #58): ``public.memory_records``.
 
-Its HTTP routes are in ``core/memory_api.py`` (step 6); there is no retrieval for
-model calls yet (ADR-024 §9, step 11). It uses Core's app engine (``core.db.create_engine``,
-the ``aether_app`` role) and changes nothing about its privileges.
+Its HTTP routes are in ``core/memory_api.py`` (step 6). ``retrieval_candidates``
+(step 11) reads the records that may go into a model call; the privacy rules and
+size limits for that are in ``memory/retrieval.py``. It uses Core's app engine
+(``core.db.create_engine``, the ``aether_app`` role) and changes nothing about its privileges.
 
 Rules, checked here before anything reaches the database; the CHECK constraints of
 migration 0004 are the backstop:
@@ -96,14 +97,14 @@ import enum
 import logging
 import re
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, TypeVar, cast
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.exc import DBAPIError, StatementError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -151,6 +152,15 @@ SWEEP_INTERVAL_S = 60.0
 # pg_advisory_xact_lock key that serialises the pending-limit check (any fixed number).
 _PENDING_LOCK = 0x4D454D50  # "MEMP"
 
+# Retrieval (step 11, #139; ADR-024 §3): full-text search, built into Postgres.
+FTS_CONFIG = "english"  # stemming, so "prefers" matches "preference"
+CANDIDATE_MAX = 100  # rows read per call; selection keeps at most retrieval.MAX_RECORDS
+SEARCH_TERMS_MAX = 32
+SEARCH_TERM_LEN_MAX = 64
+# Keyed records in these categories are always candidates (the owner's name, say).
+KEYED_CATEGORIES: tuple[Category, ...] = ("profile", "preference")
+
+_WORD = re.compile(r"\w+")
 _KEY = re.compile(KEY_PATTERN)
 _PROVIDER = re.compile(PROVIDER_NAME_PATTERN)
 _REQUEST_ID = re.compile(SAFE_ID_PATTERN)
@@ -390,7 +400,7 @@ class ListFilter:
     category: Category | None = None
     key: str | None = field(default=None, repr=False)
     # A case-insensitive substring of the content (owner inspection, ADR-024 §4).
-    # Content too: never in a URL or a log. Not retrieval (full-text search is step 11).
+    # Content too: never in a URL or a log. Not retrieval (retrieval_candidates).
     query: str | None = field(default=None, repr=False)
     include_expired: bool = False
     limit: int = LIST_LIMIT_DEFAULT
@@ -468,6 +478,37 @@ _EXPIRED = (
 _NOT_EXPIRED = f"NOT {_EXPIRED}"
 _META = "id, category, source, privacy"  # the columns an event may describe
 T = TypeVar("T")
+
+
+@dataclass(frozen=True, slots=True)
+class Candidate:
+    """A record that may be relevant to a request (``retrieval_candidates``)."""
+
+    record: MemoryRecord
+    keyed: bool  # has a key and is in KEYED_CATEGORIES: always relevant
+    match_rank: float  # full-text rank of the request's words; 0.0 for no match
+
+
+def search_terms(request_text: str | None) -> str | None:
+    """The request's words as a ``websearch_to_tsquery`` string that matches *any*
+    of them (``a or b or c``), or ``None`` if there are none.
+
+    A plain ``websearch_to_tsquery`` of the whole text needs *every* word to match,
+    so "what is my preferred editor" would miss "the owner uses Helix as editor".
+    Words are ``\\w+`` runs, so the quotes and ``-`` that websearch reads as
+    operators never reach it; the word ``or`` is dropped for the same reason.
+    At most ``SEARCH_TERMS_MAX`` distinct words of at most ``SEARCH_TERM_LEN_MAX``
+    characters each, first seen first. Stop words are removed by Postgres."""
+    if not request_text:
+        return None
+    terms: list[str] = []
+    for word in _WORD.findall(request_text.lower()):
+        if word == "or" or len(word) > SEARCH_TERM_LEN_MAX or word in terms:
+            continue
+        terms.append(word)
+        if len(terms) == SEARCH_TERMS_MAX:
+            break
+    return " or ".join(terms) or None
 
 
 def _record(row: Any) -> MemoryRecord:
@@ -800,6 +841,62 @@ class MemoryStore:
 
         await self._run(remove)
         logger.info("Memory record deleted", extra={"record_id": str(record_id)})
+
+    async def retrieval_candidates(
+        self, request_text: str | None, *, max_level: PrivacyLevel | None
+    ) -> Sequence[Candidate]:
+        """Approved, unexpired records that may be relevant to ``request_text``, at or
+        below ``max_level`` (ADR-024 §3, step 11, #139), best first, at most
+        ``CANDIDATE_MAX``.
+
+        A candidate is a keyed ``profile`` or ``preference`` record (always
+        relevant), or a full-text match of the request's words (``search_terms``).
+        This is a pre-filter only: ``memory.retrieval.select_memory`` applies the
+        privacy rules and the size limits again on what comes back, so a bug here
+        can't widen what a model gets. ``max_level=None`` (no memory for this call)
+        reads nothing. A read: no clean-up, no event; the request text is a query
+        parameter only, never logged."""
+        if max_level is None:
+            return []
+        _check_level(max_level)
+        levels = list(NON_SECRET_LEVELS[: NON_SECRET_LEVELS.index(max_level) + 1])
+        terms = search_terms(request_text)
+        keyed = "(key IS NOT NULL AND category IN :keyed_categories)"
+        params: dict[str, object] = {
+            "levels": levels,
+            "keyed_categories": list(KEYED_CATEGORIES),
+            "limit": CANDIDATE_MAX,
+        }
+        if terms is None:
+            match_rank, wanted = "0.0", keyed
+        else:
+            document = f"to_tsvector('{FTS_CONFIG}', content)"
+            query = f"websearch_to_tsquery('{FTS_CONFIG}', :terms)"
+            match_rank = (
+                f"CASE WHEN {document} @@ {query} THEN ts_rank({document}, {query}) ELSE 0.0 END"
+            )
+            wanted = f"({keyed} OR {document} @@ {query})"
+            params["terms"] = terms
+        sql = text(
+            f"SELECT {_COLUMNS}, {keyed} AS candidate_keyed,"  # noqa: S608 - fixed names only
+            f" ({match_rank})::float8 AS candidate_rank FROM {TABLE}"
+            f" WHERE status = 'approved' AND {_NOT_EXPIRED} AND privacy IN :levels AND {wanted}"
+            " ORDER BY candidate_keyed DESC, candidate_rank DESC, updated_at DESC, id"
+            " LIMIT :limit"
+        ).bindparams(
+            bindparam("levels", expanding=True), bindparam("keyed_categories", expanding=True)
+        )
+
+        async def select(conn: AsyncConnection) -> list[Candidate]:
+            found = []
+            for row in await conn.execute(sql, params):
+                values = dict(row._mapping)
+                keyed_value = bool(values.pop("candidate_keyed"))
+                rank = float(values.pop("candidate_rank"))
+                found.append(Candidate(MemoryRecord.model_validate(values), keyed_value, rank))
+            return found
+
+        return await self._run(select)
 
     @staticmethod
     async def _lock(conn: AsyncConnection, record_id: UUID) -> tuple[str, PrivacyLevel, str | None]:

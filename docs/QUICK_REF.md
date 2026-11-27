@@ -23,7 +23,8 @@ are in `docs/adr/`; a longer tour is in `docs/CODE_TOUR.md`.
     levels, `routing.py` rules and failover, `identity_call.py` the one
     function every model call goes through, `ollama.py` (local),
     `claude.py` (cloud), `hardware.py` GPU/RAM probe.
--   `memory/`: `store.py` the memory store, `types.py` its types.
+-   `memory/`: `store.py` the memory store, `retrieval.py` which memory
+    one model call may get, `types.py` its types.
 -   `identity/aether.yaml`: the single AETHER identity.
 -   `dispatch/`: dispatcher prototype (ADR-030, dev tooling, not Core):
     `config.py`, `github.py` (read-only), `rules.py` (always-Claude list),
