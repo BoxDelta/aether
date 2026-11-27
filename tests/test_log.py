@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from core.app import create_app
 from core.config import Settings
-from core.log import REDACTED, Redactor, configure_logging
+from core.log import REDACTED, Redactor, SafeStreamHandler, configure_logging
 from core.request_context import REQUEST_ID_HEADER, SESSION_ID_HEADER
 
 # Fake keys for tests only.
@@ -183,3 +183,89 @@ def test_third_party_loggers_stay_quiet_at_debug() -> None:
     assert logging.getLogger().level == logging.DEBUG
     for name in ("anthropic", "httpx", "httpx2", "httpcore", "ollama"):
         assert logging.getLogger(name).level == logging.WARNING
+
+
+# --- the handler's own error path (#114) ----------------------------------------------
+
+
+class _BrokenRepr:
+    def __repr__(self) -> str:
+        raise RuntimeError(f"repr failed near {CONFIGURED_KEY}")
+
+
+@pytest.fixture
+def handler() -> tuple[logging.Handler, io.StringIO]:
+    """AETHER's handler, called directly: pytest's own capture handlers re-raise
+    logging errors, so these records must not go through a logger."""
+    out = io.StringIO()
+    return configure_logging(settings(anthropic_api_key=CONFIGURED_KEY), stream=out), out
+
+
+def record(msg: str, args: tuple[object, ...], **extra: object) -> logging.LogRecord:
+    rec = logging.LogRecord("aether.test", logging.INFO, __file__, 1, msg, args, None)
+    rec.__dict__.update(extra)
+    return rec
+
+
+@pytest.mark.parametrize(
+    ("rec", "error_type"),
+    [
+        # One argument too few: getMessage() raises TypeError with the args in hand.
+        (lambda: record("token %s and %s", (CONFIGURED_KEY,)), "TypeError"),
+        (lambda: record("value", (), thing=_BrokenRepr()), "RuntimeError"),
+    ],
+)
+def test_a_record_that_fails_to_format_writes_one_fixed_line_to_stderr(
+    handler: tuple[logging.Handler, io.StringIO],
+    capsys: pytest.CaptureFixture[str],
+    rec: Any,
+    error_type: str,
+) -> None:
+    h, out = handler
+    h.handle(rec())
+
+    err = capsys.readouterr().err
+    assert CONFIGURED_KEY not in err
+    assert "token" not in err
+    assert "Traceback" not in err
+    [line] = [json.loads(line) for line in err.splitlines()]
+    assert line == {
+        "level": "ERROR",
+        "logger": "aether.log",
+        "message": "Log record could not be written",
+        "error_type": error_type,
+        # Where the broken call was: code locations, not data.
+        "source_logger": "aether.test",
+        "source_file": __file__,
+        "source_line": 1,
+        "source_function": None,
+    }
+    assert out.getvalue() == ""  # nothing half-written to the log itself
+
+
+def test_a_write_to_a_closed_stream_writes_one_fixed_line(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    out = io.StringIO()
+    h = configure_logging(settings(anthropic_api_key=CONFIGURED_KEY), stream=out)
+    out.close()
+    h.handle(record("token %s", (CONFIGURED_KEY,)))
+
+    err = capsys.readouterr().err
+    assert CONFIGURED_KEY not in err and "Traceback" not in err
+    [line] = [json.loads(line) for line in err.splitlines()]
+    assert line["error_type"] == "ValueError"
+
+
+def test_logging_still_works_after_a_failed_record(
+    handler: tuple[logging.Handler, io.StringIO], capsys: pytest.CaptureFixture[str]
+) -> None:
+    h, out = handler
+    h.handle(record("broken %s %s", ("one",)))
+    h.handle(record("fine", ()))
+    capsys.readouterr()
+    assert [line["message"] for line in lines(out)] == ["fine"]
+
+
+def test_configure_logging_installs_the_safe_handler() -> None:
+    assert isinstance(configure_logging(settings(), stream=io.StringIO()), SafeStreamHandler)
