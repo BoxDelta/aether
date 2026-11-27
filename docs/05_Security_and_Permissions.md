@@ -758,25 +758,23 @@ shapes only; they cannot recognise personal data.
     backups are on the volume, which the owner opens with `aether-vault
     open` after each boot. Both hold the events and full memory records
     (content, key, level and provenance). With #1, #12 and #3 already
-    done, this meets the ADR-024 §7 gate for storing real memory data,
-    **provided every compose run loads the override until stage 7**
-    (#152): a run without it (`-f docker-compose.yml`, another folder, a
-    lost `.env` line) starts the old database on the unencrypted
-    `aether_pgdata` volume, and real memory written there can't be wiped
-    from this disk (ADR-026 §5 layer 6, §7). Stage 7, removing the old
-    unencrypted volume and backups and rebinding that name to the
-    volume, is still open (#152, not before 2026-12-04, with the owner's
-    approval).
+    done, this meets the ADR-024 §7 gate for storing real memory data.
+    Stage 7 (#152) was done on 2026-11-27 with the owner's approval: the
+    old unencrypted volume and backups were removed, `aether_pgdata` was
+    recreated as a bind to the volume's data folder (so even a compose
+    run without the override, e.g. `-f docker-compose.yml`, uses the
+    encrypted data and can't start while it is locked), and the old
+    backup folder is empty and immutable. Freed blocks of the old data
+    are not wiped (ADR-026 §7); it held no real memory content.
     -   **Fails closed, with the override loaded** (`compose.vault.yaml`,
         through `COMPOSE_FILE` in `.env` or `aether-vault`). With the volume
         locked or not mounted, Docker refuses to start Postgres: the bind
         source exists only inside the volume, `create_host_path: false`,
         and the bare mount point is empty and immutable. The entrypoint
         also refuses without the volume's marker.
-    -   A compose run that misses the override uses the old named volume
-        until the runbook's stage 7 recreates that name as a bind to the
-        volume. After that, it can't create a database on the bare disk
-        either. The nightly backup refuses to run (exit 1, one `err`
+    -   A compose run that misses the override uses `aether_pgdata`,
+        which stage 7 recreated as a bind to the volume, so it can't
+        create a database on the bare disk either. The nightly backup refuses to run (exit 1, one `err`
         journal line). Core still starts with events skipped, `/ready`
         reports `degraded` with database `unreachable`, the memory routes
         answer 503, and `/chat` answers without memory.
@@ -790,8 +788,9 @@ shapes only; they cannot recognise personal data.
         -   memory text typed into shell commands (shell history);
         -   data written before the move (old volume, old backups,
             snapshots). Deleting it is not wiping it on btrfs or an SSD,
-            which is acceptable only because, before the move, it holds
-            event metadata and invented memory data only.
+            which is acceptable only because, before the move, it held
+            event metadata and invented memory data only (deleted in
+            stage 7, #152).
         -   memory sent or copied out on purpose: to model providers by
             retrieval (local Ollama, whose logs can hold prompts with
             debug logging on; the cloud or an off-network Ollama host
