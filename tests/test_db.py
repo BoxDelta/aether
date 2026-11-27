@@ -280,7 +280,7 @@ def test_alembic_has_one_head() -> None:
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config(str(REPO / "alembic.ini")))
-    assert script.get_heads() == ["0006"]
+    assert script.get_heads() == ["0007"]
 
 
 def test_alembic_ini_has_no_url() -> None:

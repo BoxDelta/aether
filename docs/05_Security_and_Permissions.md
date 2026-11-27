@@ -132,10 +132,11 @@ confidence is not a substitute for authorization.
     changes no grants, and its downgrade refuses while memory events
     exist rather than delete audit rows. A memory event can't carry the
     free-text columns (route reason, error message, attempts), by CHECK.
-    **Known limitation:** `actor="restore"` is a label, not proof: the
-    app role can also write it. The restore repair
-    (`memory/restore.py`, step 16) runs as the owner role, but nothing
-    enforces that yet (#150).
+    `actor="restore"` is the owner role's only: a trigger (migration
+    0007, #150) refuses an insert with that actor unless the connecting
+    role can act as the owner of `events` (the owner or a superuser), so
+    Core's app role can't write it. The restore repair
+    (`memory/restore.py`, step 16) runs as the owner role.
 -   Database roles (#1, #12, ADR-020 addition 2026-11-16): Core connects
     as `aether_app` (`DATABASE_URL`), which has only CONNECT, schema
     USAGE, INSERT and SELECT on `events`, SELECT on `alembic_version`,

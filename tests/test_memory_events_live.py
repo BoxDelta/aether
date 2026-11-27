@@ -90,7 +90,6 @@ def test_app_role_inserts_memory_events_but_cannot_change_them(live_app: Setting
                 conn, {**RECORD, "event_type": "memory.updated", "memory_old_level": "public"}
             )
         )
-        results.append(await try_insert(conn, {**RECORD, "actor": "restore"}))
         for statement in (
             "UPDATE events SET memory_level = 'public' WHERE event_type LIKE 'memory.%'",
             "DELETE FROM events WHERE event_type LIKE 'memory.%'",
@@ -105,7 +104,7 @@ def test_app_role_inserts_memory_events_but_cannot_change_them(live_app: Setting
         return results
 
     results = in_rolled_back_tx(live_app, body)
-    assert results[:-2] == ["accepted"] * 9
+    assert results[:-2] == ["accepted"] * 8
     assert all("permission denied for table events" in r for r in results[-2:]), results[-2:]
 
 
@@ -390,3 +389,26 @@ def test_live_retrieved_events_from_the_builder_pass_the_checks(live_app: Settin
         return len([await writer.write_with(conn, e) for e in events])
 
     assert in_rolled_back_tx(live_app, body) == 3
+
+
+# --- actor="restore" is the owner's only (migration 0007, #150) -----------------------
+
+
+def test_app_role_cannot_write_the_restore_actor(live_app: Settings) -> None:
+    async def body(conn: AsyncConnection) -> list[str]:
+        await require_events_table(conn)
+        return [await try_insert(conn, {**row, "actor": "restore"}) for row in (RECORD, EXPORTED)]
+
+    results = in_rolled_back_tx(live_app, body)
+    for result in results:
+        assert result.startswith("CheckViolation"), result
+        assert "owner role only" in result
+
+
+def test_owner_role_can_write_the_restore_actor(live_owner: Settings) -> None:
+    # The restore repair (memory/restore.py) runs as the owner role.
+    async def body(conn: AsyncConnection) -> str:
+        await require_events_table(conn)
+        return await try_insert(conn, {**RECORD, "actor": "restore"})
+
+    assert in_rolled_back_tx(live_owner, body, owner=True) == "accepted"
