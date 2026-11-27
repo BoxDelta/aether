@@ -1,6 +1,7 @@
 import io
 import json
 import logging
+import sys
 from typing import Any
 
 import pytest
@@ -330,3 +331,33 @@ def test_python_fallback_skips_below_warning(capsys: pytest.CaptureFixture[str])
     if record.levelno >= logging.lastResort.level:
         logging.lastResort.handle(record)
     assert capsys.readouterr().err == ""
+
+
+def test_python_really_sends_a_handlerless_record_to_the_fallback(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # No handler anywhere (as before configure_logging): Python itself picks lastResort.
+    root = logging.getLogger()
+    saved = root.handlers[:]
+    root.handlers.clear()
+    try:
+        logging.getLogger("aether.early.test").warning("early %s", FAKE_ANTHROPIC_KEY)
+    finally:
+        root.handlers[:] = saved
+    err = capsys.readouterr().err
+    assert json.loads(err)["message"] == f"early {REDACTED}"
+    assert FAKE_ANTHROPIC_KEY not in err
+
+
+def test_python_fallback_redacts_a_traceback(capsys: pytest.CaptureFixture[str]) -> None:
+    try:
+        raise RuntimeError(f"failed with {FAKE_ANTHROPIC_KEY}")
+    except RuntimeError:
+        record = logging.LogRecord(
+            "early", logging.ERROR, __file__, 1, "failed", (), sys.exc_info()
+        )
+    assert logging.lastResort is not None
+    logging.lastResort.handle(record)
+    err = capsys.readouterr().err
+    assert REDACTED in json.loads(err)["exc_info"]
+    assert FAKE_ANTHROPIC_KEY not in err
