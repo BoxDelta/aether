@@ -107,6 +107,11 @@ class ProviderInfo(_Frozen):
     default_model: NonEmptyStr
     # Highest privacy level this provider may receive. Never "secret".
     max_privacy: NonSecretLevel
+    # Highest level of *memory* this provider may get in a call (ADR-024 §3, #139).
+    # Set by each adapter from facts it has when it is built (host trust for Ollama),
+    # so selection never guesses trust from kind and max_privacy. None (the default):
+    # no memory at all, so a provider that doesn't set it fails closed.
+    memory_limit: NonSecretLevel | None = None
 
     @model_validator(mode="after")
     def _cloud_never_gets_sensitive_by_default(self) -> "ProviderInfo":
@@ -115,6 +120,23 @@ class ProviderInfo(_Frozen):
         if self.kind == "cloud" and self.max_privacy == "sensitive":
             raise ValueError("cloud providers may not be configured to accept sensitive")
         return self
+
+    @model_validator(mode="after")
+    def _memory_limit_within_max_privacy(self) -> "ProviderInfo":
+        if self.memory_limit is not None and privacy_rank(self.memory_limit) > privacy_rank(
+            self.max_privacy
+        ):
+            raise ValueError("memory_limit may not be above max_privacy")
+        return self
+
+    def memory_limit_for(self, *, allow_cloud: bool) -> PrivacyLevel | None:
+        """The memory limit for one call (ADR-024 §3): ``None`` means no memory.
+
+        A provider that isn't explicitly local is treated as cloud, so a new kind
+        fails closed: it gets no memory unless the request has ``allow_cloud``."""
+        if self.kind != "local" and not allow_cloud:
+            return None
+        return self.memory_limit
 
 
 # --- errors ----------------------------------------------------------------------

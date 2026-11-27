@@ -17,7 +17,7 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import Any, TypeVar
@@ -48,6 +48,7 @@ from memory.store import (
     RecordChanges,
     RecordNotFound,
     SecretContent,
+    SecretRefused,
     StoreUnavailable,
 )
 from tests.conftest import LIVE_DB
@@ -1120,3 +1121,143 @@ def test_an_export_whose_event_fails_returns_nothing(
         store(lambda s: s.export(actor="owner"))
 
     assert events_after(live_owner, start) == []
+
+
+# --- step 11 (#139): retrieval candidates ---------------------------------------------
+
+
+def _candidates(text_: str | None, level: Any, s: MemoryStore) -> Any:
+    return s.retrieval_candidates(text_, max_level=level)
+
+
+def test_candidates_are_keyed_preferences_and_full_text_matches(store: Run[Any]) -> None:
+    async def body(s: MemoryStore) -> dict[str, Any]:
+        keyed = await s.create(owner_record("k", content=f"{PREFIX} owner name is Zed", key=KEY))
+        match = await s.create(
+            owner_record("m", category="project", content=f"{PREFIX} editor is Helix")
+        )
+        await s.create(owner_record("x", category="project", content=f"{PREFIX} unrelated cat"))
+        # Keyed but not profile/preference: not always relevant.
+        await s.create(
+            owner_record("n", category="project", content=f"{PREFIX} note", key=OTHER_KEY)
+        )
+        found = [c for c in await s.retrieval_candidates("which editor?", max_level="sensitive")]
+        mine = [c for c in found if c.record.content.startswith(PREFIX)]
+        return {"keyed": keyed.id, "match": match.id, "found": mine}
+
+    out = store(body)
+    found = out["found"]
+
+    assert [c.record.id for c in found] == [out["keyed"], out["match"]]
+    assert found[0].keyed and found[0].match_rank == 0.0
+    assert not found[1].keyed and found[1].match_rank > 0.0
+
+
+def test_candidates_with_no_words_are_only_the_keyed_ones(store: Run[Any]) -> None:
+    async def body(s: MemoryStore) -> Sequence[Any]:
+        await s.create(owner_record("k", key=KEY))
+        await s.create(owner_record("p", category="project"))
+        return await s.retrieval_candidates(None, max_level="sensitive")
+
+    mine = [c for c in store(body) if c.record.content.startswith(PREFIX)]
+
+    assert [c.record.key for c in mine] == [KEY]
+
+
+def test_candidates_respect_level_status_and_expiry(store: Run[Any]) -> None:
+    async def body(s: MemoryStore) -> dict[str, list[str]]:
+        await s.create(owner_record("pub", content=f"{PREFIX} zebra public"))
+        await s.create(owner_record("per", content=f"{PREFIX} zebra personal", privacy="personal"))
+        await s.create(
+            owner_record("sen", content=f"{PREFIX} zebra sensitive", privacy="sensitive")
+        )
+        await s.create(proposal("pend", content=f"{PREFIX} zebra pending"))
+        await s.create(
+            owner_record(
+                "exp",
+                content=f"{PREFIX} zebra expired",
+                expires_at=datetime.now(UTC) + timedelta(seconds=1),
+            )
+        )
+        await asyncio.sleep(1.5)
+        result = {}
+        for level in ("public", "personal", "sensitive", None):
+            got = await s.retrieval_candidates("zebra", max_level=level)
+            result[str(level)] = sorted(
+                c.record.content.removeprefix(PREFIX + " zebra ")
+                for c in got
+                if c.record.content.startswith(PREFIX)
+            )
+        return result
+
+    assert store(body) == {
+        "public": ["public"],
+        "personal": ["personal", "public"],
+        "sensitive": ["personal", "public", "sensitive"],
+        "None": [],
+    }
+
+
+def test_candidates_stemming_and_best_rank_first(store: Run[Any]) -> None:
+    async def body(s: MemoryStore) -> list[str]:
+        await s.create(owner_record("a", category="project", content=f"{PREFIX} prefers tea"))
+        await s.create(
+            owner_record("b", category="project", content=f"{PREFIX} prefers tea and likes jazz")
+        )
+        got = await s.retrieval_candidates("preference jazz tea", max_level="public")
+        return [c.record.content for c in got if c.record.content.startswith(PREFIX)]
+
+    got = store(body)
+
+    assert got == [f"{PREFIX} prefers tea and likes jazz", f"{PREFIX} prefers tea"]
+
+
+def test_candidates_treat_operators_in_the_request_as_plain_words(store: Run[Any]) -> None:
+    async def body(s: MemoryStore) -> int:
+        await s.create(owner_record("a", category="project", content=f"{PREFIX} yak"))
+        hostile = '\'; DROP TABLE memory_records; -- "yak" -yak & | ! ( ) :*'
+        got = await s.retrieval_candidates(hostile, max_level="public")
+        return len([c for c in got if c.record.content.startswith(PREFIX)])
+
+    assert store(body) == 1
+
+
+def test_candidates_are_capped(store: Run[Any]) -> None:
+    from memory.store import CANDIDATE_MAX
+
+    async def body(s: MemoryStore) -> int:
+        for i in range(CANDIDATE_MAX + 3):
+            await s.create(owner_record(i, category="project", content=f"{PREFIX} lynx {i}"))
+        return len(await s.retrieval_candidates("lynx", max_level="public"))
+
+    assert store(body) == CANDIDATE_MAX
+
+
+def test_candidates_write_nothing_and_log_no_text(
+    store: Run[Any], live_owner: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    async def make(s: MemoryStore) -> None:
+        await s.create(owner_record("a", content=f"{PREFIX} ibis"))
+
+    store(make)
+    before_events, before_rows = last_event_id(live_owner), snapshot(live_owner)
+
+    with caplog.at_level(logging.DEBUG):
+        store(partial(_candidates, f"{PREFIX}-request-text ibis", "public"))
+
+    assert last_event_id(live_owner) == before_events
+    assert snapshot(live_owner) == before_rows
+    assert f"{PREFIX}-request-text" not in caplog.text
+
+
+def test_candidates_refuse_secret_and_unknown_levels(store: Run[Any]) -> None:
+    async def secret(s: MemoryStore) -> None:
+        await s.retrieval_candidates("x", max_level="secret")
+
+    async def unknown(s: MemoryStore) -> None:
+        await s.retrieval_candidates("x", max_level="top")  # type: ignore[arg-type]
+
+    with pytest.raises(SecretRefused):
+        store(secret)
+    with pytest.raises(InvalidRecord):
+        store(unknown)

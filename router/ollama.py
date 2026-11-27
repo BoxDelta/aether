@@ -101,6 +101,10 @@ class OllamaProvider(Provider):
                 # Local inference may receive Sensitive context, but only on a trusted
                 # host (#10); never Secret (docs/05 §7.1).
                 max_privacy="sensitive" if trusted else "personal",
+                # Memory (ADR-024 §3): up to sensitive on a trusted host, including one
+                # trusted by AETHER_OLLAMA_TRUST_HOST (the owner's explicit statement);
+                # public only on any other host until #22 is decided (D4).
+                memory_limit="sensitive" if trusted else "public",
             )
         )
         self.host_category: HostCategory = category

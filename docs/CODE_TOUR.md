@@ -66,8 +66,14 @@ the design, follow the ADR numbers into `docs/adr/`.
     `create` run at most once a minute, and unthrottled before the owner
     sets a key (steps 8 and 9). `export` reads every unexpired record
     (all levels, pending too) and writes one `memory.exported` event with
-    the count in the same transaction; it deletes nothing (step 10). No
-    retrieval yet.
+    the count in the same transaction; it deletes nothing (step 10).
+    `retrieval_candidates` reads approved, unexpired records (keyed
+    profile/preference records plus full-text matches) at or below a
+    level, at most 100, with no event. `retrieval.py` then decides, as a
+    pure function, which of them one call may get (privacy rules,
+    ordering, at most 20 records and 4000 characters) and renders them
+    for `memory_context`; each provider sets `ProviderInfo.memory_limit`
+    (step 11). Nothing calls it from `/chat` yet (step 12).
 -   `scripts/`: the identity continuity run (`identity_continuity.py`), a
     backup copy of the owner's `safemerge` fish function (never sourced),
     the systemd user timer templates for backups (`systemd/`, installed by
