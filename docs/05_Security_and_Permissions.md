@@ -118,7 +118,7 @@ confidence is not a substitute for authorization.
     time), or in a process that never configures it (e.g.
     `scripts/identity_continuity.py`), go to a replaced
     `logging.lastResort`: WARNING and above as
-    JSON redacted by pattern (no configured values are known yet), with
+    JSON redacted by pattern (configured values are not known to it), with
     the same safe error path (#167). Database errors are
     reported from safe parts only (`core/db.py`, ADR-020).
 -   The Claude client takes its key and endpoint from AETHER's settings:
