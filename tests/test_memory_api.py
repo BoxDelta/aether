@@ -582,3 +582,129 @@ def test_the_api_names_are_built_at_startup() -> None:
     with TestClient(app):  # runs the lifespan
         names = app.state.aether_api_field_names
     assert {"messages", "privacy", "source", "offset"} <= names
+
+
+def test_api_field_names_are_shared_by_apps_with_the_same_routes() -> None:
+    # Built once per process for the same routes; extra routes get their own names.
+    from fastapi import FastAPI
+    from pydantic import BaseModel
+
+    from core.errors import api_field_names
+
+    class Extra(BaseModel):
+        only_in_the_extra_app: int
+
+    def build(extra: bool) -> FastAPI:
+        app = FastAPI()
+
+        @app.post("/thing")
+        async def thing(body: Extra if extra else BaseModel) -> None:  # type: ignore[valid-type]
+            return None
+
+        if extra:
+
+            @app.get("/more")
+            async def more(only_a_query: int) -> None:
+                return None
+
+        return app
+
+    plain_a, plain_b, wider = build(False), build(False), build(True)
+    assert api_field_names(plain_a) is api_field_names(plain_b)
+    names = api_field_names(wider)
+    assert {"only_a_query", "only_in_the_extra_app"} <= names
+    assert "only_in_the_extra_app" not in api_field_names(plain_a)
+
+
+def test_same_route_name_with_another_body_model_is_not_shared() -> None:
+    from fastapi import FastAPI
+    from pydantic import BaseModel
+
+    from core.errors import api_field_names
+
+    class One(BaseModel):
+        first_model_field: int
+
+    class Two(BaseModel):
+        second_model_field: int
+
+    def build(model: type[BaseModel]) -> FastAPI:
+        app = FastAPI()
+
+        @app.post("/thing")
+        async def thing(body: model) -> None:  # type: ignore[valid-type]
+            return None
+
+        return app
+
+    assert "first_model_field" in api_field_names(build(One))
+    names = api_field_names(build(Two))
+    assert "second_model_field" in names and "first_model_field" not in names
+
+
+def test_apps_that_differ_only_inside_an_included_router_are_not_shared() -> None:
+    # FastAPI wraps include_router() in one object: the key must look inside it.
+    from fastapi import APIRouter, FastAPI
+
+    from core.errors import api_field_names
+
+    def build(param: str) -> FastAPI:
+        router = APIRouter()
+        if param == "first_router_param":
+
+            @router.get("/r")
+            async def endpoint(first_router_param: int) -> None:
+                return None
+        else:
+
+            @router.get("/r")
+            async def endpoint(second_router_param: int) -> None:  # type: ignore[misc]
+                return None
+
+        app = FastAPI()
+        app.include_router(router)
+        return app
+
+    assert "first_router_param" in api_field_names(build("first_router_param"))
+    names = api_field_names(build("second_router_param"))
+    assert "second_router_param" in names and "first_router_param" not in names
+
+
+def test_cores_app_shares_its_names_and_they_include_the_routers() -> None:
+    from core.errors import api_field_names
+
+    a, b = (
+        create_app(Settings(_env_file=None), load_identity()),
+        create_app(Settings(_env_file=None), load_identity()),
+    )
+    names = api_field_names(a)
+    assert names is api_field_names(b)
+    assert {"messages", "propose_memory", "privacy", "query"} <= names
+
+
+def test_a_parameter_added_by_a_dependency_is_part_of_the_key() -> None:
+    from fastapi import Depends, FastAPI
+
+    from core.errors import api_field_names
+
+    def build(which: str) -> FastAPI:
+        if which == "a":
+
+            def dep(dep_param_a: int) -> int:
+                return dep_param_a
+        else:
+
+            def dep(dep_param_b: int) -> int:  # type: ignore[misc]
+                return dep_param_b
+
+        app = FastAPI()
+
+        @app.get("/d")
+        async def endpoint(value: int = Depends(dep)) -> None:
+            return None
+
+        return app
+
+    assert "dep_param_a" in api_field_names(build("a"))
+    names = api_field_names(build("b"))
+    assert "dep_param_b" in names and "dep_param_a" not in names

@@ -70,17 +70,90 @@ def api_field_names(app: Any) -> frozenset[str]:
     only reads it."""
     cached = getattr(app.state, "aether_api_field_names", None)
     if cached is None:
-        schema = app.openapi()
-        names: set[str] = set()
-        for component in schema.get("components", {}).get("schemas", {}).values():
-            names.update(component.get("properties", {}))
-        for operations in schema.get("paths", {}).values():
-            for operation in operations.values():
-                if isinstance(operation, dict):
-                    names.update(p["name"] for p in operation.get("parameters", ()))
-        cached = frozenset(names)
+        # Apps with the same routes (same paths, methods and endpoint functions: the
+        # same code) have the same schema, so it is built once per process. A test
+        # app with extra routes has another signature and gets its own names.
+        signature = _route_signature(app)
+        cached = _NAMES_BY_ROUTES.get(signature)
+        if cached is None:
+            cached = _names_from_schema(app.openapi())
+            _NAMES_BY_ROUTES[signature] = cached
         app.state.aether_api_field_names = cached
     return cached
+
+
+_NAMES_BY_ROUTES: dict[tuple[object, ...], frozenset[str]] = {}
+
+
+def _route_signature(app: Any) -> tuple[object, ...]:
+    return _routes_signature(app.routes)
+
+
+def _routes_signature(routes: Any) -> tuple[object, ...]:
+    """What decides a set of routes' schema: for each route its path, methods,
+    endpoint (by module and qualified name, so per-app closures of the same code
+    match), body and response models and parameter names; for each included router
+    its prefix, schema options and, recursively, its own routes. The models stay
+    referenced by the cache key, one entry per distinct route set."""
+    signature: list[object] = []
+    for route in routes:
+        inner = getattr(route, "original_router", None)
+        if inner is not None:  # include_router(): FastAPI wraps the router
+            context = getattr(route, "include_context", None)
+            signature.append(
+                (
+                    "router",
+                    getattr(context, "prefix", None),
+                    tuple(getattr(context, "tags", None) or ()),
+                    getattr(context, "include_in_schema", None),
+                    getattr(context, "deprecated", None),
+                    repr(getattr(context, "dependencies", None)),
+                    repr(sorted((getattr(context, "responses", None) or {}).items(), key=str)),
+                    _routes_signature(inner.routes),
+                )
+            )
+            continue
+        fn = getattr(route, "endpoint", None)
+        body = getattr(getattr(route, "body_field", None), "field_info", None)
+        dependant = getattr(route, "dependant", None)
+        params: list[str] = []
+        if dependant is not None:
+            params = _param_names(dependant)
+        signature.append(
+            (
+                type(route).__name__,
+                getattr(route, "path", None),
+                tuple(sorted(getattr(route, "methods", None) or ())),
+                None if fn is None else f"{fn.__module__}.{fn.__qualname__}",
+                getattr(body, "annotation", None),
+                getattr(route, "response_model", None),
+                getattr(route, "include_in_schema", None),
+                repr(sorted((getattr(route, "responses", None) or {}).items(), key=str)),
+                tuple(params),
+            )
+        )
+    return tuple(signature)
+
+
+def _param_names(dependant: Any) -> list[str]:
+    """Parameter names of a route, including those its sub-dependencies (Depends) add."""
+    names: list[str] = []
+    for group in ("path_params", "query_params", "header_params", "cookie_params"):
+        names.extend(p.name for p in getattr(dependant, group, ()))
+    for sub in getattr(dependant, "dependencies", ()):
+        names.extend(_param_names(sub))
+    return names
+
+
+def _names_from_schema(schema: dict[str, Any]) -> frozenset[str]:
+    names: set[str] = set()
+    for component in schema.get("components", {}).get("schemas", {}).values():
+        names.update(component.get("properties", {}))
+    for operations in schema.get("paths", {}).values():
+        for operation in operations.values():
+            if isinstance(operation, dict):
+                names.update(p["name"] for p in operation.get("parameters", ()))
+    return frozenset(names)
 
 
 def _safe_loc(error: Any, known: frozenset[str]) -> list[str]:
