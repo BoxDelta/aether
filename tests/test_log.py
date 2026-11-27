@@ -215,3 +215,23 @@ def test_the_access_log_filter_is_installed_once() -> None:
         configure_logging(settings(), stream=io.StringIO())
     access = logging.getLogger("uvicorn.access")
     assert sum(isinstance(f, AccessLogQueryFilter) for f in access.filters) == 1
+
+
+def test_access_log_filter_works_after_uvicorns_own_logging_setup(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The real order with `uvicorn core.app:create_app --factory`: uvicorn's
+    # dictConfig first, then create_app() configures AETHER's logging (#93).
+    import uvicorn
+
+    from core.identity import load_identity
+
+    uvicorn.Config("core.app:create_app", factory=True).configure_logging()
+    create_app(settings(), load_identity())
+    access = logging.getLogger("uvicorn.access")
+    access.setLevel(logging.INFO)
+    capsys.readouterr()
+    access.info('%s - "%s %s HTTP/%s" %d', "127.0.0.1:1", "GET", "/memory?key=canary_k", "1.1", 422)
+    out = capsys.readouterr().out
+    assert "/memory?<query removed>" in out
+    assert "canary_k" not in out
