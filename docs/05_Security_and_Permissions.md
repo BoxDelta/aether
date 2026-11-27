@@ -101,13 +101,22 @@ confidence is not a substitute for authorization.
     echo the submitted input, and name an unknown field only if the name
     is one of the API's own (`source` sent where it isn't allowed);
     any other name becomes `<unknown field>` (#94).
+-   An unhandled exception answers a generic 500 and is logged with its
+    type and stack frames only, never its message, which can hold request
+    or response values. The server sees a stand-in
+    (`UnhandledRequestError`, type name only), so its own log has no
+    message either (`core/request_context.py`, #124).
 -   Logs redact configured secrets by value (`ANTHROPIC_API_KEY`,
     `AETHER_API_TOKEN`, and the `DATABASE_URL` and
     `DATABASE_MIGRATION_URL` passwords as written and percent-decoded), Anthropic-key-shaped strings, `Bearer <credential>`
     values, and the password in any `scheme://user:password@host` URL,
     configured or not (`core/log.py`; its module docstring is the full
-    list). Database errors are reported from safe parts only
-    (`core/db.py`, ADR-020).
+    list). A record that fails to format or write (a missing argument, a
+    broken `repr`) is never printed raw: the handler writes one fixed
+    stderr line with the exception type and the logging call's location
+    only (#114). Records logged before logging is configured (at import
+    time) still use Python's own fallback. Database errors are
+    reported from safe parts only (`core/db.py`, ADR-020).
 -   The Claude client takes its key and endpoint from AETHER's settings:
     `router/claude.py` passes the API key and the fixed base URL
     `https://api.anthropic.com` explicitly (and `auth_token=None`), so a
@@ -125,8 +134,9 @@ confidence is not a substitute for authorization.
 -   Events hold metadata only: IDs, privacy level, route decision and
     reason, scrubbed error type/message, latency, token counts. They never
     hold prompts, answers, memory content, secrets or tracebacks. This is
-    enforced by typed columns with CHECK constraints, redaction on write,
-    and tests (`core/events.py`, docs/01 §7). Memory events (migration
+    enforced by typed columns with CHECK constraints, redaction on write
+    (before free text is cut to 500 characters, so a secret across the
+    cut is still masked, #115), and tests (`core/events.py`, docs/01 §7). Memory events (migration
     0005, ADR-024 §5) add only IDs, category, source, levels and counts,
     never memory content, keys, corrected text, search queries or
     rejection reasons, and are written in the same transaction as the
@@ -333,7 +343,8 @@ an unusable reply or a store error never fails the answer: the reply's
 error type, never text; records stored before a store failure stay and
 are counted. The proposal call has its own `model.call.completed` (or
 `provider.unavailable`) event, marked with the fixed `route_reason`
-"memory proposal call (ADR-033), not the answer"; a refusal before
+"memory proposal call (ADR-033), not the answer" (plus the off-network
+mark for an off-network Ollama host, #148); a refusal before
 sending writes none. No failover.
 Limit: secret-shaped text in a format `SecretCheck` doesn't know can be
 proposed; it stays pending, is never retrieved, and the owner rejects it.
@@ -452,8 +463,13 @@ proxy environment variables, so it only talks to the host it checked:
     most `personal` (Sensitive requests are refused), gets memory only
     with `allow_cloud` and up to Personal, and its sends get the content
     tripwire. It stays `kind="local"`, so with `allow_cloud` it is still
-    preferred over the cloud when it has headroom. Core logs one
-    fixed-text startup warning that carries no host or other value.
+    preferred over the cloud when it has headroom. Its route reason, in
+    the `/chat` reply and the `model.route.selected` event, ends with
+    "[off-network host: data leaves this network]", so an audit can tell
+    such a send from a local one (#148); so does the memory proposal
+    call's reason in its `model.call.completed` or `provider.unavailable`
+    event. Core logs one fixed-text startup
+    warning that carries no host or other value.
 -   `AETHER_OLLAMA_TRUST_HOST=true` (off by default) trusts such a host
     deliberately, for example a private overlay network; Core then logs
     that the opt-in is active.

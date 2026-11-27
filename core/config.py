@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     # Default local model. Must fit the VRAM budget (Charter: keep >= 1.5 GB of 8 GB free);
     # confirmed on the real PC in the Phase 1 exit check (#23).
     ollama_model: str = Field(default="llama3.1:8b", min_length=1)
+    # Lower memory size limits for Ollama calls (ADR-024 D9, #143), for a small local
+    # model with a short context. Unset: the defaults (20 records, 4000 characters,
+    # router/contract.py), which are also the most these may be.
+    aether_ollama_memory_max_records: int | None = Field(default=None, ge=1, le=20)
+    aether_ollama_memory_max_chars: int | None = Field(default=None, ge=1, le=4000)
     log_level: LogLevel = "INFO"
     # Postgres (ADR-011, ADR-020): postgresql+asyncpg://user:password@host:port/db.
     # Secret because it carries the password; optional until the database is set up.
@@ -119,6 +124,16 @@ class Settings(BaseSettings):
         # `AETHER_OLLAMA_TRUST_HOST=` left empty (as in .env.example) means off.
         if isinstance(value, str) and not value.strip():
             return False
+        return value
+
+    @field_validator(
+        "aether_ollama_memory_max_records", "aether_ollama_memory_max_chars", mode="before"
+    )
+    @classmethod
+    def _empty_limit_is_default(cls, value: object) -> object:
+        # Left empty (as in .env.example): the default limit.
+        if isinstance(value, str) and not value.strip():
+            return None
         return value
 
     @field_validator("log_level", mode="before")

@@ -49,7 +49,11 @@ corrupted volume), not against losing the disk (ADR-025 D4).
 -   prunes old backups: the newest of each of the last 7 days that have a
     backup, plus the newest of each of the 4 weeks before that (ADR-024
     D5). The newest backup is never pruned, and nothing is pruned after a
-    failed run;
+    failed run. An old file that can't be removed is a warning (`Old backup
+    not pruned`), not a failed backup;
+-   runs `pg_dump` and `pg_restore` under the container's own `timeout`,
+    a minute inside the client's (30 and 10 minutes), so a hung dump is
+    stopped in the container too and can't overlap the next run;
 -   logs one JSON line: `Backup completed` with the file name, size and
     counts, or `Backup failed` with the stage and exit code (exit 1). A
     backup under half the size of the previous one adds a warning line.
@@ -200,7 +204,8 @@ echo "SELECT count(*) FROM events WHERE id <= $max" | docker compose exec -T pos
 ```
 
 Triggers and rights: this prints exactly `ok` (else `NOT OK:` and the
-failing checks). It checks both append-only triggers, the app role's
+failing checks). It checks that both append-only triggers exist and are
+enabled, the app role's
 insert and read rights on `events`, that it can't update, delete,
 truncate or add triggers there, its read, insert, update and delete
 rights on `memory_records` (and no truncate, triggers or references),

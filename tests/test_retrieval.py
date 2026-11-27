@@ -1,6 +1,7 @@
 """Memory selection and rendering (ADR-024 §3, step 11 of #58, #139). No database."""
 
 import re
+import unicodedata
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
@@ -264,10 +265,25 @@ def test_headings_are_neutralised(heading: str) -> None:
         f"{bare}\uff1a",  # full-width colon
         f"{bare}\ufe55",  # small colon
         "".join(chr(ord(c) + 0xFEE0) if c.isalpha() else c for c in heading),  # full-width
+        # Combining marks inside the word or before the colon (#140).
+        bare[:3] + "\u0301" + bare[3:] + ":",
+        "".join(c + "\u0308" for c in bare) + ":",
+        f"{bare}\u20dd:",  # enclosing mark (Me)
+        bare[:2] + "\u0301\u0327" + bare[2:] + "\u0301:",
     ]
     for attack in attacks:
         body = render_line(record(attack)).split(") ", 1)[1]
         assert not re.search(re.escape(bare) + r"\s*[:\uff1a]", body, re.IGNORECASE), body
+        plain = "".join(
+            c for c in unicodedata.normalize("NFKD", body) if not unicodedata.combining(c)
+        )
+        assert not re.search(re.escape(bare) + r"\s*[:\uff1a]", plain, re.IGNORECASE), body
+
+
+def test_text_with_marks_but_no_heading_is_unchanged() -> None:
+    # Accents and scripts that need combining marks are kept as they are.
+    for text in ("Café crème", "नमस्ते दुनिया", "Taśk list for today", "Tone deaf"):
+        assert render_line(record(text)).endswith(") " + unicodedata.normalize("NFKC", text))
 
 
 def test_rendered_prompt_has_each_heading_once() -> None:

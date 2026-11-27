@@ -1,5 +1,6 @@
 -- Restore check (docs/runbooks/db-backup-restore.md, ADR-025). Run as the owner
 -- against a restored database; prints exactly "ok" when the append-only triggers
+-- (present and enabled)
 -- and the least-privilege rights (migrations 0003 and 0004) are all in place,
 -- else "NOT OK" and the failing checks. Reads only.
 -- Objects are named with their schema (public), as the migrations create them.
@@ -8,6 +9,7 @@
 WITH c(name, pass) AS (VALUES
     ('triggers', (SELECT count(*) FROM pg_trigger
                   WHERE tgrelid = 'public.events'::regclass AND NOT tgisinternal
+                    AND tgenabled IN ('O', 'A')
                     AND tgname IN ('events_no_update_delete', 'events_no_truncate')) = 2),
     ('app_insert_select', has_table_privilege('aether_app', 'public.events', 'INSERT')
                           AND has_table_privilege('aether_app', 'public.events', 'SELECT')
