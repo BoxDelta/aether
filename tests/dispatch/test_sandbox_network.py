@@ -46,8 +46,11 @@ print("BRIDGE", u.recv(100).decode())
 """
 
 
+SANDBOX_PYTHON = Path("/usr/bin/python3")  # the sandbox sees only /usr and /etc
+
+
 def _bwrap_works() -> bool:
-    if shutil.which("bwrap") is None:
+    if shutil.which("bwrap") is None or not SANDBOX_PYTHON.exists():
         return False
     probe = subprocess.run(
         ["bwrap", "--ro-bind", "/", "/", "--unshare-all", "true"],  # noqa: S607
@@ -57,7 +60,9 @@ def _bwrap_works() -> bool:
     return probe.returncode == 0
 
 
-pytestmark = pytest.mark.skipif(not _bwrap_works(), reason="bubblewrap not usable here")
+needs_sandbox = pytest.mark.skipif(
+    not _bwrap_works(), reason="bubblewrap or /usr/bin/python3 not usable here"
+)
 
 
 @pytest.fixture
@@ -72,15 +77,19 @@ def fake_litellm() -> Iterator[int]:
                 conn, _ = server.accept()
             except OSError:
                 return
-            with conn:
-                conn.recv(100)
-                conn.sendall(b"pong")
+            threading.Thread(target=answer, args=(conn,), daemon=True).start()
+
+    def answer(conn: socket.socket) -> None:  # one thread each: no connection waits
+        with conn:
+            conn.recv(100)
+            conn.sendall(b"pong")
 
     threading.Thread(target=serve, daemon=True).start()
     yield port
     server.close()
 
 
+@needs_sandbox
 def test_no_host_port_is_reachable_and_the_bridge_works(tmp_path: Path, fake_litellm: int) -> None:
     root, work, scratch, gitdir = (tmp_path / n for n in ("root", "work", "scratch", "gitdir"))
     for folder in (root / ".git", work, scratch / "history", gitdir):

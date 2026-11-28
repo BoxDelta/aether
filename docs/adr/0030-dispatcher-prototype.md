@@ -214,7 +214,7 @@ one issue sorted `local` per run.
     real sandbox and checks that Postgres, n8n, Plane, Langfuse, LiteLLM
     and llama-swap ports and the internet are unreachable, and that the
     socket works; it runs on the owner's PC and is skipped in Sentinel
-    (no bubblewrap there). The bridge forwards any LiteLLM path, so the
+    (no `/usr/bin/python3` for the sandbox there). The bridge forwards any LiteLLM path, so the
     dispatcher's LiteLLM key must be a virtual key limited to the model
     `local`, never the master key (#210).
 -   **After Aider**, the host checks that the worktree's `.git` file, the

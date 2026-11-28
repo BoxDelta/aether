@@ -521,8 +521,9 @@ unattended, so it is the main case for this section:
     through a Unix socket bound into the sandbox that forwards to LiteLLM
     and nowhere else; other loopback services (Postgres, n8n, Plane) and
     the internet are unreachable. A test runs the real sandbox and
-    checks this on the owner's PC; Sentinel has no bubblewrap, so there
-    it is skipped and only the sandbox arguments are checked.
+    checks this on the owner's PC; Sentinel's runner has no
+    `/usr/bin/python3` for the sandbox, so there it is skipped and only
+    the sandbox arguments and the bridge are checked.
 -   Tests run in Docker with `--network none`, read-only, no
     capabilities, CPU, memory and process limits, and a hard timeout,
     on an export of exactly the checked index.
