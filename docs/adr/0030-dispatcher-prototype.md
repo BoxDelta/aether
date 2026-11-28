@@ -297,7 +297,7 @@ one issue sorted `local` per run.
     write client allows exactly two calls on this repository (open a
     pull request, add `dispatch:local` or `dispatch:claude`, checked in
     the request body) and refuses anything else before it is sent.
--   **Identity (ADR-041, Accepted):** the token belongs to the machine user
+-   **Identity (ADR-041, Accepted; after the token cut-over):** the token belongs to the machine user
     `boxdelta-dispatch`, so its pull requests and labels show as that
     account. The trust checks read the issue's timeline and count a
     `dispatch:auto` or `dispatch:local-ok` label only if its last
