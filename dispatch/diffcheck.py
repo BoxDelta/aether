@@ -70,7 +70,7 @@ def parse(diff: str) -> tuple[list[str], list[str], list[str]]:
     lines: list[str] = []
     problems: list[str] = []
     in_hunk = False
-    for raw in diff.splitlines():
+    for raw in diff.split("\n"):  # only \n: splitlines() also splits on \r, \x1c..
         if raw.startswith("diff --git "):
             in_hunk = False
             paths += _header_paths(raw, problems)
@@ -106,6 +106,8 @@ def _block_reason(  # noqa: PLR0911 - one return per check, in a fixed order
     rule = rules.content_rule("\n".join(lines))
     if rule is not None:
         return f"changed lines: {rule}"
+    if any("gitleaks:allow" in line.lower() for line in lines):
+        return "changed lines: a gitleaks:allow marker (it would hide a secret)"
     if len(files) > MAX_FILES:
         return f"{len(files)} files, more than {MAX_FILES}"
     if len(lines) > MAX_LINES:

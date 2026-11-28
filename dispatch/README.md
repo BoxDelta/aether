@@ -78,12 +78,17 @@ trust, the always-Claude list and `dispatch:local-ok` are checked again.
     (git-ignored, removed after the try), branch `dispatch/<n>-<slug>`.
 2.  Aider (`openai/local` through LiteLLM, thinking off) in bubblewrap:
     only `/usr` and `/etc` from the host, read-only, no `/run`, an empty
-    home, only the worktree writable, the git dirs read-only, an
-    environment holding only the LiteLLM URL and key. No GitHub token,
-    no webhook. It shares the host network (the model is on loopback).
+    home, only the worktree writable, the git dirs read-only, no
+    credential (a dummy LiteLLM key). No GitHub token, no webhook, no
+    network: the model is reached through a Unix socket (`bridge.py`)
+    that forwards only `POST /v1/chat/completions` (model `local`, only
+    Aider's body keys) to LiteLLM and adds the real key itself; anything
+    else gets 403.
     Afterwards the host checks the git files are unchanged.
-3.  The fixed path check (`diffcheck.py`) on the staged diff. Blocked →
-    brief, label `dispatch:claude`, nothing pushed.
+3.  The fixed path check (`diffcheck.py`) on the staged diff, then
+    gitleaks on the export of the staged index. Blocked → brief, label
+    `dispatch:claude`, nothing pushed. gitleaks comes from `PATH` or the
+    one pre-commit built (`uv run pre-commit run gitleaks` once).
 4.  ruff, mypy and pytest in Docker: `--network none`, `--read-only`,
     `--cap-drop ALL`, a hard timeout, on an export of exactly the staged
     index (read-only). The image

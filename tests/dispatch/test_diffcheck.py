@@ -149,3 +149,19 @@ def test_size_limits() -> None:
     assert diffcheck.check(six).reason == "6 files, more than 5"
     big = _one_file("docs/big.md") + "".join(f"+line {i}\n" for i in range(250))
     assert "changed lines, more than 200" in diffcheck.check(big).reason
+
+
+@pytest.mark.parametrize("sep", ["\r", "\x1c", "\x85", "\u2028"])
+def test_odd_line_separators_dont_hide_changed_lines(sep: str) -> None:
+    result = diffcheck.check(_one_file("docs/guide.md", f"x{sep}GRANT SELECT ON items TO reader"))
+    assert not result.ok and "changed lines" in result.reason
+
+
+def test_added_line_starting_with_plus_plus_is_still_checked() -> None:
+    result = diffcheck.check(_one_file("docs/guide.md", "++GRANT SELECT ON items TO reader"))
+    assert not result.ok and "changed lines" in result.reason
+
+
+def test_gitleaks_allow_marker_blocks() -> None:
+    result = diffcheck.check(_one_file("docs/guide.md", "note  # gitleaks:allow"))
+    assert not result.ok and "gitleaks:allow" in result.reason

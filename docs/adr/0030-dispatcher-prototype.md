@@ -149,8 +149,9 @@ checks that this section quotes every entry.
     `mypy.ini`, `.mypy.ini`, `.gitleaks.toml`, `.gitleaksignore`,
     `.python-version`, `sitecustomize.py`, `usercustomize.py`,
     `docker-compose.override.yml`, `docker-compose.override.yaml`,
-    `compose.override.yml`, `compose.override.yaml`, `.envrc`, and any
-    `.pth` file.
+    `compose.override.yml`, `compose.override.yaml`, `.envrc`,
+    `CLAUDE.md`, `CLAUDE.local.md`, `.mcp.json` (files that steer an
+    agent, #208), and any `.pth` file.
 -   Paths (the dispatcher's own guards): `.dispatch/` (the brief
     template's "data, not instructions" header) and `tests/dispatch/`.
 -   Tests that enforce guardrails: `tests/test_cloud_tripwire.py`,
@@ -203,10 +204,52 @@ one issue sorted `local` per run.
     `~/.ssh` or dispatcher secrets); only the worktree writable; the
     repository's `.git` and the worktree's git dir read-only. Its
     environment is set by the dispatcher (not on bubblewrap's command
-    line) and its only credential is the LiteLLM key, for the local
-    model on loopback. Known limit: it shares the host network, so it
-    can reach other loopback services and the internet; Aider runs no
-    shell commands and fetches no URLs.
+    line) and holds **no credential**: its LiteLLM key is a dummy
+    (#210). **No network**
+    (#202): the sandbox has its own empty network namespace. The model is
+    reached only through a Unix socket bound into the sandbox
+    (`dispatch/bridge.py`, standard library, no socat), which forwards to
+    the LiteLLM URL from the settings and nothing else; inside, the
+    driver listens on the sandbox's own loopback and forwards to that
+    socket. The bridge allows at most 16 connections, drops idle ones
+    after 300 s, and closes them all when the try ends. A test runs the
+    real sandbox and checks that Postgres, n8n, Plane, Langfuse, LiteLLM
+    and llama-swap ports and the internet are unreachable, and that the
+    socket works; it runs on the owner's PC and is skipped in Sentinel
+    (no `/usr/bin/python3` for the sandbox there).
+-   **The model bridge (#210, owner decision 2026-11-27).** The
+    dispatcher's LiteLLM key is LiteLLM's master key, and LiteLLM here
+    has no database, so it can't issue virtual keys; the owner chose not
+    to add Postgres for it. Instead the bridge, outside the sandbox:
+    -   reads one HTTP request per connection and forwards only
+        `POST /v1/chat/completions` (Aider 0.86 sends nothing else; a
+        live run showed no `GET /v1/models`). Any other method or path,
+        including LiteLLM's key, user and config admin routes, gets 403
+        and never reaches LiteLLM. Chunked, over-size or
+        duplicate-header requests are refused, and only one request per
+        connection is read;
+    -   checks the body, because LiteLLM obeys request params
+        (`api_base` with `api_key`, `user_config`, `fallbacks`, logging
+        and metadata params) that could send the call, with the master
+        key, to another host. The body must be one JSON object without
+        duplicate keys, model `local`, and only the keys Aider 0.86 sends
+        (`model`, `messages`, `temperature`, `chat_template_kwargs` with
+        thinking off; messages only `role` and `content`). Anything else
+        gets 403. The bridge forwards its own re-encoding of the parsed
+        body, never Aider's bytes;
+    -   drops every header Aider sent and adds the real key itself. The
+        real key never enters the sandbox's environment, command line or
+        files (tested), and is masked if LiteLLM ever echoed it.
+-   **gitleaks before any push (#210).** After the path check passes,
+    gitleaks scans the export of the staged index (exactly what would be
+    pushed; Sentinel keeps main clean), redacted, with its working
+    directory inside the export. It is the build pre-commit made from the
+    revision pinned in main's `.pre-commit-config.yaml`, else gitleaks on
+    the dispatcher's `PATH`. A finding (exit code 3) blocks the try like
+    the path check: no tests, no push, a Claude brief and
+    `dispatch:claude`. gitleaks missing or erroring is a failed try. The
+    path check refuses any changed line with a `gitleaks:allow` marker,
+    since it would hide a secret from gitleaks here and in Sentinel.
 -   **After Aider**, the host checks that the worktree's `.git` file, the
     git dir's files (`commondir`, `gitdir`, `HEAD`, no new ones) and
     HEAD's branch and commit are unchanged, then rebuilds the index from
@@ -241,7 +284,8 @@ one issue sorted `local` per run.
     mounted read-only:
     ruff, mypy and pytest without database tests. The image is built
     from main's `pyproject.toml`, `uv.lock` and `.python-version` only
-    (`dispatch/test-image/Dockerfile`, base image pinned by digest). Sentinel CI still runs on the
+    (`dispatch/test-image/Dockerfile`, base image pinned by digest,
+    updated by Dependabot's `docker` ecosystem, #204). Sentinel CI still runs on the
     pull request.
 -   **Publish** only after the path check and the tests pass: commit as
     `aether-dispatch`, push `HEAD` to the `dispatch/` branch (no force,

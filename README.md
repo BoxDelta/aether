@@ -120,10 +120,25 @@ Usage: `safemerge <PR number> [reviewed commit sha]`. It:
     characters, so wildcards like `*` and one-character prefixes are
     refused. It stops unless the head starts with exactly those
     characters, so a push after your review is never merged unseen.
-4.  Waits for every check on the PR (`gh pr checks --watch --fail-fast`)
+4.  Reads the PR's author (`gh pr view`); it stops if that fails.
+    -   Author `BoxDelta`: the merge uses `--admin`, because the owner has
+        no second reviewer once protect-main requires an approval (ADR-041,
+        #214). The reviewed commit is then **required**: without it the
+        owner PR is not merged, so a push after your review (for example
+        by `boxdelta-dispatch`) is never merged with the bypass. Before
+        merging it also checks that Sentinel's `checks` and `secrets`
+        jobs both succeeded, because `--admin` skips GitHub's required
+        checks.
+    -   Any other author (`boxdelta-dispatch`, Dependabot): it stops unless
+        BoxDelta's latest review is an approval **of exactly this head
+        commit**. A later change request, a dismissed approval or an
+        approval of an older commit does not count. The approval is read
+        again after the checks finish, in case you changed your review
+        while they ran. The merge then runs without `--admin`.
+5.  Waits for every check on the PR (`gh pr checks --watch --fail-fast`)
     and stops on the first failure. With no checks reported at all,
     `gh` (2.104.0) exits 1 ("no checks reported"), so it stops then too.
-5.  Merges with a merge commit and deletes the branch, using
+    Merges with a merge commit and deletes the branch, using
     `--match-head-commit <head>`: GitHub refuses the merge if the head
     moved since step 2.
 6.  If run inside the aether checkout (`origin` is `BoxDelta/aether`), it

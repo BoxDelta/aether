@@ -1,6 +1,7 @@
 """The local path (ADR-030 step 4b) against a real temporary git repository, with
 Aider, Docker and the push replaced by fakes. No network."""
 
+import secrets
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -8,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from dispatch import local
+from dispatch import bridge, local
 from dispatch.config import DispatchSettings
 from dispatch.github import Issue
 from tests.dispatch.helpers import OWNER, make_settings
@@ -44,13 +45,24 @@ def repo(tmp_path: Path) -> Path:
     return clone
 
 
+FAKE_GITLEAKS = "/fake/bin/gitleaks"
+
+
+@pytest.fixture(autouse=True)
+def _fake_gitleaks(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> None:
+    if not request.node.name.startswith("test_real_gitleaks"):
+        monkeypatch.setattr(local, "gitleaks_path", lambda _root: Path(FAKE_GITLEAKS))
+
+
 @dataclass
 class FakeTools:
     """Runs git for real; fakes bubblewrap+Aider (an edit), Docker and the push."""
 
     edit: Edit
     tests_pass: bool = True
+    leak: bool = False  # what the fake gitleaks answers
     calls: list[tuple[list[str], dict[str, str]]] = field(default_factory=list)
+    sandbox_files: dict[str, str] = field(default_factory=dict)
 
     def __call__(
         self, args: Sequence[str], env: Mapping[str, str], cwd: Path | None, timeout: float
@@ -59,8 +71,14 @@ class FakeTools:
         self.calls.append((argv, environ))
         if argv[0] == "bwrap":
             assert cwd is not None
+            scratch = Path(argv[-1]).parent  # config.json: what Aider can read
+            for path in scratch.rglob("*"):
+                if path.is_file():
+                    self.sandbox_files[str(path)] = path.read_text("utf-8", "replace")
             self.edit(cwd)
             return local.Result(0, "", "")
+        if argv[0] == FAKE_GITLEAKS:
+            return local.Result(local.GITLEAKS_FINDING if self.leak else 0, "", "")
         if argv[0] == "docker":
             ok = self.tests_pass or argv[1] == "image"
             return local.Result(0 if ok else 1, "" if ok else "1 failed", "")
@@ -201,13 +219,15 @@ def test_aider_gets_no_github_token_or_webhook(repo: Path, tmp_path: Path) -> No
     assert settings.dispatch_discord_webhook is not None
     assert settings.dispatch_discord_webhook.get_secret_value() not in joined
     assert set(env) == {
-        "HOME", "PATH", "LANG", "TERM", "OPENAI_API_BASE", "OPENAI_API_KEY",
+        "HOME", "PATH", "LANG", "TERM", "OPENAI_API_KEY",
         "LITELLM_LOCAL_MODEL_COST_MAP",
     }  # fmt: skip
     key = settings.dispatch_litellm_key.get_secret_value()
-    assert env["OPENAI_API_KEY"] == key and key not in args  # not on the command line
+    assert key not in joined  # the bridge adds it outside the sandbox (#210)
+    assert env["OPENAI_API_KEY"] == bridge.SANDBOX_KEY
     assert args[1:3] == ["--ro-bind", "/usr"]  # not the whole filesystem
     assert "/run" not in args and "/var" not in args
+    assert "--unshare-all" in args and "--share-net" not in args  # no network (#202)
     home = str(Path.home())
     assert args[args.index(home) - 1] == "--tmpfs"  # empty home: no ~/.config, ~/.ssh
     assert args[args.index(str(repo / ".git")) - 1] == "--ro-bind"  # hooks and config read-only
@@ -294,3 +314,96 @@ def test_config_carries_the_message_and_files(tmp_path: Path) -> None:
     assert config["files"] == ["docs/guide.md"]
     assert config["model"] == "openai/local"
     assert str(config["message"]).startswith("Make the smallest change")
+
+
+def test_a_model_url_the_bridge_refuses_is_a_failed_try(repo: Path, tmp_path: Path) -> None:
+    settings = make_settings(tmp_path).model_copy(
+        update={"dispatch_litellm_url": "https://127.0.0.1:4000"}
+    )
+    outcome = _path(repo, settings, FakeTools(_fix_typo)).attempt(ISSUE, _never)
+    assert outcome.kind == "failed"
+    assert "model bridge" in outcome.reason
+
+
+def test_key_never_in_the_sandbox_files(repo: Path, tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    tools = FakeTools(_fix_typo)
+    _path(repo, settings, tools).attempt(ISSUE, lambda b: 1)
+    key = settings.dispatch_litellm_key.get_secret_value()
+    assert tools.sandbox_files  # config.json, the driver, model settings
+    assert not any(key in text for text in tools.sandbox_files.values())
+
+
+def test_gitleaks_finding_blocks_before_tests_and_push(repo: Path, tmp_path: Path) -> None:
+    tools = FakeTools(_fix_typo, leak=True)
+    outcome = _path(repo, make_settings(tmp_path), tools).attempt(ISSUE, _never)
+    assert outcome.kind == "blocked"
+    assert "gitleaks" in outcome.reason
+    assert not any(c[0][0] == "docker" and c[0][1] == "run" for c in tools.calls)
+    assert not any("push" in c[0] for c in tools.calls)
+
+
+def test_missing_gitleaks_is_a_failed_try(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(local, "gitleaks_path", lambda _root: None)
+    outcome = _path(repo, make_settings(tmp_path), FakeTools(_fix_typo)).attempt(ISSUE, _never)
+    assert outcome.kind == "failed" and "gitleaks not found" in outcome.reason
+
+
+def _fake_secret() -> str:
+    # Built at run time so no secret-shaped literal is committed (gitleaks).
+    return "ghp_" + "".join(
+        secrets.choice("ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789")
+        for _ in range(36)
+    )
+
+
+@pytest.mark.skipif(local.gitleaks_path(local.ROOT) is None, reason="gitleaks not installed")
+def test_real_gitleaks_blocks_a_diff_with_a_fake_secret(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = local.gitleaks_path(local.ROOT)  # the temp repo has no pre-commit config
+    monkeypatch.setattr(local, "gitleaks_path", lambda _root: real)
+
+    def leak(work: Path) -> None:
+        _fix_typo(work)
+        (work / "docs" / "guide.md").write_text(
+            f"The reply is streamed back.\ntoken = {_fake_secret()}\n"
+        )
+
+    tools = FakeTools(leak)
+    outcome = _path(repo, make_settings(tmp_path), tools).attempt(ISSUE, _never)
+    assert outcome.kind == "blocked" and "gitleaks" in outcome.reason, outcome
+    clean = FakeTools(_fix_typo)
+    assert _path(repo, make_settings(tmp_path), clean).attempt(ISSUE, lambda b: 1).kind == "opened"
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["++token = SECRET", "+x\rtoken = SECRET", "x\x1ctoken = SECRET"],
+    ids=["plus-plus", "carriage-return", "file-separator"],
+)
+def test_real_gitleaks_sees_lines_a_diff_parser_could_miss(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, line: str
+) -> None:
+    real = local.gitleaks_path(local.ROOT)
+    if real is None:
+        pytest.skip("gitleaks not installed")
+    monkeypatch.setattr(local, "gitleaks_path", lambda _root: real)
+
+    def leak(work: Path) -> None:
+        text = "The reply is streamed back.\n" + line.replace("SECRET", _fake_secret()) + "\n"
+        (work / "docs" / "guide.md").write_text(text)
+
+    outcome = _path(repo, make_settings(tmp_path), FakeTools(leak)).attempt(ISSUE, _never)
+    assert outcome.kind == "blocked", outcome
+
+
+def test_gitleaks_allow_marker_is_blocked(repo: Path, tmp_path: Path) -> None:
+    def marker(work: Path) -> None:
+        (work / "docs" / "guide.md").write_text("The reply is streamed back. # GitLeaks:Allow\n")
+
+    tools = FakeTools(marker)
+    outcome = _path(repo, make_settings(tmp_path), tools).attempt(ISSUE, _never)
+    assert outcome.kind == "blocked" and "gitleaks:allow" in outcome.reason

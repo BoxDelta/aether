@@ -75,6 +75,11 @@
       "Edit(/.pre-commit-config.yaml)",
       "Edit(/.claude/agents/**)",
       "Edit(/.claude/commands/**)",
+      "Edit(/.claude/skills/**)",
+      "Edit(/.claude/rules/**)",
+      "Edit(/**/CLAUDE.md)",
+      "Edit(/**/CLAUDE.local.md)",
+      "Edit(/.mcp.json)",
       "Edit(/scripts/safemerge.fish)"
     ]
   }
