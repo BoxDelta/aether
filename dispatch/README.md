@@ -77,13 +77,16 @@ trust, the always-Claude list and `dispatch:local-ok` are checked again.
 1.  A fresh worktree from `origin/main` in `.dispatch/worktrees/<n>`
     (git-ignored, removed after the try), branch `dispatch/<n>-<slug>`.
 2.  Aider (`openai/local` through LiteLLM, thinking off) in bubblewrap:
-    read-only filesystem, empty home, only the worktree and its git index
-    writable, the repository's `.git` read-only, a cleared environment
-    holding only the LiteLLM URL and key. No GitHub token, no webhook.
+    only `/usr` and `/etc` from the host, read-only, no `/run`, an empty
+    home, only the worktree writable, the git dirs read-only, an
+    environment holding only the LiteLLM URL and key. No GitHub token,
+    no webhook. It shares the host network (the model is on loopback).
+    Afterwards the host checks the git files are unchanged.
 3.  The fixed path check (`diffcheck.py`) on the staged diff. Blocked →
     brief, label `dispatch:claude`, nothing pushed.
 4.  ruff, mypy and pytest in Docker: `--network none`, `--read-only`,
-    `--cap-drop ALL`, the worktree read-only. The image
+    `--cap-drop ALL`, a hard timeout, on an export of exactly the staged
+    index (read-only). The image
     (`aether-dispatch-test:<hash of the lock files>`) is built once from
     main's `pyproject.toml`, `uv.lock` and `.python-version`.
 5.  Commit as `aether-dispatch`, push the branch (token in an HTTP header

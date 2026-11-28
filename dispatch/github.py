@@ -22,11 +22,10 @@ LOCAL_OK_LABEL = "dispatch:local-ok"
 LOCAL_PR_LABEL = "dispatch:local"
 CLAUDE_LABEL = "dispatch:claude"
 READ_METHODS = frozenset({"GET"})
-# Step 4b writes, as (method, path pattern). Anything else is refused before it is sent.
-_WRITE_ALLOWED = (
-    ("POST", re.compile(r"/repos/[\w.-]+/[\w.-]+/pulls")),
-    ("POST", re.compile(r"/repos/[\w.-]+/[\w.-]+/issues/\d+/labels")),
-)
+# Step 4b writes. Anything else is refused before it is sent. The label body is
+# checked too: the dispatcher's fine-grained token acts as the owner, so GitHub's
+# event history can't tell its labels from the owner's (ADR-030 §Trust).
+ALLOWED_LABEL_BODIES = (b'{"labels":["dispatch:local"]}', b'{"labels":["dispatch:claude"]}')
 TIMEOUT_S = 20.0
 MAX_PAGES = 20
 
@@ -57,21 +56,32 @@ def _refuse_writes(request: httpx.Request) -> None:
         raise GitHubError("refused a request outside api.github.com")
 
 
-def _refuse_other_writes(request: httpx.Request) -> None:
-    if request.url.host != API_HOST or request.url.scheme != "https":
-        raise GitHubError("refused a request outside api.github.com")
-    if request.method in READ_METHODS:
-        return
-    path = request.url.path
-    if not any(request.method == m and p.fullmatch(path) for m, p in _WRITE_ALLOWED):
-        raise GitHubError(f"refused {request.method}: not an allowed dispatcher write")
+def _write_guard(settings: DispatchSettings) -> Callable[[httpx.Request], None]:
+    repo = re.escape(_repo_path(settings))
+    pulls = re.compile(repo + r"/pulls")
+    labels = re.compile(repo + r"/issues/\d+/labels")
+
+    def guard(request: httpx.Request) -> None:
+        if request.url.host != API_HOST or request.url.scheme != "https":
+            raise GitHubError("refused a request outside api.github.com")
+        if request.method in READ_METHODS:
+            return
+        path, body = request.url.path, request.content.replace(b" ", b"")
+        allowed = request.method == "POST" and (
+            pulls.fullmatch(path) is not None
+            or (labels.fullmatch(path) is not None and body in ALLOWED_LABEL_BODIES)
+        )
+        if not allowed:
+            raise GitHubError(f"refused {request.method}: not an allowed dispatcher write")
+
+    return guard
 
 
 def make_write_client(
     settings: DispatchSettings, transport: httpx.BaseTransport | None = None
 ) -> httpx.Client:
-    """For step 4b only: GET, open a pull request, add labels. Nothing else."""
-    return _client(settings, _refuse_other_writes, transport)
+    """For step 4b only: GET, open a pull request, add a dispatcher label. Nothing else."""
+    return _client(settings, _write_guard(settings), transport)
 
 
 def make_client(

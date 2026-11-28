@@ -146,7 +146,45 @@ def test_changed_dotgit_file_blocks(repo: Path, tmp_path: Path) -> None:
 
     outcome = _path(repo, make_settings(tmp_path), FakeTools(hijack)).attempt(ISSUE, _never)
     assert outcome.kind == "blocked"
-    assert "the worktree's .git file changed" in outcome.reason
+    assert "the worktree's git files changed" in outcome.reason
+
+
+def _gitdir(work: Path) -> Path:
+    return Path((work / ".git").read_text().split(":", 1)[1].strip())
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        lambda g: (g / "commondir").write_text("../../fake\n"),
+        lambda g: (g / "HEAD").write_text("ref: refs/heads/main\n"),
+        lambda g: (g / "config.worktree").write_text("[core]\n\tfsmonitor = evil\n"),
+    ],
+    ids=["commondir", "HEAD", "new-config"],
+)
+def test_changed_git_dir_blocks(
+    repo: Path, tmp_path: Path, tamper: Callable[[Path], object]
+) -> None:
+    def edit(work: Path) -> None:
+        _fix_typo(work)
+        tamper(_gitdir(work))
+
+    tools = FakeTools(edit)
+    outcome = _path(repo, make_settings(tmp_path), tools).attempt(ISSUE, _never)
+    assert outcome.kind == "blocked"
+    assert not any("push" in c[0] for c in tools.calls)
+
+
+def test_git_ignores_global_config_and_hooks(repo: Path, tmp_path: Path) -> None:
+    tools = FakeTools(_fix_typo)
+    _path(repo, make_settings(tmp_path), tools).attempt(ISSUE, lambda b: 1)
+    wrapped = [c for c in tools.calls if c[0][0] == "git" and "core.hooksPath=/dev/null" in c[0]]
+    assert wrapped
+    for args, env in wrapped:
+        assert env["GIT_CONFIG_GLOBAL"] == "/dev/null"
+        assert "core.fsmonitor=false" in args
+    push, _ = tools.first("push")
+    assert "protocol.allow=never" in push and "http.followRedirects=false" in push
 
 
 def _never(branch: str) -> int:
@@ -162,11 +200,19 @@ def test_aider_gets_no_github_token_or_webhook(repo: Path, tmp_path: Path) -> No
     assert settings.dispatch_github_token.get_secret_value() not in joined
     assert settings.dispatch_discord_webhook is not None
     assert settings.dispatch_discord_webhook.get_secret_value() not in joined
-    assert env == {"PATH": "/usr/bin:/bin"}
-    assert "--clearenv" in args
+    assert set(env) == {
+        "HOME", "PATH", "LANG", "TERM", "OPENAI_API_BASE", "OPENAI_API_KEY",
+        "LITELLM_LOCAL_MODEL_COST_MAP",
+    }  # fmt: skip
+    key = settings.dispatch_litellm_key.get_secret_value()
+    assert env["OPENAI_API_KEY"] == key and key not in args  # not on the command line
+    assert args[1:3] == ["--ro-bind", "/usr"]  # not the whole filesystem
+    assert "/run" not in args and "/var" not in args
     home = str(Path.home())
     assert args[args.index(home) - 1] == "--tmpfs"  # empty home: no ~/.config, ~/.ssh
     assert args[args.index(str(repo / ".git")) - 1] == "--ro-bind"  # hooks and config read-only
+    gitdirs = [a for a in args if "/.git/worktrees/" in a]
+    assert gitdirs and all(args[args.index(g) - 1] == "--ro-bind" for g in gitdirs)
     python, isolated, driver, config = args[-4:]
     assert (python, isolated) == (str(local.AIDER_PYTHON), "-I")
     scratch = Path(driver).parent
@@ -181,10 +227,13 @@ def test_tests_run_without_network_or_secrets(repo: Path, tmp_path: Path) -> Non
     tools = FakeTools(_fix_typo)
     _path(repo, settings, tools).attempt(ISSUE, lambda b: 1)
     args, env = next(c for c in tools.calls if c[0][:2] == ["docker", "run"])
+    name = args[args.index("--name") + 1]
+    assert ["docker", "kill", name] in [c[0] for c in tools.calls]  # never left running
+    assert args[args.index("timeout") : args.index("timeout") + 3] == ["timeout", "-s", "KILL"]
     assert args[args.index("--network") + 1] == "none"
     assert "--read-only" in args and args[args.index("--cap-drop") + 1] == "ALL"
     volume = args[args.index("--volume") + 1]
-    assert volume.endswith(":/src:ro")
+    assert volume.endswith("/export:/src:ro")  # the checked index, not the worktree
     assert settings.dispatch_github_token.get_secret_value() not in "\n".join(
         [*args, *env.values()]
     )

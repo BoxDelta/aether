@@ -223,3 +223,22 @@ def test_local_ok_needs_the_owner(tmp_path: Path) -> None:
         assert (
             github.check_local_ok(client, settings, no_label).reason == "no dispatch:local-ok label"
         )
+
+
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        (f"/repos/{OWNER}/aether/issues/5/labels", {"labels": ["dispatch:local-ok"]}),
+        (f"/repos/{OWNER}/aether/issues/5/labels", {"labels": ["dispatch:local", "security"]}),
+        ("/repos/someone/else/pulls", {"title": "t"}),
+        ("/repos/someone/else/issues/5/labels", {"labels": ["dispatch:local"]}),
+    ],
+)
+def test_write_guard_checks_label_bodies_and_the_repo(
+    tmp_path: Path, path: str, body: dict[str, object]
+) -> None:
+    seen: list[httpx.Request] = []
+    client, _ = _write_client(tmp_path, seen)
+    with client, pytest.raises(github.GitHubError, match="not an allowed"):
+        client.post(path, json=body)
+    assert seen == []

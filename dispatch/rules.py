@@ -87,6 +87,33 @@ CORE_FILES: tuple[str, ...] = (
     "ready.py",
     "request_context.py",
 )
+# File names guarded wherever they are: git control files, test and lint config that
+# can switch off guardrail tests or Sentinel rules, Python start-up hooks, Compose
+# overrides, the secret-scan config (security review of step 4b).
+GUARDED_NAMES: tuple[str, ...] = (
+    ".gitignore",
+    ".gitattributes",
+    ".gitmodules",
+    "conftest.py",
+    "pytest.ini",
+    "tox.ini",
+    "setup.cfg",
+    "ruff.toml",
+    ".ruff.toml",
+    "mypy.ini",
+    ".mypy.ini",
+    ".gitleaks.toml",
+    ".gitleaksignore",
+    ".python-version",
+    "sitecustomize.py",
+    "usercustomize.py",
+    "docker-compose.override.yml",
+    "docker-compose.override.yaml",
+    "compose.override.yml",
+    "compose.override.yaml",
+    ".envrc",
+)
+GUARDED_SUFFIXES: tuple[str, ...] = (".pth",)
 # Auth code anywhere: a path part (folder or file name) containing one of these.
 AUTH_PARTS: tuple[str, ...] = (
     "auth",
@@ -205,6 +232,9 @@ def _listed_path(clean: str) -> str | None:
 def path_rule(path: str) -> str | None:
     """The rule a changed file path matches, or None. For local diffs (step 4b)."""
     clean = path.removeprefix("./")
+    name = clean.rsplit("/", 1)[-1]
+    if name in GUARDED_NAMES or name.endswith(GUARDED_SUFFIXES):
+        return f"guarded file name {name}"
     listed = _listed_path(clean)
     if listed is None and clean.removeprefix("core/") in CORE_FILES and clean.startswith("core/"):
         listed = clean
@@ -213,7 +243,6 @@ def path_rule(path: str) -> str | None:
     word = _auth_part(clean)
     if word is not None:
         return f"auth code (path has '{word}')"
-    name = clean.rsplit("/", 1)[-1]
     if name in DEPENDENCY_FILES or _REQUIREMENTS.fullmatch(name):
         return f"adds a dependency (path {name})"
     return None

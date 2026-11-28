@@ -141,6 +141,16 @@ checks that this section quotes every entry.
     `docs/runbooks/encrypted-volume.md`.
 -   Paths (owner-guarded in CODEOWNERS): `SECURITY.md`, `LICENSE`,
     `NOTICE`.
+-   File names guarded anywhere in the tree (git control files, test and
+    lint config that can switch off guardrail tests or Sentinel rules,
+    Python start-up hooks, Compose overrides, the secret-scan config):
+    `.gitignore`, `.gitattributes`, `.gitmodules`, `conftest.py`,
+    `pytest.ini`, `tox.ini`, `setup.cfg`, `ruff.toml`, `.ruff.toml`,
+    `mypy.ini`, `.mypy.ini`, `.gitleaks.toml`, `.gitleaksignore`,
+    `.python-version`, `sitecustomize.py`, `usercustomize.py`,
+    `docker-compose.override.yml`, `docker-compose.override.yaml`,
+    `compose.override.yml`, `compose.override.yaml`, `.envrc`, and any
+    `.pth` file.
 -   Paths (the dispatcher's own guards): `.dispatch/` (the brief
     template's "data, not instructions" header) and `tests/dispatch/`.
 -   Tests that enforce guardrails: `tests/test_cloud_tripwire.py`,
@@ -187,11 +197,23 @@ one issue sorted `local` per run.
     named `dispatch/<issue>-<short-name>`, under `.dispatch/worktrees/`
     (git-ignored). It has no `.env`, and it is removed after each try.
 -   **Aider** (0.86, installed with `uv tool install`, outside the
-    repository) runs in bubblewrap: read-only filesystem, an empty home
-    (no `~/.config`, `~/.ssh` or dispatcher secrets), the worktree and
-    its own git index writable, the repository's `.git` (config, hooks)
-    read-only, a cleared environment. Its only credential is the
-    LiteLLM key, for the local model on loopback. It never gets the
+    repository) runs in bubblewrap: only `/usr` and `/etc` from the host,
+    read-only; no `/run`, `/var`, `/mnt` or `/media` (so no Docker
+    socket, D-Bus or agent sockets); an empty home (no `~/.config`,
+    `~/.ssh` or dispatcher secrets); only the worktree writable; the
+    repository's `.git` and the worktree's git dir read-only. Its
+    environment is set by the dispatcher (not on bubblewrap's command
+    line) and its only credential is the LiteLLM key, for the local
+    model on loopback. Known limit: it shares the host network, so it
+    can reach other loopback services and the internet; Aider runs no
+    shell commands and fetches no URLs.
+-   **After Aider**, the host checks that the worktree's `.git` file, the
+    git dir's files (`commondir`, `gitdir`, `HEAD`, no new ones) and
+    HEAD's branch and commit are unchanged, then rebuilds the index from
+    HEAD before staging. Host git runs with `GIT_CONFIG_GLOBAL=/dev/null`,
+    no system config, no hooks (`core.hooksPath=/dev/null`; Sentinel's
+    `secrets` job checks the pull request instead) and no fsmonitor;
+    the diff uses `--no-textconv`. It never gets the
     GitHub token or the Discord webhook. It runs through Aider's
     scripting API (`dispatch/aider_driver.py`, copied from the clone,
     run with Aider's own Python in isolated mode): auto commits, dirty
@@ -213,18 +235,29 @@ one issue sorted `local` per run.
     issue gets a Claude brief and the label `dispatch:claude`.
     Tests: one diff that passes and one that blocks, and each rule.
 -   **Tests** run in Docker with `--network none`, `--read-only`, no
-    capabilities, as the owner's user, the worktree mounted read-only:
+    capabilities, `--init`, CPU, memory and process limits, a hard
+    `timeout -s KILL` inside and `docker kill` after, as the owner's
+    user, on an export of exactly the staged index (`git checkout-index`)
+    mounted read-only:
     ruff, mypy and pytest without database tests. The image is built
     from main's `pyproject.toml`, `uv.lock` and `.python-version` only
-    (`dispatch/test-image/Dockerfile`). Sentinel CI still runs on the
+    (`dispatch/test-image/Dockerfile`, base image pinned by digest). Sentinel CI still runs on the
     pull request.
 -   **Publish** only after the path check and the tests pass: commit as
     `aether-dispatch`, push `HEAD` to the `dispatch/` branch (no force,
     never `main`; the token goes in an HTTP header through git's
     environment, never on the command line or in a file), open a pull
     request into `main` with `Refs #<n>`, and label it `dispatch:local`.
-    The GitHub write client allows exactly two calls (open a pull
-    request, add a label) and refuses anything else before it is sent.
+    The push allows only HTTPS, no redirects and no tags. The GitHub
+    write client allows exactly two calls on this repository (open a
+    pull request, add `dispatch:local` or `dispatch:claude`, checked in
+    the request body) and refuses anything else before it is sent.
+-   **Known limit (trust):** the token is a fine-grained personal access
+    token, so GitHub records its actions as the owner's. The label
+    history can't tell a label the dispatcher added from one the owner
+    added; only the write client's checks stop it adding
+    `dispatch:auto` or `dispatch:local-ok`. A separate machine user or
+    GitHub App would fix that.
     Review is unchanged: Sentinel, `reviewer`, `security-reviewer` where
     `CLAUDE.md` asks, Codex on risky PRs, and the owner merges with
     `safemerge`.
@@ -254,7 +287,7 @@ one issue sorted `local` per run.
     `local` (those wait for step 4b). A recorded issue is not sorted
     again and causes no model call.
 -   The trust check runs again right before the brief step.
--   The run never writes to GitHub.
+-   The Claude path never writes to GitHub (the local path does, below).
 -   The timer runs from a main-only clone (`~/Projects/aether-dispatch`),
     like the backup timer (ADR-025 D8), so only merged, reviewed code
     runs with the dispatcher's credentials.

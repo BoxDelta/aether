@@ -23,6 +23,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import tempfile
@@ -118,7 +119,20 @@ def base_env() -> dict[str, str]:
         "LANG": "C.UTF-8",
         "GIT_TERMINAL_PROMPT": "0",
         "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",  # the owner's ~/.gitconfig never applies
     }
+
+
+# Every dispatcher git call: no hooks, no fsmonitor, no pager (security review of 4b).
+# Hooks are off on purpose: they would run unsandboxed on model-written files, and
+# Sentinel's secrets job checks the pull request instead.
+GIT_SAFE = ("-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.pager=cat")
+PUSH_SAFE = (
+    "-c", "protocol.allow=never",
+    "-c", "protocol.https.allow=always",
+    "-c", "http.followRedirects=false",
+    "-c", "push.followTags=false",
+)  # fmt: skip
 
 
 def push_env(settings: DispatchSettings) -> dict[str, str]:
@@ -210,15 +224,36 @@ def aider_args(scratch: Path) -> list[str]:
     return [str(AIDER_PYTHON), "-I", str(scratch / "aider_driver.py"), str(scratch / "config.json")]
 
 
-def sandbox_args(
-    root: Path, work: Path, scratch: Path, gitdir: Path, settings: DispatchSettings
-) -> list[str]:
-    """bubblewrap around Aider. Order matters: the empty home comes before the binds."""
+def sandbox_env(settings: DispatchSettings) -> dict[str, str]:
+    """Aider's whole environment, given to bubblewrap's process (not on its command
+    line, which other local processes can read)."""
+    home = str(Path.home())
+    return {
+        "HOME": home,
+        "PATH": f"{home}/.local/bin:/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+        "TERM": "dumb",
+        "OPENAI_API_BASE": settings.dispatch_litellm_url,
+        "OPENAI_API_KEY": settings.dispatch_litellm_key.get_secret_value(),
+        "LITELLM_LOCAL_MODEL_COST_MAP": "True",  # no model-price download
+    }
+
+
+def sandbox_args(root: Path, work: Path, scratch: Path, gitdir: Path) -> list[str]:
+    """bubblewrap around Aider. Only /usr and /etc from the host, read-only; no /run
+    (Docker, D-Bus, agent sockets), /var, /mnt or /media; an empty home. The git dir
+    is read-only too, so nothing in it can change what host git runs later.
+    Order matters: the empty home comes before the binds under it."""
     home = Path.home()
     uv_share = home / ".local" / "share" / "uv"
     return [
         "bwrap",
-        "--ro-bind", "/", "/",
+        "--ro-bind", "/usr", "/usr",
+        "--ro-bind", "/etc", "/etc",
+        "--symlink", "usr/bin", "/bin",
+        "--symlink", "usr/bin", "/sbin",
+        "--symlink", "usr/lib", "/lib",
+        "--symlink", "usr/lib", "/lib64",
         "--dev", "/dev",
         "--proc", "/proc",
         "--tmpfs", "/tmp",  # noqa: S108 - a fresh empty tmpfs inside the sandbox
@@ -226,7 +261,7 @@ def sandbox_args(
         "--ro-bind", str(uv_share), str(uv_share),
         "--ro-bind", str(home / ".local" / "bin"), str(home / ".local" / "bin"),
         "--ro-bind", str(root / ".git"), str(root / ".git"),
-        "--bind", str(gitdir), str(gitdir),
+        "--ro-bind", str(gitdir), str(gitdir),
         "--bind", str(work), str(work),
         "--ro-bind", str(scratch), str(scratch),  # driver, config: read-only
         "--bind", str(scratch / "history"), str(scratch / "history"),
@@ -235,19 +270,13 @@ def sandbox_args(
         "--share-net",  # the local model is on loopback
         "--die-with-parent",
         "--new-session",
-        "--clearenv",
-        "--setenv", "HOME", str(home),
-        "--setenv", "PATH", f"{home}/.local/bin:/usr/bin:/bin",
-        "--setenv", "LANG", "C.UTF-8",
-        "--setenv", "TERM", "dumb",
-        "--setenv", "OPENAI_API_BASE", settings.dispatch_litellm_url,
-        "--setenv", "OPENAI_API_KEY", settings.dispatch_litellm_key.get_secret_value(),
     ]  # fmt: skip
 
 
-def docker_args(work: Path, image: str) -> list[str]:
+def docker_args(work: Path, image: str, name: str) -> list[str]:
     return [
-        "docker", "run", "--rm",
+        "docker", "run", "--rm", "--init",
+        "--name", name,
         "--network", "none",
         "--read-only",
         "--tmpfs", "/tmp:rw,exec,size=1g",  # noqa: S108 - the container's own tmpfs
@@ -263,7 +292,7 @@ def docker_args(work: Path, image: str) -> list[str]:
         "--volume", f"{work}:/src:ro",
         "--workdir", "/src",
         image,
-        "sh", "-c", TEST_COMMAND,
+        "timeout", "-s", "KILL", str(TEST_TIMEOUT_S - 30), "sh", "-c", TEST_COMMAND,
     ]  # fmt: skip
 
 
@@ -276,7 +305,7 @@ class LocalPath:
 
     def git(self, *args: str, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> str:
         result = self.run(
-            ["git", "-c", "core.pager=cat", *args],
+            ["git", *GIT_SAFE, *args],
             env or base_env(),
             cwd or self.root,
             GIT_TIMEOUT_S,
@@ -314,23 +343,37 @@ class LocalPath:
         shutil.copy(DRIVER, scratch / "aider_driver.py")
         config = aider_config(issue, mentioned_files(issue, work), scratch)
         (scratch / "config.json").write_text(json.dumps(config), "utf-8")
-        args = [
-            *sandbox_args(self.root, work, scratch, gitdir, self.settings),
-            *aider_args(scratch),
-        ]
-        result = self.run(args, {"PATH": "/usr/bin:/bin"}, work, AIDER_TIMEOUT_S)
+        args = [*sandbox_args(self.root, work, scratch, gitdir), *aider_args(scratch)]
+        result = self.run(args, sandbox_env(self.settings), work, AIDER_TIMEOUT_S)
         if result.returncode != 0:
             raise LocalError(f"aider failed: {tail(result.stderr or result.stdout)}")
 
-    def staged_diff(self, work: Path, scratch: Path, dotgit: str) -> diffcheck.DiffCheck:
-        if (work / ".git").read_text("utf-8") != dotgit:
-            return diffcheck.DiffCheck(False, "the worktree's .git file changed", (".git",), 0)
+    def snapshot(self, work: Path, gitdir: Path) -> tuple[str, ...]:
+        """What must not change while Aider runs: the worktree's .git file, the git
+        dir's files (commondir, gitdir, HEAD; no new ones), HEAD's ref and commit."""
+        files = sorted(p for p in gitdir.rglob("*") if p.is_file() and p.name != "index")
+        listing = tuple(f"{p.relative_to(gitdir)}={p.read_bytes()!r}" for p in files)
+        head = self.git("symbolic-ref", "HEAD", cwd=work).strip()
+        commit = self.git("rev-parse", "HEAD", cwd=work).strip()
+        return ((work / ".git").read_text("utf-8"), *listing, head, commit)
+
+    def staged_diff(
+        self, work: Path, gitdir: Path, scratch: Path, before: tuple[str, ...]
+    ) -> diffcheck.DiffCheck:
+        try:
+            changed = self.snapshot(work, gitdir) != before
+        except (OSError, LocalError):
+            changed = True
+        if changed:
+            return diffcheck.DiffCheck(False, "the worktree's git files changed", (".git",), 0)
         exclude = scratch / "exclude"
         exclude.write_text(".aider*\n", "utf-8")
+        self.git("read-tree", "HEAD", cwd=work)  # a fresh index, whatever Aider left
         self.git("-c", f"core.excludesFile={exclude}", "add", "--all", cwd=work)
         text = self.git(
-            "diff", "--cached", "--no-color", "--no-ext-diff", "--find-renames", cwd=work
-        )
+            "diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv",
+            "--find-renames", "--ignore-submodules=none", cwd=work,
+        )  # fmt: skip
         names = self.git("diff", "--cached", "--name-only", "-z", "--no-renames", cwd=work)
         return diffcheck.check(text, tuple(n for n in names.split("\0") if n))
 
@@ -360,23 +403,37 @@ class LocalPath:
             raise LocalError(f"test image build failed: {tail(result.stderr)}")
         return tag
 
-    def tests(self, work: Path) -> None:
-        result = self.run(docker_args(work, self.image()), base_env(), None, TEST_TIMEOUT_S)
+    def tests(self, work: Path, scratch: Path) -> None:
+        """On an export of the staged index: exactly what was checked and will be
+        committed, without ignored or untracked files the model may have left."""
+        export = scratch / "export"
+        self.git("checkout-index", "--all", "--force", f"--prefix={export}/", cwd=work)
+        name = f"dispatch-test-{secrets.token_hex(6)}"
+        try:
+            result = self.run(
+                docker_args(export, self.image(), name), base_env(), None, TEST_TIMEOUT_S
+            )
+        finally:  # a timed-out docker CLI leaves the container running
+            self.run(["docker", "kill", name], base_env(), None, GIT_TIMEOUT_S)
         if result.returncode != 0:
             raise LocalError(f"tests failed: {tail(result.stdout + result.stderr)}")
 
     def publish(self, issue: Issue, work: Path, branch: str) -> None:
         if not branch.startswith("dispatch/"):
             raise LocalError("refused: not a dispatcher branch")
+        if self.git("symbolic-ref", "HEAD", cwd=work).strip() != f"refs/heads/{branch}":
+            raise LocalError("refused: HEAD is not the dispatcher branch")
         message = f"dispatch: local change for #{issue.number}\n\nRefs #{issue.number}\n"
         self.git(
             "-c", f"user.name={DISPATCH_NAME}", "-c", f"user.email={DISPATCH_EMAIL}",
+            "-c", "commit.gpgsign=false",
             "commit", "--quiet", "-m", message, cwd=work,
         )  # fmt: skip
         remote = (
             f"https://github.com/{self.settings.dispatch_owner}/{self.settings.dispatch_repo}.git"
         )
         self.git(
+            *PUSH_SAFE,
             "push",
             "--quiet",
             remote,
@@ -393,14 +450,14 @@ class LocalPath:
             with tempfile.TemporaryDirectory(prefix="dispatch-aider-") as tmp:
                 scratch = Path(tmp)
                 work, gitdir = self.prepare(issue.number, branch)
-                dotgit = (work / ".git").read_text("utf-8")
+                before = self.snapshot(work, gitdir)
                 self.aider(issue, work, gitdir, scratch)
-                check = self.staged_diff(work, scratch, dotgit)
+                check = self.staged_diff(work, gitdir, scratch, before)
                 if not check.ok:
                     if check.reason == "no change":
                         return Outcome("failed", "Aider made no change")
                     return Outcome("blocked", f"path check: {check.reason}")
-                self.tests(work)
+                self.tests(work, scratch)
                 self.publish(issue, work, branch)
             return Outcome("opened", check.reason, open_pr(branch))
         except LocalError as exc:
