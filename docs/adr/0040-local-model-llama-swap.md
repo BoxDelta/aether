@@ -15,11 +15,12 @@ the same.
 
 Measured on the PC (`tests/local-model/README.md`):
 
--   **VRAM:** `--n-cpu-moe 33` with a 16k context uses about 7.4 GB.
-    NVML shows `llama-server` holding 6.0 GB, and about 1.1 GiB stays
-    free.
--   **Speed:** about 42 tok/s generation and about 350 tok/s prompt
-    reading. The first request takes about 25 s while the model loads.
+-   **VRAM:** with `--n-cpu-moe 33` and a 16k context, about 1.1 GiB
+    stayed free. With the chosen `--n-cpu-moe 35`, about 1.9 GiB (1,930
+    MiB) stays free while the model is loaded.
+-   **Speed:** with `--n-cpu-moe 35`, about 41 tok/s generation and
+    about 314 tok/s prompt reading (a 2,118-token prompt). The first
+    request takes about 25 s while the model loads.
 -   **Thinking:** must be off on every request, or replies come back
     empty.
 -   **RAM:** about 18 GB stays available with Postgres, n8n and Plane
@@ -31,8 +32,11 @@ Measured on the PC (`tests/local-model/README.md`):
     llama3.1:8b breaks.
 -   **Dispatcher triage:** 10 of 11 correct.
 -   **Routing:** Aether's GPU probe sees 1,131 MiB free with the model
-    loaded, below the 1,536 MiB reserve. As written today, routing
-    avoids local exactly while the model is warm.
+    loaded with `--n-cpu-moe 33`, below the 1,536 MiB reserve. As
+    written today, routing avoids local exactly while the model is warm.
+    With `--n-cpu-moe 35` the free VRAM (about 1,930 MiB) is above the
+    reserve, but the probe still counts the model's own allocation (see
+    the GPU probe decision), so a different GPU load can't hide it.
 
 Constraints:
 
@@ -83,6 +87,20 @@ Option 4.
         `allow_cloud` and gets `public` memory only.
     -   The adapter doesn't share code paths with the OpenRouter adapter
         (ADR-028).
+    -   The HTTP client follows no redirects and ignores proxy
+        environment variables (`follow_redirects=False`,
+        `trust_env=False`), as ADR-023 requires; tested.
+    -   An untrusted host goes through the same `needs_allow_cloud(info)`
+        helper as an untrusted Ollama host, so the content tripwire
+        (ADR-032) still runs although the adapter is `kind="local"`. It
+        gets the "[off-network host: data leaves this network]" route
+        mark and the fixed-text startup warning. No trust opt-in like
+        `AETHER_OLLAMA_TRUST_HOST` is offered for this adapter.
+    -   The key is also covered by `SecretCheck`'s configured values, so
+        it can't be stored as memory. Bearer auth over plain HTTP to a
+        private-LAN host has the same limit as Ollama.
+    -   docs/05 §7.1 is updated with these rules before this ADR is
+        Accepted.
 -   **One model, one request:** Aether and the dispatcher share one
     loaded model and send one request at a time to begin with (docs/03
     §3). The dispatcher reaches it through LiteLLM as today. That
@@ -97,10 +115,19 @@ Option 4.
         enough free VRAM for the model plus the reserve, otherwise
         cloud.
     -   The probe change is tested with fakes.
--   **Idle unload:** llama-swap's `ttl` (300 s today) unloads the model
-    when idle, so the GPU is free for gaming. Aether never keeps it
-    warm on purpose: no keep-alive pings, and the probe and `/ready`
-    don't load it.
+-   **llama-server flags:** `--jinja -ngl 99 --n-cpu-moe 35 -c 16384
+    -fa on --cache-type-k q8_0 --cache-type-v q8_0` (D1).
+-   **Idle unload:** llama-swap's `ttl`, set in the dispatcher stack
+    outside this repo, is 900 s (it was 300 s). After the last request
+    the model holds the GPU for up to 15 minutes (about 1.9 GiB stays
+    free), then unloads. The value applies to the dispatcher too, and
+    dispatcher traffic also resets the timer, so Aether can't guarantee
+    when the GPU is free. Aether itself never keeps the model warm: no
+    keep-alive pings, and the probe and `/ready` don't call an endpoint
+    that loads it.
+-   **Cold start in the chat UI:** when the model is cold, the chat view
+    shows "Waking local model…" until the first token arrives (Phase 3
+    Step 4, docs/08).
 -   **Ollama:** the Ollama adapter stays, disabled by default for
     Phase 3, so it can be switched back on as a fallback. It is removed
     after Phase 3, with its own issue.
@@ -110,19 +137,18 @@ Option 4.
 
 ## Decisions for the owner
 
--   **D1. The VRAM reserve while the model is loaded.** With
-    `--n-cpu-moe 33` about 1.1 GiB stays free, below the Charter's 1.5 GB.
-    -   Recommended: raise `--n-cpu-moe` until 1.5 GiB stays free (about
-        35–36, between the measured 34 = 6979 MiB and 40 = 4390 MiB),
-        and re-measure tok/s.
-    -   Alternative: accept about 1.1 GiB while it is loaded, and rely on
-        the 300 s `ttl` to free the GPU for gaming. That amends the
-        Charter target.
-    -   Trade-off: speed against desktop headroom.
--   **D2. Desktop feel.** The owner checks by hand that the desktop
-    stays usable while a long reply is generating, with the services
-    running. If it doesn't, use a higher `--n-cpu-moe` or a smaller
-    context, whatever D1 chose.
+-   **D1. VRAM reserve while the model is loaded: decided.** Use
+    `--n-cpu-moe 35`. Re-measured on 2026-11-27 (details in
+    `tests/local-model/README.md` §3):
+    -   free VRAM about 1,930 MiB while loaded, above the 1.5 GB
+        Charter reserve;
+    -   generation about 41 tok/s, prompt reading about 314 tok/s;
+    -   `ttl` raised to 900 s.
+-   **D2. Desktop feel: open.** The owner checks by hand that the
+    desktop stays usable while a long reply (about 2 minutes) is
+    generating, with the services running. The result is recorded here
+    and in `tests/local-model/README.md`. If it isn't usable, use a
+    higher `--n-cpu-moe` or a smaller context.
 
 ## Consequences
 
@@ -132,10 +158,14 @@ Option 4.
     becomes a dependency, as a Docker image outside this repository.
     Its config lives in the dispatcher stack.
 -   Risks:
-    -   A cold first request takes about 25 s, so the chat view must show
-        that it is loading.
+    -   A cold first request takes about 25 s, so the chat view shows
+        "Waking local model…" until the first token.
     -   The 16k context limits how much memory context and chat history
         fit.
+    -   llama-swap and llama-server logs sit on the unencrypted disk;
+        the runbook says verbose request logging stays off. Memory
+        prompts and dispatcher prompts share one llama-server slot,
+        acceptable because both run only on this PC.
     -   If someone points the base URL at LiteLLM by mistake, prompts get
         logged. The runbook and a startup warning for a known LiteLLM
         port reduce that risk.

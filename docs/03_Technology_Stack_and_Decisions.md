@@ -107,14 +107,15 @@ when idle if that improves resource availability.
 **Measured on this PC (2026-11-27, `tests/local-model/README.md`,
 ADR-040, Proposed):**
 - **Model:** Qwen3.6-35B-A3B Q4_K_M under llama-swap, with
-  `--n-cpu-moe 33` and a 16k context.
-- **VRAM:** about 7.4 GB, leaving about 1.1 GiB free, which is below
-  the 1.5 GB target (ADR-040 D1).
-- **Speed:** about 42 tok/s generation and about 350 tok/s prompt
+  `--n-cpu-moe 35` and a 16k context.
+- **VRAM:** about 1.9 GiB stays free while loaded, above the 1.5 GB
+  target (ADR-040 D1).
+- **Speed:** about 41 tok/s generation and about 314 tok/s prompt
   reading.
 - **Thinking:** off on every request.
 - **RAM:** about 18 GB stays available with the other services running.
-- **Idle:** llama-swap's `ttl` unloads the model after 300 s idle.
+- **Idle:** llama-swap's `ttl` (900 s, set outside this repo) unloads
+  the model when idle.
 - **Runtimes:** one model and one parallel request, shared with the
   dispatcher.
 - **Ollama:** the current runtime (`llama3.1:8b`) until ADR-040 is

@@ -7,7 +7,8 @@ has no llama-swap adapter yet. There are no automated tests in this folder.
 llama-swap (`ghcr.io/mostlygeek/llama-swap:unified-cuda13`, Docker, on
 `127.0.0.1:9292`, API key required). The llama-server flags are
 `--jinja -ngl 99 --n-cpu-moe 33 -c 16384 -fa on --cache-type-k q8_0
---cache-type-v q8_0`, and llama-swap's `ttl` is 300 s.
+--cache-type-v q8_0`, and llama-swap's `ttl` was 300 s. Section 3 uses the
+chosen `--n-cpu-moe 35` and `ttl` 900 s.
 
 **PC:** 8 GB VRAM NVIDIA GPU, 32 GB RAM, zram swap (zstd, swappiness
 150), CachyOS. It runs Aether's Postgres, n8n, Plane, Langfuse and
@@ -146,4 +147,20 @@ use. So the probe can add the model's own allocation back (ADR-040).
 
 Even counting that allocation, **the Charter reserve itself is not met
 while the model is loaded**: about 1.1 GiB is left for the desktop,
-against the 1.5 GB target. See ADR-040, decision D1.
+against the 1.5 GB target. See ADR-040, decision D1. Resolved by
+`--n-cpu-moe 35`; see section 3.
+
+## 3. Re-measured with the chosen setting (2026-11-27, ADR-040 D1)
+
+Config: `--n-cpu-moe 35`, `ttl` 900 s, otherwise unchanged. Measured
+through llama-swap directly after restarting the container.
+
+- **Free VRAM** (`nvidia-smi`), model loaded: 1,928–1,935 MiB (about
+  1.9 GiB). Nothing loaded: 7,105 MiB. The Charter reserve (1,536 MiB)
+  is met.
+- **Generation:** 39.0 and 40.8 tok/s on two 400-token replies. The
+  first reply after load was slower (32.1 tok/s).
+- **Prompt reading:** 314 tok/s on a 2,118-token prompt. Short prompts
+  read slower (28–47 tok/s), as before.
+- **System RAM while loaded:** 22.4 GB available (`free -m`).
+- **Desktop feel (ADR-040 D2):** not yet reported by the owner.
