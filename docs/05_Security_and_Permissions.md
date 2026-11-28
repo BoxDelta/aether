@@ -514,12 +514,15 @@ unattended, so it is the main case for this section:
 
 -   Aider runs in bubblewrap with only `/usr` and `/etc` from the host
     (read-only), an empty home, no `/run` (no Docker socket, D-Bus or
-    agent sockets), the repository's git dir read-only, and only the
-    local model's LiteLLM key in its environment. The host checks
-    afterwards that nothing in the git dir changed.
+    agent sockets), the repository's git dir read-only, and no
+    credential: its LiteLLM key is a dummy. The host checks afterwards
+    that nothing in the git dir changed.
 -   The sandbox has no network (#202). Aider reaches the local model only
-    through a Unix socket bound into the sandbox that forwards to LiteLLM
-    and nowhere else; other loopback services (Postgres, n8n, Plane) and
+    through a Unix socket bound into the sandbox. The bridge behind it
+    forwards only `POST /v1/chat/completions` to LiteLLM, adds the real
+    key outside the sandbox, and refuses every other route (403), so
+    LiteLLM's admin routes can't be reached (#210). Other loopback
+    services (Postgres, n8n, Plane) and
     the internet are unreachable. A test runs the real sandbox and
     checks this on the owner's PC; Sentinel's runner has no
     `/usr/bin/python3` for the sandbox, so there it is skipped and only
@@ -529,7 +532,9 @@ unattended, so it is the main case for this section:
     on an export of exactly the checked index.
 -   Host git ignores the owner's global config and runs no hooks.
 -   A fixed path check blocks anything on the always-Claude list before
-    a pull request opens; the owner still reviews and merges.
+    a pull request opens, and gitleaks scans the added lines before any
+    push; a finding of either turns the try into a Claude brief. The
+    owner still reviews and merges.
 
 ## 9. Audit and observability
 

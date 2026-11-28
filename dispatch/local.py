@@ -225,18 +225,38 @@ def aider_args(scratch: Path) -> list[str]:
     return [str(AIDER_PYTHON), "-I", str(scratch / "aider_driver.py"), str(scratch / "config.json")]
 
 
-def sandbox_env(settings: DispatchSettings) -> dict[str, str]:
-    """Aider's whole environment, given to bubblewrap's process (not on its command
-    line, which other local processes can read)."""
+def sandbox_env() -> dict[str, str]:
+    """Aider's whole environment, given to bubblewrap's process. It holds no
+    credential: the key is a dummy, and the bridge adds the real LiteLLM key
+    outside the sandbox (#210)."""
     home = str(Path.home())
     return {
         "HOME": home,
         "PATH": f"{home}/.local/bin:/usr/bin:/bin",
         "LANG": "C.UTF-8",
         "TERM": "dumb",
-        "OPENAI_API_KEY": settings.dispatch_litellm_key.get_secret_value(),
+        "OPENAI_API_KEY": bridge.SANDBOX_KEY,
         "LITELLM_LOCAL_MODEL_COST_MAP": "True",  # no model-price download
     }
+
+
+def gitleaks_path() -> Path | None:
+    """gitleaks on PATH, else the one pre-commit built from the pinned hook."""
+    found = shutil.which("gitleaks")
+    if found:
+        return Path(found)
+    cache = Path.home() / ".cache" / "pre-commit"
+    built = sorted(cache.glob("*/golangenv-default/bin/gitleaks"), key=lambda p: p.stat().st_mtime)
+    return built[-1] if built else None
+
+
+def added_lines(diff: str) -> str:
+    """The lines the diff adds, without the +++ headers."""
+    return "".join(
+        line[1:] + "\n"
+        for line in diff.splitlines()
+        if line.startswith("+") and not line.startswith("+++")
+    )
 
 
 def sandbox_args(root: Path, work: Path, scratch: Path, gitdir: Path) -> list[str]:
@@ -348,9 +368,11 @@ class LocalPath:
         # No network in the sandbox (#202): the model only through this socket.
         try:
             with bridge.unix_bridge(
-                scratch / "sock" / "llm.sock", self.settings.dispatch_litellm_url
+                scratch / "sock" / "llm.sock",
+                self.settings.dispatch_litellm_url,
+                self.settings.dispatch_litellm_key.get_secret_value(),
             ):
-                result = self.run(args, sandbox_env(self.settings), work, AIDER_TIMEOUT_S)
+                result = self.run(args, sandbox_env(), work, AIDER_TIMEOUT_S)
         except (ValueError, OSError) as error:  # a failed try, not a crashed run
             raise LocalError(f"model bridge: {type(error).__name__}") from None
         if result.returncode != 0:
@@ -383,7 +405,28 @@ class LocalPath:
             "--find-renames", "--ignore-submodules=none", cwd=work,
         )  # fmt: skip
         names = self.git("diff", "--cached", "--name-only", "-z", "--no-renames", cwd=work)
-        return diffcheck.check(text, tuple(n for n in names.split("\0") if n))
+        check = diffcheck.check(text, tuple(n for n in names.split("\0") if n))
+        if check.ok and not self.no_secrets(text, scratch):
+            return diffcheck.DiffCheck(False, "gitleaks found a possible secret", (), 0)
+        return check
+
+    def no_secrets(self, diff: str, scratch: Path) -> bool:
+        """gitleaks on the lines the diff adds, before anything is pushed (#210).
+        Findings are redacted; a finding blocks the try and turns it into a brief."""
+        tool = gitleaks_path()
+        if tool is None:
+            raise LocalError("gitleaks not found (install it or run pre-commit once)")
+        added = scratch / "added" / "diff.txt"
+        added.parent.mkdir()
+        added.write_text(added_lines(diff), "utf-8")
+        result = self.run(
+            [str(tool), "dir", str(added.parent), "--no-banner", "--redact",
+             "--exit-code", "1", "--log-level", "error"],
+            base_env(), None, GIT_TIMEOUT_S,
+        )  # fmt: skip
+        if result.returncode not in (0, 1):
+            raise LocalError("gitleaks failed")
+        return result.returncode == 0
 
     def image(self) -> str:
         """The test image, built from main's lock file only (the diff can't change it)."""

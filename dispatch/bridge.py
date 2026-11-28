@@ -1,16 +1,26 @@
-"""A Unix socket that forwards to LiteLLM on loopback (ADR-030 step 4b, #202).
+"""The only way out of Aider's sandbox: a Unix socket in front of LiteLLM (ADR-030
+step 4b, #202, #210).
 
-Aider's sandbox has no network at all (bubblewrap ``--unshare-net``). Its only way
-out is this socket, bound into the sandbox, which reaches exactly one address: the
-LiteLLM URL from the dispatcher's settings (checked again here: http, loopback). Inside the
-sandbox, ``aider_driver.py`` listens on the sandbox's own loopback and forwards to
-the socket, so Aider still talks plain HTTP.
+Aider's sandbox has no network at all (bubblewrap ``--unshare-all``). Inside it,
+``aider_driver.py`` listens on the sandbox's own loopback and pumps bytes to this
+socket. Here, outside the sandbox, the bridge:
 
-Standard library only (no socat), one thread per connection, stopped when the try
-ends.
+-   reads one HTTP request per connection and forwards only
+    ``POST /v1/chat/completions`` to the LiteLLM URL from the settings (checked
+    again here: http, loopback). Any other method or path gets 403 and never
+    reaches LiteLLM (no admin routes, no key or model management);
+-   drops every header Aider sent and adds the real LiteLLM key itself. Aider
+    only ever holds a dummy key; the real one never enters the sandbox's
+    environment or files;
+-   sends back only the status, ``Content-Type`` and the body, with the key
+    masked if LiteLLM ever echoed it.
+
+Standard library only (no socat): at most ``MAX_CONNECTIONS`` at once, idle ones
+dropped, all closed when the try ends.
 """
 
 import contextlib
+import http.client
 import ipaddress
 import os
 import socket
@@ -19,11 +29,21 @@ from collections.abc import Iterator
 from pathlib import Path
 from urllib.parse import urlsplit
 
-CHUNK = 65536
 BACKLOG = 8
 CONNECT_TIMEOUT_S = 10.0
 IDLE_TIMEOUT_S = 300.0  # longer than the slowest local-model reply (stream off)
 MAX_CONNECTIONS = 16  # Aider uses one or two; more are closed at once
+MAX_HEADER_BYTES = 16 * 1024
+MAX_BODY_BYTES = 4 * 1024 * 1024
+MAX_REPLY_BYTES = 16 * 1024 * 1024
+# The only request that leaves the sandbox. Aider 0.86 sends nothing else to the
+# model API (checked with a live run, ADR-030).
+ALLOWED = frozenset({("POST", "/v1/chat/completions")})
+SANDBOX_KEY = "sk-dispatch-sandbox-dummy"  # what Aider holds; not a credential
+
+
+class Refused(Exception):
+    """A request the bridge won't forward. The message is the HTTP status line."""
 
 
 def target(url: str) -> tuple[str, int]:
@@ -40,20 +60,89 @@ def target(url: str) -> tuple[str, int]:
     return str(host), parts.port or 80
 
 
-def pump(source: socket.socket, sink: socket.socket) -> None:
-    """Copy one direction until it closes, then half-close the other side."""
+def _read_head(client: socket.socket) -> tuple[list[str], bytes]:
+    data = b""
+    while b"\r\n\r\n" not in data:
+        chunk = client.recv(4096)
+        if not chunk:
+            raise Refused("400 Bad Request")
+        data += chunk
+        if len(data) > MAX_HEADER_BYTES:
+            raise Refused("431 Request Header Fields Too Large")
+    head, _, rest = data.partition(b"\r\n\r\n")
+    return head.decode("latin-1").split("\r\n"), rest
+
+
+def _content_length(lines: list[str]) -> int:
+    headers = {}
+    for line in lines:
+        name, sep, value = line.partition(":")
+        if not sep:
+            raise Refused("400 Bad Request")
+        headers[name.strip().lower()] = value.strip()
+    if "transfer-encoding" in headers:
+        raise Refused("411 Length Required")
     try:
-        while data := source.recv(CHUNK):
-            sink.sendall(data)
-    except OSError:
-        pass
+        length = int(headers.get("content-length", ""))
+    except ValueError:
+        raise Refused("411 Length Required") from None
+    if not 0 <= length <= MAX_BODY_BYTES:
+        raise Refused("413 Content Too Large")
+    return length
+
+
+def read_request(client: socket.socket) -> bytes:
+    """The body of an allowed request; ``Refused`` for anything else."""
+    lines, body = _read_head(client)
+    parts = lines[0].split(" ")
+    if len(parts) != 3 or not parts[2].startswith("HTTP/1."):
+        raise Refused("400 Bad Request")
+    if (parts[0], parts[1]) not in ALLOWED:
+        raise Refused("403 Forbidden")
+    length = _content_length(lines[1:])
+    while len(body) < length:
+        chunk = client.recv(min(65536, length - len(body)))
+        if not chunk:
+            raise Refused("400 Bad Request")
+        body += chunk
+    return body[:length]
+
+
+def _reply(client: socket.socket, status: str, content_type: str, body: bytes) -> None:
+    head = (
+        f"HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\n"
+        f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n"
+    )
+    client.sendall(head.encode("latin-1") + body)
+
+
+def forward(host: str, port: int, key: str, body: bytes) -> tuple[str, str, bytes]:
+    """POST the body to LiteLLM with the real key. Returns status, type, body."""
+    conn = http.client.HTTPConnection(host, port, timeout=IDLE_TIMEOUT_S)
+    try:
+        conn.request(
+            "POST",
+            "/v1/chat/completions",
+            body=body,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+        )
+        response = conn.getresponse()
+        reply = response.read(MAX_REPLY_BYTES + 1)
+        if len(reply) > MAX_REPLY_BYTES:
+            return "502 Bad Gateway", "text/plain", b""
+        content_type = response.getheader("Content-Type", "application/json")
+        status = f"{response.status} {response.reason or 'Status'}"
+        return status, content_type, reply.replace(key.encode(), b"***")
     finally:
-        with contextlib.suppress(OSError):
-            sink.shutdown(socket.SHUT_WR)
+        conn.close()
 
 
 class _Open:
-    """The bridge's open sockets, so all of them close when the try ends."""
+    """The bridge's open client sockets, so all of them close when the try ends."""
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
@@ -76,32 +165,34 @@ class _Open:
                 sock.shutdown(socket.SHUT_RDWR)
 
 
-def _serve_one(client: socket.socket, host: str, port: int, opened: _Open) -> None:
+def _serve_one(client: socket.socket, host: str, port: int, key: str, opened: _Open) -> None:
     opened.add(client)
     try:
         with client:
             client.settimeout(IDLE_TIMEOUT_S)
             try:
-                upstream = socket.create_connection((host, port), timeout=CONNECT_TIMEOUT_S)
+                body = read_request(client)
+            except Refused as refused:
+                with contextlib.suppress(OSError):
+                    _reply(client, str(refused), "text/plain", b"")
+                return
             except OSError:
                 return
-            opened.add(upstream)
-            with upstream:
-                upstream.settimeout(IDLE_TIMEOUT_S)
-                back = threading.Thread(target=pump, args=(upstream, client), daemon=True)
-                back.start()
-                pump(client, upstream)
-                back.join()
-            opened.discard(upstream)
+            try:
+                status, content_type, reply = forward(host, port, key, body)
+            except (OSError, http.client.HTTPException):
+                status, content_type, reply = "502 Bad Gateway", "text/plain", b""
+            with contextlib.suppress(OSError):
+                _reply(client, status, content_type, reply)
     finally:
         opened.discard(client)
         opened.slots.release()
 
 
 @contextlib.contextmanager
-def unix_bridge(path: Path, url: str) -> Iterator[Path]:
-    """Listen on ``path`` (mode 600) and forward each connection to ``url``: at most
-    ``MAX_CONNECTIONS`` at once, idle ones dropped, all closed on exit."""
+def unix_bridge(path: Path, url: str, key: str) -> Iterator[Path]:
+    """Listen on ``path`` (mode 600) and forward allowed requests to ``url`` with
+    ``key``: at most ``MAX_CONNECTIONS`` at once, all closed on exit."""
     host, port = target(url)
     opened = _Open()
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -124,7 +215,7 @@ def unix_bridge(path: Path, url: str) -> Iterator[Path]:
                 client.close()  # over the limit
                 continue
             threading.Thread(
-                target=_serve_one, args=(client, host, port, opened), daemon=True
+                target=_serve_one, args=(client, host, port, key, opened), daemon=True
             ).start()
 
     thread = threading.Thread(target=accept, daemon=True)

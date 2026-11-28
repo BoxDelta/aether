@@ -203,7 +203,8 @@ one issue sorted `local` per run.
     `~/.ssh` or dispatcher secrets); only the worktree writable; the
     repository's `.git` and the worktree's git dir read-only. Its
     environment is set by the dispatcher (not on bubblewrap's command
-    line) and its only credential is the LiteLLM key. **No network**
+    line) and holds **no credential**: its LiteLLM key is a dummy
+    (#210). **No network**
     (#202): the sandbox has its own empty network namespace. The model is
     reached only through a Unix socket bound into the sandbox
     (`dispatch/bridge.py`, standard library, no socat), which forwards to
@@ -214,9 +215,25 @@ one issue sorted `local` per run.
     real sandbox and checks that Postgres, n8n, Plane, Langfuse, LiteLLM
     and llama-swap ports and the internet are unreachable, and that the
     socket works; it runs on the owner's PC and is skipped in Sentinel
-    (no `/usr/bin/python3` for the sandbox there). The bridge forwards any LiteLLM path, so the
-    dispatcher's LiteLLM key must be a virtual key limited to the model
-    `local`, never the master key (#210).
+    (no `/usr/bin/python3` for the sandbox there).
+-   **The model bridge (#210, owner decision 2026-11-27).** The
+    dispatcher's LiteLLM key is LiteLLM's master key, and LiteLLM here
+    has no database, so it can't issue virtual keys; the owner chose not
+    to add Postgres for it. Instead the bridge, outside the sandbox:
+    -   reads one HTTP request per connection and forwards only
+        `POST /v1/chat/completions` (Aider 0.86 sends nothing else; a
+        live run showed no `GET /v1/models`). Any other method or path,
+        including LiteLLM's key, user and config admin routes, gets 403
+        and never reaches LiteLLM. Chunked or over-size requests are
+        refused;
+    -   drops every header Aider sent and adds the real key itself. The
+        real key never enters the sandbox's environment, command line or
+        files (tested), and is masked if LiteLLM ever echoed it.
+-   **gitleaks before any push (#210).** After the path check passes,
+    gitleaks (on `PATH`, or the one pre-commit built from the pinned
+    hook) scans the lines the diff adds, redacted. A finding blocks the
+    try like the path check: no tests, no push, a Claude brief and
+    `dispatch:claude`. gitleaks missing or failing is a failed try.
 -   **After Aider**, the host checks that the worktree's `.git` file, the
     git dir's files (`commondir`, `gitdir`, `HEAD`, no new ones) and
     HEAD's branch and commit are unchanged, then rebuilds the index from

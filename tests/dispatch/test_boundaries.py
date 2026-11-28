@@ -3,8 +3,10 @@ Aether never imports it.
 
 ADR-030 §Credentials: the token could merge a passing PR, so the code must have
 no merge call. The only non-GET calls are the POSTs to LiteLLM (classify.py,
-brief.py), the Discord webhook POST (notify.py) and github.py's ``_post``, whose
-request hook allows exactly "open a pull request" and "add labels" (step 4b).
+brief.py), the model bridge's one forward to LiteLLM (bridge.py, only
+``POST /v1/chat/completions``, #210), the Discord webhook POST (notify.py) and
+github.py's ``_post``, whose request hook allows exactly "open a pull request" and
+"add labels" (step 4b).
 """
 
 import ast
@@ -21,6 +23,7 @@ WRITE_WORDS = re.compile(r"\b(POST|PATCH|PUT|DELETE)\b")
 ALLOWED_CALLS = [
     ("classify.py", "post", "/chat/completions"),
     ("brief.py", "post", "/chat/completions"),
+    ("bridge.py", "request", "POST"),  # to LiteLLM's chat route only, checked below
     ("notify.py", "post", None),  # the webhook URL from settings, checked below
     ("github.py", "post", None),  # through the write client's allowlist hook
 ]
@@ -77,11 +80,29 @@ def test_notify_has_no_github_client_or_token() -> None:
 
 
 def test_no_write_method_names_in_strings() -> None:
-    # "POST" appears only in github.py's allowlist; PUT, PATCH and DELETE nowhere.
+    # "POST" appears only in github.py's allowlist and the bridge's one route; PUT,
+    # PATCH and DELETE nowhere.
     for path in MODULES:
         for text in _strings(path):
             found = set(WRITE_WORDS.findall(text))
-            assert found <= ({"POST"} if path.name == "github.py" else set()), (path.name, text)
+            allowed = {"POST"} if path.name in {"github.py", "bridge.py"} else set()
+            assert found <= allowed, (path.name, text)
+
+
+def test_bridge_forwards_only_the_chat_route() -> None:
+    from dispatch import bridge
+
+    assert frozenset({("POST", "/v1/chat/completions")}) == bridge.ALLOWED
+    tree = ast.parse((DISPATCH / "bridge.py").read_text("utf-8"))
+    requests = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "request"
+    ]
+    assert len(requests) == 1
+    assert [ast.literal_eval(a) for a in requests[0].args[:2]] == ["POST", "/v1/chat/completions"]
 
 
 MERGE_SHAPES = re.compile(

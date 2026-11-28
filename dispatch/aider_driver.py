@@ -80,7 +80,9 @@ def start_forwarder(socket_path: str) -> int:
 def main(config_path: str) -> int:
     config = json.loads(Path(config_path).read_text("utf-8"))
     port = start_forwarder(config["model_socket"])
-    os.environ["OPENAI_API_BASE"] = f"http://127.0.0.1:{port}"  # before litellm loads
+    # Before litellm loads. The bridge forwards only POST /v1/chat/completions and
+    # adds the real key; OPENAI_API_KEY here is a dummy (#210).
+    os.environ["OPENAI_API_BASE"] = f"http://127.0.0.1:{port}/v1"
 
     from aider.analytics import Analytics  # type: ignore[import-not-found]
     from aider.coders import Coder  # type: ignore[import-not-found]
