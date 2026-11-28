@@ -102,7 +102,8 @@ Option 3, within the limits below.
 > `dispatch:auto` and `dispatch:claude-only`, for the `claude` route only.
 > Everything below still applies to every other issue. The bot, a separate
 > program, adds those two labels; "the dispatcher never adds" (Local path)
-> still holds for the dispatcher.
+> still holds for the dispatcher. This takes effect when the bot and `verify`
+> are built; until then only the owner's issues count.
 
 -   The dispatcher acts on an issue only when **both** are true: the
     issue was opened by `BoxDelta` **and** the `dispatch:auto` label was

@@ -22,6 +22,8 @@ of step 4b).
 > exception. An issue opened by `boxdelta-dispatch` counts as the owner's if,
 > and only if, it carries a valid Ed25519 signature made by the Discord bot,
 > bound to the repository and the issue number; its labels still never count.
+> This takes effect when the bot and `verify` are built; until then only the
+> owner's issues count.
 
 1.  **A dedicated machine user, `boxdelta-dispatch`**, invited as a
     collaborator (write role) on `BoxDelta/aether` only. Its pull requests
