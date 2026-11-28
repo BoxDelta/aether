@@ -253,6 +253,9 @@ def test_issue_61_rule_leaves_ordinary_text(text: str) -> None:
         "src/evil.pth",
         "compose.override.yaml",
         ".envrc",
+        "core/CLAUDE.md",
+        "web/CLAUDE.local.md",
+        ".mcp.json",
     ],
 )
 def test_guarded_names_anywhere(path: str) -> None:

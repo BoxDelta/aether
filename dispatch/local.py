@@ -5,11 +5,12 @@ Isolation:
 
 - Aider runs in bubblewrap. It sees the filesystem read-only, an empty home, the
   worktree read-write and its own git index; the repository's ``.git`` (config and
-  hooks) stays read-only. Its environment holds only the local model's address and
-  LiteLLM key: no GitHub token, no Discord webhook, no ``.env`` (a fresh worktree
-  has none, and ``--env-file`` points at ``/dev/null``).
+  hooks) stays read-only. Its environment holds no credential (a dummy LiteLLM
+  key; the bridge adds the real one outside): no GitHub token, no Discord webhook,
+  no ``.env`` (a fresh worktree has none, and ``--env-file`` points at
+  ``/dev/null``).
 - Tests (ruff, mypy, pytest without database tests) run in Docker with
-  ``--network none``, the worktree mounted read-only, no capabilities, as the
+  ``--network none``, an export of the staged index mounted read-only, no capabilities, as the
   owner's user, with no secret in the environment.
 - Only after the path check and the tests pass does the dispatcher commit, push
   the ``dispatch/<n>-<slug>`` branch (the token goes in a header through git's
@@ -19,12 +20,14 @@ Nothing here merges, closes, force-pushes or pushes to ``main``.
 """
 
 import base64
+import contextlib
 import hashlib
 import json
 import os
 import re
 import secrets
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
@@ -32,7 +35,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from dispatch import diffcheck, rules
+from dispatch import bridge, diffcheck, rules
 from dispatch.classify import clean_reason
 from dispatch.config import DispatchSettings
 from dispatch.github import Issue
@@ -214,6 +217,7 @@ def aider_config(issue: Issue, files: list[str], scratch: Path) -> dict[str, obj
         "model": MODEL,
         "map_tokens": MAP_TOKENS,
         "history": str(scratch / "history"),
+        "model_socket": str(scratch / "sock" / "llm.sock"),
         "settings": str(scratch / "model-settings.yml"),
     }
 
@@ -224,25 +228,59 @@ def aider_args(scratch: Path) -> list[str]:
     return [str(AIDER_PYTHON), "-I", str(scratch / "aider_driver.py"), str(scratch / "config.json")]
 
 
-def sandbox_env(settings: DispatchSettings) -> dict[str, str]:
-    """Aider's whole environment, given to bubblewrap's process (not on its command
-    line, which other local processes can read)."""
+def sandbox_env() -> dict[str, str]:
+    """Aider's whole environment, given to bubblewrap's process. It holds no
+    credential: the key is a dummy, and the bridge adds the real LiteLLM key
+    outside the sandbox (#210)."""
     home = str(Path.home())
     return {
         "HOME": home,
         "PATH": f"{home}/.local/bin:/usr/bin:/bin",
         "LANG": "C.UTF-8",
         "TERM": "dumb",
-        "OPENAI_API_BASE": settings.dispatch_litellm_url,
-        "OPENAI_API_KEY": settings.dispatch_litellm_key.get_secret_value(),
+        "OPENAI_API_KEY": bridge.SANDBOX_KEY,
         "LITELLM_LOCAL_MODEL_COST_MAP": "True",  # no model-price download
     }
+
+
+GITLEAKS_REPO = "https://github.com/gitleaks/gitleaks"
+GITLEAKS_FINDING = 3  # --exit-code: a finding, told apart from gitleaks' own errors (1)
+
+
+def _pinned_gitleaks_rev(root: Path) -> str | None:
+    text = (root / ".pre-commit-config.yaml").read_text("utf-8")
+    match = re.search(re.escape(GITLEAKS_REPO) + r"\s*\n\s*rev:\s*([0-9a-f]{40})\b", text)
+    return match.group(1) if match else None
+
+
+def gitleaks_path(root: Path) -> Path | None:
+    """The gitleaks pre-commit built from the hook revision pinned in main's
+    ``.pre-commit-config.yaml`` (the same version as the commit hook), else gitleaks
+    on the dispatcher's own PATH. None if neither exists."""
+    try:
+        rev = _pinned_gitleaks_rev(root)
+        db = Path.home() / ".cache" / "pre-commit" / "db.db"
+        if rev is not None and db.is_file():
+            with contextlib.closing(sqlite3.connect(f"file:{db}?mode=ro", uri=True)) as conn:
+                row = conn.execute(
+                    "SELECT path FROM repos WHERE repo = ? AND ref = ?", (GITLEAKS_REPO, rev)
+                ).fetchone()
+            if row is not None:
+                built = Path(row[0]) / "golangenv-default" / "bin" / "gitleaks"
+                if built.is_file():
+                    return built
+    except (OSError, sqlite3.Error):
+        pass
+    found = shutil.which("gitleaks")
+    return Path(found) if found else None
 
 
 def sandbox_args(root: Path, work: Path, scratch: Path, gitdir: Path) -> list[str]:
     """bubblewrap around Aider. Only /usr and /etc from the host, read-only; no /run
     (Docker, D-Bus, agent sockets), /var, /mnt or /media; an empty home. The git dir
-    is read-only too, so nothing in it can change what host git runs later.
+    is read-only too, so nothing in it can change what host git runs later. No
+    network at all (``--unshare-all``, #202): the model only through the Unix
+    socket bound in by ``bridge.unix_bridge``, which reaches only LiteLLM.
     Order matters: the empty home comes before the binds under it."""
     home = Path.home()
     uv_share = home / ".local" / "share" / "uv"
@@ -258,8 +296,8 @@ def sandbox_args(root: Path, work: Path, scratch: Path, gitdir: Path) -> list[st
         "--proc", "/proc",
         "--tmpfs", "/tmp",  # noqa: S108 - a fresh empty tmpfs inside the sandbox
         "--tmpfs", str(home),
-        "--ro-bind", str(uv_share), str(uv_share),
-        "--ro-bind", str(home / ".local" / "bin"), str(home / ".local" / "bin"),
+        "--ro-bind-try", str(uv_share), str(uv_share),
+        "--ro-bind-try", str(home / ".local" / "bin"), str(home / ".local" / "bin"),
         "--ro-bind", str(root / ".git"), str(root / ".git"),
         "--ro-bind", str(gitdir), str(gitdir),
         "--bind", str(work), str(work),
@@ -267,7 +305,6 @@ def sandbox_args(root: Path, work: Path, scratch: Path, gitdir: Path) -> list[st
         "--bind", str(scratch / "history"), str(scratch / "history"),
         "--chdir", str(work),
         "--unshare-all",
-        "--share-net",  # the local model is on loopback
         "--die-with-parent",
         "--new-session",
     ]  # fmt: skip
@@ -344,7 +381,16 @@ class LocalPath:
         config = aider_config(issue, mentioned_files(issue, work), scratch)
         (scratch / "config.json").write_text(json.dumps(config), "utf-8")
         args = [*sandbox_args(self.root, work, scratch, gitdir), *aider_args(scratch)]
-        result = self.run(args, sandbox_env(self.settings), work, AIDER_TIMEOUT_S)
+        # No network in the sandbox (#202): the model only through this socket.
+        try:
+            with bridge.unix_bridge(
+                scratch / "sock" / "llm.sock",
+                self.settings.dispatch_litellm_url,
+                self.settings.dispatch_litellm_key.get_secret_value(),
+            ):
+                result = self.run(args, sandbox_env(), work, AIDER_TIMEOUT_S)
+        except (ValueError, OSError) as error:  # a failed try, not a crashed run
+            raise LocalError(f"model bridge: {type(error).__name__}") from None
         if result.returncode != 0:
             raise LocalError(f"aider failed: {tail(result.stderr or result.stdout)}")
 
@@ -377,6 +423,30 @@ class LocalPath:
         names = self.git("diff", "--cached", "--name-only", "-z", "--no-renames", cwd=work)
         return diffcheck.check(text, tuple(n for n in names.split("\0") if n))
 
+    def export(self, work: Path, scratch: Path) -> Path:
+        """The staged index as plain files: exactly what was checked and will be
+        committed, without ignored or untracked files the model may have left."""
+        export = scratch / "export"
+        self.git("checkout-index", "--all", "--force", f"--prefix={export}/", cwd=work)
+        return export
+
+    def no_secrets(self, export: Path) -> bool:
+        """gitleaks on the whole export, before the tests and any push (#210).
+        Sentinel keeps main clean, so a finding is the model's. Findings are
+        redacted; a finding blocks the try and turns it into a brief. The diff
+        check already refuses ``gitleaks:allow`` markers."""
+        tool = gitleaks_path(self.root)
+        if tool is None:
+            raise LocalError("gitleaks not found (run `uv run pre-commit run gitleaks` once)")
+        result = self.run(
+            [str(tool), "dir", ".", "--no-banner", "--redact",
+             "--exit-code", str(GITLEAKS_FINDING), "--log-level", "error"],
+            base_env(), export, GIT_TIMEOUT_S,
+        )  # fmt: skip
+        if result.returncode not in (0, GITLEAKS_FINDING):
+            raise LocalError("gitleaks failed")
+        return result.returncode == 0
+
     def image(self) -> str:
         """The test image, built from main's lock file only (the diff can't change it)."""
         inputs = [self.root / n for n in ("uv.lock", "pyproject.toml", ".python-version")]
@@ -403,11 +473,8 @@ class LocalPath:
             raise LocalError(f"test image build failed: {tail(result.stderr)}")
         return tag
 
-    def tests(self, work: Path, scratch: Path) -> None:
-        """On an export of the staged index: exactly what was checked and will be
-        committed, without ignored or untracked files the model may have left."""
-        export = scratch / "export"
-        self.git("checkout-index", "--all", "--force", f"--prefix={export}/", cwd=work)
+    def tests(self, export: Path) -> None:
+        """ruff, mypy and pytest in the no-network container, on the export."""
         name = f"dispatch-test-{secrets.token_hex(6)}"
         try:
             result = self.run(
@@ -457,7 +524,10 @@ class LocalPath:
                     if check.reason == "no change":
                         return Outcome("failed", "Aider made no change")
                     return Outcome("blocked", f"path check: {check.reason}")
-                self.tests(work, scratch)
+                export = self.export(work, scratch)
+                if not self.no_secrets(export):
+                    return Outcome("blocked", "gitleaks found a possible secret")
+                self.tests(export)
                 self.publish(issue, work, branch)
             return Outcome("opened", check.reason, open_pr(branch))
         except LocalError as exc:
