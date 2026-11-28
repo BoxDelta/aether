@@ -84,4 +84,5 @@ ADR-009 onward have their own files here.
     Accepted (owner, 2026-11-27).
 -   **ADR-041:** Dispatcher identity: machine user `boxdelta-dispatch`
     with a classic `public_repo` token, timeline trust checks (#203), and
-    one required code-owner approval via two rulesets, `checks` and `review` (#215). Proposed (2026-11-27).
+    one required code-owner approval via two rulesets, `checks` and `review` (#215).
+    Accepted (owner, 2026-11-28).
