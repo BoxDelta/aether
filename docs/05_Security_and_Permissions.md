@@ -265,12 +265,14 @@ for the highest level present.
   ------------- ----------------------------- ---------------------------
   Public        Already public or harmless    Any configured provider;
                 (docs, general questions)     the cloud and an untrusted
-                                              Ollama host only with
-                                              `allow_cloud`
+                                              Ollama or llama-swap host
+                                              only with `allow_cloud`
 
   Personal      Ordinary preferences, project Local, and a cloud provider
-                notes, plans                  or untrusted Ollama host
-                                              when the request sets
+                notes, plans                  or untrusted Ollama or
+                                              llama-swap host (Public
+                                              memory only) when the
+                                              request sets
                                               `allow_cloud` (no
                                               allowlist, #120)
 
@@ -568,7 +570,9 @@ differences:
     to llama-swap needs free VRAM of at least the model's size
     (`LLAMA_SWAP_MODEL_VRAM_MIB`, default 5200) plus the 1.5 GiB reserve;
     otherwise it looks elsewhere (the cloud with `allow_cloud`, else local
-    without headroom as before).
+    without headroom as before). Known limit: a warm model NVML can't see (the
+    nvidia-smi fallback, or N/A inside a container) looks like a cold one, so
+    `allow_cloud` requests go to the cloud while it is warm.
 -   Known limitations: `allow_cloud` also covers an off-network llama-swap
     host, which its name doesn't say; the
     GPU probe matches the model's process by its name (`llama-server`) only, so

@@ -1,7 +1,9 @@
 """Which hosts count as "this machine or this network" for a local provider.
 
-One definition for every local adapter (Ollama, ADR-023; llama-swap, ADR-040). The
-host is classified from the URL text alone; DNS is never resolved. Trusted:
+One classification for the local adapters (Ollama, ADR-023; llama-swap, ADR-040).
+The host is classified from the URL text alone; DNS is never resolved. Ollama
+trusts the categories below; llama-swap trusts only ``loopback`` (ADR-040). Trusted
+for Ollama:
 ``localhost`` and literal IPs in 127.0.0.0/8, ::1, 10.0.0.0/8, 172.16.0.0/12,
 192.168.0.0/16 and link-local (169.254.0.0/16, fe80::/10). Anything else (a name, a
 public IP, an overlay-network address) is not trusted.

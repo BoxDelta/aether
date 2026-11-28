@@ -177,13 +177,12 @@ sometimes with empty text if thinking used the whole budget.
 Approved memory is added to each model call within that provider's limit:
 Public and Personal on a trusted local host (llama-swap on loopback only; Ollama on
 loopback or a private address, or any host with
-`AETHER_OLLAMA_TRUST_HOST=true`), Public and Personal for
-Claude and for an untrusted Ollama host (Public only for an untrusted
-llama-swap host) (only when the request sets
-`"allow_cloud": true`). An untrusted Ollama host is treated like the cloud
+`AETHER_OLLAMA_TRUST_HOST=true`). With `"allow_cloud": true`: Public and
+Personal for Claude and for an untrusted Ollama host, Public only for an
+untrusted llama-swap host. An untrusted local host is treated like the cloud
 (ADR-032): it takes only requests with `allow_cloud`, and its sends get the
 same secret check. Sensitive memory is sent only to a trusted
-Ollama host, and only when the request sets `"include_sensitive": true`.
+Ollama or llama-swap host, and only when the request sets `"include_sensitive": true`.
 
 With `"propose_memory": true`, the model that answered is asked once more,
 with only your latest message and no memory, for facts worth remembering

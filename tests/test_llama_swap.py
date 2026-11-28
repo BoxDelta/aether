@@ -635,3 +635,17 @@ def test_model_vram_setting() -> None:
         Settings(_env_file=None, llama_swap_model=MODEL, llama_swap_model_vram_mib=6000)
     )
     assert p.vram_bytes == 6000 * 1024 * 1024
+
+
+def test_an_untrusted_host_gets_public_memory_only(identity: Identity) -> None:
+    from tests.test_memory_chat import FakeSource, record, sent_levels  # noqa: F401
+
+    p, rec = provider(url="http://192.168.1.20:9292")
+    source = FakeSource([record("public"), record("personal")])
+    r = Router([p], identity, secret_check=CHECK, probe=lambda: snapshot(4.0), memory=source)
+
+    asyncio.run(r.handle(request(), RouteOptions(allow_cloud=True)))
+
+    assert [a.limit for a in source.asked] == ["public"]
+    system = rec.chats()[0]["messages"][0]["content"]
+    assert "public fact" in system and "personal fact" not in system
