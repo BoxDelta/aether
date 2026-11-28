@@ -30,6 +30,9 @@ dev = [
     "ruff>=0.8",
     "types-pyyaml>=6.0.12.20261113",
 ]
+dispatch = [
+    "cryptography==50.0.2",
+]
 
 [tool.uv]
 # Application, not a library: no build step; tests import from the repo root.
