@@ -298,6 +298,9 @@ def test_clean_input_passes() -> None:
         ("t", "d\u200be", []),
         ("t", "d\u2028e", []),
         ("t", "d\u2029e", []),
+        ("t", "d\ud800e", []),
+        ("t", "d\ue000e", []),
+        ("t", "d\u0378e", []),
         ("t\u202e", "d", []),
         ("t", "d", ["a\u202e.py"]),
         ("t", "d", ["a\nb.py"]),
@@ -451,13 +454,38 @@ def test_a_symlinked_folder_is_refused(tmp_path: Path) -> None:
     assert isinstance(result, str)
 
 
-def test_a_huge_key_file_is_read_only_up_to_a_limit(tmp_path: Path) -> None:
+def test_a_file_over_the_limit_is_refused_not_cut_off(tmp_path: Path) -> None:
     uid = _root_like(tmp_path)
     path = tmp_path / "proof.pub"
     path.write_text(PUBLIC_PEM + "x" * 100_000)
     path.chmod(0o644)
-    data = proof._read_trusted(path, uid)
-    assert isinstance(data, bytes) and len(data) == proof.MAX_KEY_FILE_BYTES
+    assert proof.load_public_key(path, trusted_uid=uid) == "public key: the file is too large"
+
+    owner = tmp_path / "owner_id"
+    owner.write_text("123" + " " * (proof.MAX_KEY_FILE_BYTES - 2) + "456")
+    owner.chmod(0o644)
+    assert proof.load_owner_id(owner, trusted_uid=uid) is None
+
+
+def test_a_fifo_is_refused_without_blocking(tmp_path: Path) -> None:
+    uid = _root_like(tmp_path)
+    path = tmp_path / "proof.pub"
+    os.mkfifo(path, 0o644)
+    assert (
+        proof.load_public_key(path, trusted_uid=uid) == "public key: the file is not a regular file"
+    )
+
+
+def test_a_wrong_folder_is_refused_before_the_file_is_opened(tmp_path: Path) -> None:
+    uid = _root_like(tmp_path)
+    tmp_path.chmod(0o775)
+    path = tmp_path / "proof.pub"
+    os.mkfifo(path, 0o644)
+    try:
+        result = proof.load_public_key(path, trusted_uid=uid)
+    finally:
+        tmp_path.chmod(0o755)
+    assert isinstance(result, str) and "root-owned" in result
 
 
 def test_a_missing_key_file_is_a_reason_not_an_exception(tmp_path: Path) -> None:

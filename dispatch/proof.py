@@ -55,7 +55,7 @@ MAX_KEY_FILE_BYTES = 4096
 # line, or an HTML comment.
 FORBIDDEN_TEXT = ("<!--", "-->", "aether-proof")
 
-_HIDDEN = frozenset({"Cc", "Cf", "Zl", "Zp"})
+_HIDDEN = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
 
 _PROOF_LINE = re.compile(
     r"<!-- aether-proof v2 (?P<ts>0|[1-9][0-9]{0,11}) (?P<nonce>[0-9a-f]{32}) "
@@ -125,7 +125,8 @@ def _bad_text(label: str, value: str) -> str | None:
     if "\r" in value:
         return f"the {label} contains a carriage return"
     allowed = "\n\t" if label == "details" else ""
-    # Control, format (bidi marks, zero-width) and line or paragraph separators could make
+    # Control, format (bidi marks, zero-width), surrogate, private-use and unassigned code
+    # points, and line or paragraph separators could make
     # the public issue look different from the text that was signed.
     if any(c not in allowed and unicodedata.category(c) in _HIDDEN for c in value):
         return f"the {label} contains a control character"
@@ -212,26 +213,50 @@ def _ed25519() -> Any | None:
     return ed25519
 
 
+def _folder_problem(path: Path, trusted_uid: int) -> str | None:
+    try:
+        parent = path.parent.lstat()
+    except OSError:
+        return "the file is missing, or is a symbolic link"
+    if not stat.S_ISDIR(parent.st_mode):
+        return "the file is not in a real folder"
+    if parent.st_uid != trusted_uid or parent.st_mode & 0o022:
+        return "the file or its folder is not root-owned and write-protected"
+    return None
+
+
+def _read_descriptor(descriptor: int, trusted_uid: int) -> bytes | str:
+    """Check the open file, then read at most one byte over the limit."""
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            return "the file is not a regular file"
+        if info.st_uid != trusted_uid or info.st_mode & 0o022:
+            return "the file or its folder is not root-owned and write-protected"
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            data = handle.read(MAX_KEY_FILE_BYTES + 1)
+    except OSError:
+        return "the file cannot be read"
+    return "the file is too large" if len(data) > MAX_KEY_FILE_BYTES else data
+
+
 def _read_trusted(path: Path, trusted_uid: int) -> bytes | str:
     """The file's bytes, or a reason it can't be trusted. It must be a regular file
     owned by ``trusted_uid`` that nobody else can write, in a folder that is the same.
-    Symlinks (the file, or its folder) are refused, and the checks run on the open
-    descriptor, so the file can't be swapped between the check and the read."""
+    The folder is checked before the file is opened (so a planted FIFO or device in a
+    wrong folder is never opened). Symlinks (the file, or its folder) are refused, and
+    the file checks run on the open descriptor, so it can't be swapped after the check.
+    A file over the size limit is refused, not cut off."""
+    problem = _folder_problem(path, trusted_uid)
+    if problem:
+        return problem
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
     try:
-        parent = path.parent.lstat()
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        descriptor = os.open(path, flags)
     except OSError:
         return "the file is missing, or is a symbolic link"
     try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or not stat.S_ISDIR(parent.st_mode):
-            return "the file is not a regular file in a real folder"
-        if any(i.st_uid != trusted_uid or i.st_mode & 0o022 for i in (info, parent)):
-            return "the file or its folder is not root-owned and write-protected"
-        with os.fdopen(descriptor, "rb", closefd=False) as handle:
-            return handle.read(MAX_KEY_FILE_BYTES + 1)[:MAX_KEY_FILE_BYTES]
-    except OSError:
-        return "the file cannot be read"
+        return _read_descriptor(descriptor, trusted_uid)
     finally:
         os.close(descriptor)
 
