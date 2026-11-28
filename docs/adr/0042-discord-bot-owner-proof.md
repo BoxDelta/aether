@@ -165,7 +165,8 @@ trusted issues with the owner's admin `gh` credentials (ADR-041 Limits).
     GitHub token are registered with a redactor that is part of the
     `dispatch/` package. The bot imports nothing outside `dispatch/`, the
     standard library and its pinned dependency groups, so the update diff
-    (appendix) covers all the code that runs in the key process; a test
+    (appendix) covers all the first-party code that runs in the key process
+    (the pinned libraries come from the `uv.lock` part of that diff); a test
     checks the imports. Limits: 5 tasks per
     hour, title up to 120 characters, details up to 2000.
 12. **Dependencies, in `dispatch`-only dependency groups**, each pinned to an
@@ -293,8 +294,10 @@ trusted issues with the owner's admin `gh` credentials (ADR-041 Limits).
     `aether-bot`'s files by another route. The owner's own sudo is the
     boundary, and only while nothing has written to the owner's shell
     configuration (a `sudo` function or a PATH entry would capture the
-    password): run the runbook from `fish --no-config` with `/usr/bin/sudo`
-    and absolute paths, as written. `pkexec`, `run0`, `systemd-run`,
+    password): the boundary is the owner's whole login environment (shell
+    configuration, `PATH`, `environment.d`). Run the runbook from a text
+    console or `/usr/bin/fish --no-config` with `/usr/bin/sudo` and absolute
+    paths, as written. `pkexec`, `run0`, `systemd-run`,
     `systemctl` and `su` are not on the Claude Code ask list; adding them is
     a follow-up (`.claude/settings.json`, owner approval). GNOME can show a
     polkit password dialog for them.
@@ -314,11 +317,13 @@ trusted issues with the owner's admin `gh` credentials (ADR-041 Limits).
 
 ## Appendix: runbook (the owner runs this with sudo; fish)
 
-Run it from a clean shell: start `fish --no-config` (so a `sudo` function or
-PATH entry in your fish configuration cannot intercept the password) and call
-`/usr/bin/sudo` with absolute paths for every tool it runs, because `sudo`
-must not run a file your user can write. The commands below do that. If you
-have a custom `secure_path` in sudoers, it does not matter then.
+Run it from a clean login: best from a text console (Ctrl+Alt+F3), or at
+least from `/usr/bin/fish --no-config`. Your normal shell and login
+environment (fish configuration, `PATH`, `~/.config/environment.d/`) are
+where something running as you could hide a fake `sudo` or `fish`, or an
+`LD_PRELOAD`. Call `/usr/bin/sudo` with absolute paths for every tool run
+under sudo, because `sudo` must not run a file your user can write. The
+commands below do that.
 
 The commands in part 1 can be run before the bot exists. Part 2 is fixed in
 the pull request that adds the bot, which also adds the unit file.
@@ -385,7 +390,11 @@ access only to `/var/lib/aether-bot`. For the network it uses
 DNS resolver. That keeps a compromised dependency away from the loopback
 services (LiteLLM, Postgres, n8n), Docker's bridge networks, the LAN and
 Tailscale; it can still reach the public internet, which it needs for Discord
-and GitHub.
+and GitHub, and that includes this PC's own public addresses. So every
+local service must listen on `127.0.0.1` only (docker-compose publishes with
+`127.0.0.1:`). Check before starting the bot:
+`/usr/bin/ss -ltn | /usr/bin/grep -E '(0\.0\.0\.0|\[::\]|\*):'` should list
+nothing you did not intend to expose; fix any hit first.
 
 **Updating the bot.** Everything merged to `main` reaches the process that
 holds the key, so read the whole diff of the bot's code, dependencies and
@@ -395,7 +404,7 @@ unit before deploying (a Dependabot bump of `discord.py` or `aiohttp` counts):
 /usr/bin/sudo /usr/bin/git -C /opt/aether-bot/repo fetch origin main
 /usr/bin/sudo /usr/bin/git -C /opt/aether-bot/repo log --oneline HEAD..origin/main
 /usr/bin/sudo /usr/bin/git -C /opt/aether-bot/repo diff --stat HEAD origin/main
-/usr/bin/sudo /usr/bin/git -C /opt/aether-bot/repo diff HEAD origin/main -- dispatch scripts/systemd pyproject.toml .python-version
+/usr/bin/sudo /usr/bin/git -C /opt/aether-bot/repo diff HEAD origin/main -- dispatch scripts/systemd pyproject.toml .python-version uv.lock
 /usr/bin/sudo /usr/bin/git -C /opt/aether-bot/repo merge --ff-only origin/main
 /usr/bin/sudo /usr/bin/env UV_PROJECT_ENVIRONMENT=/opt/aether-bot/venv UV_PYTHON_INSTALL_DIR=/opt/aether-bot/python /usr/bin/uv sync --locked --no-build --no-dev --group dispatch --group dispatch-bot --project /opt/aether-bot/repo
 /usr/bin/sudo /usr/bin/install -o root -g root -m 644 /opt/aether-bot/repo/scripts/systemd/system/aether-bot.service /etc/systemd/system/aether-bot.service
@@ -403,9 +412,11 @@ unit before deploying (a Dependabot bump of `discord.py` or `aiohttp` counts):
 /usr/bin/sudo /usr/bin/systemctl restart aether-bot.service
 ```
 
-`uv.lock` shows only in the stat; the bot imports nothing outside `dispatch/`
-(decision 11), so the diff above is all the code that runs in the key
-process.
+The diff includes `uv.lock` in full, so a bumped transitive package
+(`aiohttp`, `yarl`, `multidict`, ...) shows as a changed version line. The
+bot imports nothing outside `dispatch/` (decision 11), so the diff is all the
+first-party code in the key process plus the exact library versions it will
+run.
 
 **Checks after starting:** `/usr/bin/ss -ltnp` shows nothing for `aether-bot`;
 `systemd-analyze security aether-bot.service` shows the hardening; a `/task`
