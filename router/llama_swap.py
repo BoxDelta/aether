@@ -17,7 +17,8 @@ Rules this adapter keeps (each has a test):
 - The client follows no redirects and ignores proxy variables, so the API key and
   the prompt only go to the configured host.
 - One request at a time (the model is shared with the dispatcher, docs/03 §3).
-- ``check_available`` lists models (``GET /v1/models``), which never loads the model.
+- ``check_available`` lists models (``GET /v1/models``) and ``is_loaded`` reads
+  ``GET /running``; neither loads the model.
 - Error messages are built from safe parts only (status code, model name); the
   server's own error text is never copied because it can echo request content. Nothing
   here logs a URL, host, key, prompt or reply.
@@ -53,6 +54,7 @@ PROVIDER_NAME = "llama-swap"
 # A cold model takes about 25 s to load (ADR-040), which counts toward the read time.
 CONNECT_TIMEOUT_S = 5.0
 AVAILABILITY_TIMEOUT_S = 2.0
+RUNNING_TIMEOUT_S = 1.0
 
 # LiteLLM's default port. Pointing the URL at it would put prompts in its logs.
 LITELLM_PORTS = frozenset({4000})
@@ -215,6 +217,28 @@ class LlamaSwapProvider(Provider):
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+    async def is_loaded(self) -> bool:
+        """True only if llama-swap itself reports the default model as ready
+        (``GET /running``, which never loads a model). Same client, so the same
+        host, no redirects, no proxies and the same key. Any failure, a slow answer,
+        or an answer we don't understand means "not loaded": the cold-start check
+        then needs the VRAM first (ADR-040). Never raises."""
+        try:
+            async with asyncio.timeout(RUNNING_TIMEOUT_S):
+                response = await self._client.get(f"{self._origin}/running")
+            if response.status_code != httpx.codes.OK:
+                return False
+            entries = response.json()["running"]
+            return any(
+                isinstance(e, dict)
+                and e.get("model") == self.info.default_model
+                and e.get("state") == "ready"
+                for e in entries
+            )
+        except Exception as exc:
+            logger.debug("llama-swap running state unknown", extra={"reason": type(exc).__name__})
+            return False
 
     async def check_available(self) -> bool:
         """True if llama-swap answers and lists the default model. Never raises.

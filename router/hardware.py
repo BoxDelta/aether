@@ -25,8 +25,6 @@ MIB = 1024 * 1024
 # Charter target "leave at least 1.5 GB free", read as GiB (the stricter reading).
 MIN_FREE_VRAM_BYTES = 1536 * MIB
 NVIDIA_SMI_TIMEOUT_S = 2.0
-# The process llama-swap starts for the local model (ADR-040), matched by exact name.
-LOCAL_MODEL_PROCESS = "llama-server"
 MEMINFO_PATH = Path("/proc/meminfo")
 
 GpuSource = Literal["nvml", "nvidia-smi", "unknown"]
@@ -39,9 +37,6 @@ class GpuState:
     vram_free_bytes: int | None = None
     # 0-100, None when the driver does not report it.
     utilization_percent: int | None = None
-    # VRAM held by the local model's own process (``llama-server``, ADR-040), None
-    # when it is not loaded or NVML can't tell. Only NVML reports it.
-    local_model_bytes: int | None = None
 
 
 UNKNOWN_GPU = GpuState(source="unknown")
@@ -83,7 +78,7 @@ def _probe_nvml() -> GpuState | None:
             utilization: int | None = int(nvml.nvmlDeviceGetUtilizationRates(handle).gpu)
         except Exception:
             utilization = None  # some drivers/GPUs don't support it
-        return GpuState("nvml", total, free, utilization, _local_model_bytes(nvml, handle))
+        return GpuState("nvml", total, free, utilization)
     except Exception as exc:
         logger.debug("NVML query failed", extra={"reason": type(exc).__name__})
         return None
@@ -92,26 +87,6 @@ def _probe_nvml() -> GpuState | None:
             nvml.nvmlShutdown()
         except Exception:
             logger.debug("NVML shutdown failed")
-
-
-def _local_model_bytes(nvml: ModuleType, handle: object) -> int | None:
-    """VRAM used by processes named ``llama-server``, or None (not loaded, or NVML
-    can't list processes or names). Never raises. The name is the only link to the
-    model: another process with that name would only raise the room counted."""
-    try:
-        total = 0
-        for proc in nvml.nvmlDeviceGetComputeRunningProcesses(handle):
-            used = proc.usedGpuMemory
-            if not isinstance(used, int) or used <= 0:
-                continue  # NVML reports None/N/A inside some containers
-            raw = nvml.nvmlSystemGetProcessName(proc.pid)
-            name = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
-            if name.rsplit("/", 1)[-1] == LOCAL_MODEL_PROCESS:
-                total += used
-        return total or None
-    except Exception as exc:
-        logger.debug("NVML process list failed", extra={"reason": type(exc).__name__})
-        return None
 
 
 def _parse_mib(field: str) -> int | None:
@@ -195,8 +170,8 @@ def has_local_headroom(
     snapshot: HardwareSnapshot,
     min_free_vram_bytes: int = MIN_FREE_VRAM_BYTES,
     *,
-    count_local_model: bool = False,
-    model_bytes: int = 0,
+    model_bytes: int | None = None,
+    model_loaded: bool = False,
 ) -> Headroom:
     """Whether local inference may run without eating into the desktop's VRAM.
 
@@ -204,26 +179,27 @@ def has_local_headroom(
     responsiveness before local throughput, so routing prefers cloud unless it
     has a reason (privacy, manual override) to go local anyway.
 
-    With ``count_local_model`` (only for a request that goes to the llama-swap model
-    itself, ADR-040) its own allocation counts as room it already has: the request
-    takes no new VRAM, so a warm model must not block routing to itself. The room is
-    free VRAM plus that allocation. Note this means the 1.5 GiB reserve cannot fail
-    while the model is resident (room is then total VRAM minus other users); it only
-    applies when the model is not loaded (#277: kept as built).
+    The GPU numbers are free VRAM only. For a request to the llama-swap model
+    (``model_bytes`` set, ADR-040) whether the model is loaded comes from llama-swap
+    itself (``model_loaded``, from its ``/running`` endpoint), never from the GPU:
 
-    With the flag and the model *not* loaded (or NVML can't see it), the request would
-    load it, so free VRAM must cover ``model_bytes`` plus the reserve (ADR-040,
-    cold start); otherwise there is no headroom and routing looks elsewhere. The flag
-    off (other providers, the dispatcher): free VRAM against the reserve, as before.
+    - loaded: the request takes no new VRAM, so the 1.5 GiB reserve is not checked
+      (#277, kept as built); the GPU state doesn't matter;
+    - not loaded (or llama-swap couldn't say): the request would load it, so free
+      VRAM must cover ``model_bytes`` plus the reserve, and an unknown GPU is no
+      headroom.
+
+    ``model_bytes`` None (other providers, the dispatcher): free VRAM against the
+    reserve, as before.
     """
     free = snapshot.gpu.vram_free_bytes
+    if model_bytes is not None and model_loaded:
+        return Headroom(True, "model loaded: no new VRAM needed")
     if free is None:
         return Headroom(False, "GPU state unknown")
-    own = (snapshot.gpu.local_model_bytes or 0) if count_local_model else 0
-    room = free + own
-    if count_local_model and not own and model_bytes:
+    free_mib = free // MIB
+    if model_bytes is not None:
         needed = model_bytes + min_free_vram_bytes
-        free_mib, need_mib = free // MIB, needed // MIB
         if free < needed:
             return Headroom(
                 False,
@@ -231,10 +207,9 @@ def has_local_headroom(
                 f"{model_bytes // MIB} MiB plus reserve {min_free_vram_bytes // MIB} MiB",
             )
         return Headroom(
-            True, f"model not loaded: free VRAM {free_mib} MiB meets {need_mib} MiB needed"
+            True, f"model not loaded: free VRAM {free_mib} MiB meets {needed // MIB} MiB needed"
         )
-    room_mib, need_mib = room // MIB, min_free_vram_bytes // MIB
-    counted = f" (includes the local model's {own // MIB} MiB)" if own else ""
-    if room < min_free_vram_bytes:
-        return Headroom(False, f"free VRAM {room_mib} MiB{counted} below reserve {need_mib} MiB")
-    return Headroom(True, f"free VRAM {room_mib} MiB{counted} meets reserve {need_mib} MiB")
+    need_mib = min_free_vram_bytes // MIB
+    if free < min_free_vram_bytes:
+        return Headroom(False, f"free VRAM {free_mib} MiB below reserve {need_mib} MiB")
+    return Headroom(True, f"free VRAM {free_mib} MiB meets reserve {need_mib} MiB")

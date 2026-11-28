@@ -114,9 +114,9 @@ context to a cloud provider merely because it is cheaper or faster.
 Local inference is llama-swap (ADR-040), an OpenAI-compatible server that
 Nexus calls directly on loopback, never through LiteLLM or Langfuse, with
 thinking off on every request. The Ollama adapter stays but is disabled
-by default. While the local model is loaded, the GPU probe counts the
-model's own VRAM as room it already has, so a warm model never blocks
-routing to itself. Host trust and privacy rules: docs/05 §7.1.
+by default. Whether the local model is loaded comes from llama-swap's own
+`/running` endpoint; a loaded model needs no new VRAM, so it never blocks
+routing to itself, and a cold one needs its size plus the reserve free. Host trust and privacy rules: docs/05 §7.1.
 
 ### 4.4 AETHER Automata --- tools and execution
 

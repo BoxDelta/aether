@@ -201,7 +201,9 @@ performs acceptably until tested on the actual system.
 utilization (GPU 0) and available RAM. Uses NVML (`nvidia-ml-py`), falls
 back to parsing `nvidia-smi`, else reports "unknown".
 `has_local_headroom()` is true only when free VRAM is at least the Charter
-reserve of 1.5 GiB. Unknown GPU state counts as no headroom, so routing
+reserve of 1.5 GiB. For a request to the llama-swap model, loaded or cold
+comes from llama-swap's `/running` (never from NVML): loaded needs no new
+VRAM; cold needs `LLAMA_SWAP_MODEL_VRAM_MIB` (default 5200) plus the reserve. Unknown GPU state counts as no headroom, so routing
 prefers cloud unless privacy or a manual override says otherwise. Each
 result includes a loggable reason. The free VRAM figure already accounts
 for any model Ollama has loaded. It does not predict how much a model

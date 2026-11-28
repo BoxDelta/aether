@@ -79,7 +79,6 @@ from router.contract import (
 )
 from router.hardware import MIN_FREE_VRAM_BYTES, HardwareSnapshot, Headroom, has_local_headroom
 from router.identity_call import call_with_identity
-from router.llama_swap import PROVIDER_NAME as LLAMA_SWAP_NAME
 from router.llama_swap import LlamaSwapProvider
 from router.memory_context import (
     MemoryContext,
@@ -359,27 +358,29 @@ class Router:
                     extra={"provider": provider.name, "error_type": type(exc).__name__},
                 )
 
-    def _model_bytes(self) -> int:
-        provider = self._by_name.get(LLAMA_SWAP_NAME)
-        return provider.vram_bytes if isinstance(provider, LlamaSwapProvider) else 0
-
-    async def _headroom(self) -> tuple[Headroom | None, Headroom | None]:
-        """(plain, counting the local model's own VRAM); None when the probe fails."""
+    async def _snapshot(self) -> HardwareSnapshot | None:
         try:
             # The probe blocks (NVML / nvidia-smi subprocess); keep the event loop free.
-            snapshot = await asyncio.to_thread(self._probe)
+            return await asyncio.to_thread(self._probe)
         except Exception as exc:  # probe must not raise; treat a failure as unknown
             logger.warning("Hardware probe failed", extra={"reason": type(exc).__name__})
-            return None, None
-        return (
-            has_local_headroom(snapshot, self._min_free_vram_bytes),
-            has_local_headroom(
-                snapshot,
+            return None
+
+    def _headroom(
+        self, snapshot: HardwareSnapshot | None, target: Provider | None, loaded: bool
+    ) -> Headroom | None:
+        """The VRAM check for the provider a request would go to (None: not probed)."""
+        if isinstance(target, LlamaSwapProvider):
+            # A loaded model needs no GPU reading; a cold one needs free VRAM.
+            if snapshot is None and not loaded:
+                return None
+            return has_local_headroom(
+                snapshot or HardwareSnapshot(gpu=hardware.UNKNOWN_GPU, ram_available_bytes=None),
                 self._min_free_vram_bytes,
-                count_local_model=True,
-                model_bytes=self._model_bytes(),
-            ),
-        )
+                model_bytes=target.vram_bytes,
+                model_loaded=loaded,
+            )
+        return has_local_headroom(snapshot, self._min_free_vram_bytes) if snapshot else None
 
     async def decide(
         self,
@@ -415,24 +416,31 @@ class Router:
                 # checked, and a cloud override runs no GPU probe (#121).
                 eligible = [p for p in eligible if p.name == options.override]
             need_probe = any(p.info.kind == "local" for p in eligible)
-            headroom_task = asyncio.ensure_future(self._headroom()) if need_probe else None
+            llama_swap = next((p for p in eligible if isinstance(p, LlamaSwapProvider)), None)
+            snapshot_task = asyncio.ensure_future(self._snapshot()) if need_probe else None
+            # Loaded or cold comes from llama-swap's /running, not from the GPU.
+            loaded_task = (
+                asyncio.ensure_future(llama_swap.is_loaded()) if llama_swap is not None else None
+            )
             try:
                 statuses = await asyncio.gather(*(_available(p) for p in eligible))
-                plain, counted = await headroom_task if headroom_task is not None else (None, None)
+                snapshot = await snapshot_task if snapshot_task is not None else None
+                loaded = await loaded_task if loaded_task is not None else False
             finally:
                 # Cancelled (a client disconnect) or failed: don't leave the probe
-                # task behind unawaited (#121).
-                if headroom_task is not None and not headroom_task.done():
-                    headroom_task.cancel()
+                # tasks behind unawaited (#121).
+                for task in (snapshot_task, loaded_task):
+                    if task is not None and not task.done():
+                        task.cancel()
 
             available = {p.name: ok for p, ok in zip(eligible, statuses, strict=True)}
-            # The model's own VRAM counts as room only for a request that goes to the
+            # The model-aware check applies only to a request that goes to the
             # llama-swap model itself (ADR-040): the first usable local provider, as
             # choose_route picks it. Any other local provider gets the plain check.
             first_local = next(
                 (p for p in eligible if p.info.kind == "local" and available.get(p.name)), None
             )
-            headroom = counted if first_local and first_local.name == LLAMA_SWAP_NAME else plain
+            headroom = self._headroom(snapshot, first_local, loaded)
             candidates = [
                 Candidate(
                     name=p.name,

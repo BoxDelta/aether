@@ -26,8 +26,9 @@ runs in the dispatcher stack, outside this repository.
 -   Use a loopback URL. Any other host, a private-LAN address included, is
     treated like the cloud (needs `allow_cloud`, at most Personal, Public memory only) and there is
     no opt-in.
--   Aether never keeps the model warm: no pings, and `/ready` only lists
-    models. llama-swap's `ttl` (900 s) unloads it after the last request,
+-   Aether never keeps the model warm: no pings; `/ready` only lists models and
+    routing only reads `/running` to tell loaded from cold (a model it can't
+    ask about counts as cold). llama-swap's `ttl` (900 s) unloads it after the last request,
     dispatcher traffic included.
 
 ## Check

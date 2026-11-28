@@ -566,23 +566,22 @@ differences:
 -   Ollama is off unless `AETHER_OLLAMA_ENABLED=true`; llama-swap is on only
     when `LLAMA_SWAP_MODEL` is set. With neither, only the cloud provider
     exists, so a default (local-only) request has no route.
--   Cold start: while the model is not loaded (or NVML can't see it), routing
-    to llama-swap needs free VRAM of at least the model's size
-    (`LLAMA_SWAP_MODEL_VRAM_MIB`, default 5200) plus the 1.5 GiB reserve;
-    otherwise it looks elsewhere (the cloud with `allow_cloud`, else local
-    without headroom as before). Known limit: a warm model NVML can't see (the
-    nvidia-smi fallback, or N/A inside a container) looks like a cold one, so
-    `allow_cloud` requests go to the cloud while it is warm.
+-   Loaded or cold: decided by llama-swap itself, from `GET /running`
+    (loopback, the same client rules, 1 s timeout; it never loads a model).
+    NVML supplies free VRAM only. If `/running` can't be reached, is slow,
+    or isn't understood, the model counts as cold. A loaded model needs no
+    new VRAM, so the 1.5 GiB reserve is not checked for a request to it
+    (kept as built, owner decision #277). A cold one needs free VRAM of at
+    least the model's size (`LLAMA_SWAP_MODEL_VRAM_MIB`, default 5200) plus
+    the reserve; otherwise routing looks elsewhere (the cloud with
+    `allow_cloud`, else local without headroom as before). Other providers
+    and the dispatcher use free VRAM alone.
 -   Known limitations: `allow_cloud` also covers an off-network llama-swap
-    host, which its name doesn't say; the
-    GPU probe matches the model's process by its name (`llama-server`) only, so
-    any process with that name raises the room counted (it can bypass the VRAM
-    reserve, never privacy). While the llama-swap model is loaded, the room
-    counted for a request to it is total VRAM minus other users, so the 1.5 GiB
-    reserve cannot fail then (kept as built, owner decision #277); other providers
-    and the dispatcher use free VRAM alone. A key sent to an off-network `http`
+    host, which its name doesn't say. A key sent to an off-network `http`
     URL travels in plain text (Core logs a fixed warning); a key under 8
     characters is refused at startup because it could not be redacted.
+    While llama-swap is unreachable the model counts as cold, but then it
+    is unavailable anyway.
 
 ## 8. Execution isolation
 

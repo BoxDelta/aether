@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -61,6 +62,8 @@ class Recorder:
     def _default(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/v1/models":
             return httpx.Response(200, json={"data": [{"id": MODEL}, {"id": "other"}]})
+        if request.url.path == "/running":
+            return httpx.Response(200, json={"running": []})
         return httpx.Response(200, json=completion())
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -547,28 +550,6 @@ def test_key_over_plain_http_off_network_warns(caplog: pytest.LogCaptureFixture)
     assert all(KEY not in r.getMessage() for r in caplog.records)
 
 
-def test_only_a_llama_swap_request_counts_the_model_in_routing(identity: Identity) -> None:
-    from tests.fakes import FakeProvider
-
-    # 1,131 MiB free, llama-server holds 6,006 MiB.
-    def probe() -> Any:
-        from router.hardware import MIB, GpuState, HardwareSnapshot
-
-        gpu = GpuState("nvml", 8192 * MIB, 1131 * MIB, 5, 6006 * MIB)
-        return HardwareSnapshot(gpu=gpu, ram_available_bytes=16 * 1024**3)
-
-    p, _ = provider()
-    cloud = FakeProvider("claude", "cloud")
-    r = Router([p, cloud], identity, secret_check=CHECK, probe=probe)
-    out = asyncio.run(r.handle(request(), RouteOptions(allow_cloud=True)))
-    assert out.decision.provider == PROVIDER_NAME  # warm model does not push to cloud
-
-    other = FakeProvider("ollama", "local")
-    r2 = Router([other, cloud], identity, secret_check=CHECK, probe=probe)
-    out2 = asyncio.run(r2.handle(request(), RouteOptions(allow_cloud=True)))
-    assert out2.decision.provider == "claude"  # plain check: 1,131 MiB < reserve
-
-
 def test_a_private_lan_host_needs_allow_cloud_and_gets_public_memory(identity: Identity) -> None:
     p, rec = provider(url="http://192.168.1.20:9292")
     r = router(p, identity)
@@ -580,52 +561,136 @@ def test_a_private_lan_host_needs_allow_cloud_and_gets_public_memory(identity: I
     assert out.decision.reason.endswith(OFF_NETWORK_MARK)
 
 
-def _probe(free_mib: int, model_mib: int | None) -> Any:
+def _probe(free_mib: int) -> Any:
     from router.hardware import MIB, GpuState, HardwareSnapshot
 
     def probe() -> HardwareSnapshot:
-        gpu = GpuState(
-            "nvml", 8192 * MIB, free_mib * MIB, 5, model_mib * MIB if model_mib else None
-        )
+        gpu = GpuState("nvml", 8192 * MIB, free_mib * MIB, 5)
         return HardwareSnapshot(gpu=gpu, ram_available_bytes=16 * 1024**3)
 
     return probe
 
 
-@pytest.mark.parametrize(
-    ("free_mib", "goes_local"),
-    [(7105, True), (5200 + 1536, True), (5200 + 1535, False), (3000, False)],
-)
-def test_cold_start_needs_model_size_plus_reserve(
-    identity: Identity, free_mib: int, goes_local: bool
-) -> None:
+def running(state: str | None = "ready", model: str = MODEL) -> Handler:
+    """llama-swap that reports ``model`` in ``state`` on /running (None: nothing)."""
+
+    def respond(req: httpx.Request) -> httpx.Response:
+        if req.url.path == "/running":
+            entries = [] if state is None else [{"model": model, "state": state}]
+            return httpx.Response(200, json={"running": entries})
+        return Recorder._default(req)
+
+    return respond
+
+
+def _route(
+    identity: Identity, handler: Handler, free_mib: int, privacy: PrivacyLevel = "personal"
+) -> str:
     from tests.fakes import FakeProvider
 
-    p, _ = provider()  # default model size: 5200 MiB
-    cloud = FakeProvider("claude", "cloud")
-    r = Router([p, cloud], identity, secret_check=CHECK, probe=_probe(free_mib, None))
-
-    out = asyncio.run(r.handle(request(), RouteOptions(allow_cloud=True)))
-
-    assert (out.decision.provider == PROVIDER_NAME) is goes_local
-    if not goes_local:
-        assert "model not loaded" in out.decision.reason
-
-
-def test_loaded_model_keeps_the_counted_behaviour(identity: Identity) -> None:
-    from tests.fakes import FakeProvider
-
-    p, _ = provider()
+    p, _ = provider(handler)
     r = Router(
         [p, FakeProvider("claude", "cloud")],
         identity,
         secret_check=CHECK,
-        probe=_probe(1131, 6006),
+        probe=_probe(free_mib),
+    )
+    out = asyncio.run(r.handle(request(privacy), RouteOptions(allow_cloud=True)))
+    return out.decision.provider
+
+
+@pytest.mark.parametrize("privacy", ["public", "personal"])
+def test_loaded_model_with_low_free_vram_still_routes_locally(
+    identity: Identity, privacy: PrivacyLevel
+) -> None:
+    # 1,131 MiB free is below the reserve, as with Qwen loaded (README §2.3).
+    assert _route(identity, running("ready"), 1131, privacy) == PROVIDER_NAME
+
+
+@pytest.mark.parametrize("free_mib", [1131, 3000, 5200 + 1535])
+def test_cold_model_without_enough_vram_has_no_local_route(
+    identity: Identity, free_mib: int
+) -> None:
+    assert _route(identity, running(None), free_mib) == "claude"
+
+
+@pytest.mark.parametrize("free_mib", [5200 + 1536, 7105])
+def test_cold_model_with_enough_vram_routes_locally(identity: Identity, free_mib: int) -> None:
+    assert _route(identity, running(None), free_mib) == PROVIDER_NAME
+
+
+def test_cold_reason_names_the_cold_start(identity: Identity) -> None:
+    from tests.fakes import FakeProvider
+
+    p, _ = provider(running(None))
+    r = Router(
+        [p, FakeProvider("claude", "cloud")], identity, secret_check=CHECK, probe=_probe(3000)
     )
 
     out = asyncio.run(r.handle(request(), RouteOptions(allow_cloud=True)))
 
-    assert out.decision.provider == PROVIDER_NAME
+    assert "model not loaded" in out.decision.reason
+
+
+def test_nvml_cannot_make_a_cold_model_look_loaded(identity: Identity) -> None:
+    # Whatever the GPU says, only /running decides loaded vs cold.
+    assert _route(identity, running(None), 1131) == "claude"
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(200, json={"running": [{"model": MODEL, "state": "starting"}]}),
+        httpx.Response(200, json={"running": [{"model": "other", "state": "ready"}]}),
+        httpx.Response(200, json={"running": "nope"}),
+        httpx.Response(200, json={}),
+        httpx.Response(200, content=b"<html>"),
+        httpx.Response(401),
+        httpx.Response(500),
+        httpx.Response(307, headers={"location": "http://evil.example.org/running"}),
+    ],
+)
+def test_anything_but_a_ready_model_is_cold(response: httpx.Response) -> None:
+    p, rec = provider(lambda _: response)
+
+    assert asyncio.run(p.is_loaded()) is False
+    assert [r.url.host for r in rec.requests] == ["127.0.0.1"]
+
+
+def test_an_unreachable_or_slow_running_endpoint_is_cold() -> None:
+    def refuse(_: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    async def hang(_: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(5)
+        return httpx.Response(200, json={"running": [{"model": MODEL, "state": "ready"}]})
+
+    p, _ = provider(refuse)
+    assert asyncio.run(p.is_loaded()) is False
+    slow, _ = provider(hang)  # type: ignore[arg-type]
+    started = time.monotonic()
+    assert asyncio.run(slow.is_loaded()) is False
+    assert time.monotonic() - started < 3
+
+
+def test_the_running_check_uses_the_same_client_rules() -> None:
+    p, rec = provider(running("ready"))
+
+    assert asyncio.run(p.is_loaded()) is True
+
+    assert [(r.method, r.url.path) for r in rec.requests] == [("GET", "/running")]
+    assert rec.requests[0].headers["authorization"] == f"Bearer {KEY}"
+    assert p._client.follow_redirects is False
+
+
+def test_the_running_check_never_generates_or_loads() -> None:
+    p, rec = provider(running("ready"))
+
+    asyncio.run(p.is_loaded())
+    asyncio.run(p.check_available())
+
+    assert rec.chats() == []
+    assert all(r.method == "GET" for r in rec.requests)
 
 
 def test_model_vram_setting() -> None:
