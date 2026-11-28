@@ -19,8 +19,8 @@ from tests.dispatch.helpers import (
     FakeGitHub,
     chat_reply,
     issue_json,
-    labeled,
     make_settings,
+    owner_labels,
 )
 
 ISSUE = Issue(7, "Tidy a test", "Rename a helper.", OWNER, ())
@@ -184,7 +184,7 @@ def test_run_writes_briefs_records_local_and_skips_handled(tmp_path: Path) -> No
     settings = make_settings(tmp_path)
     fake = FakeGitHub(
         issues=[issue_json(1), issue_json(2), issue_json(3), issue_json(4, author="mallory")],
-        events={n: [labeled(OWNER)] for n in (1, 2, 3, 4)},
+        events={n: owner_labels() for n in (1, 2, 3, 4)},
     )
     st = state.State(briefed={3})
     path, briefs = tmp_path / "state.json", tmp_path / "briefs"

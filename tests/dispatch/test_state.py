@@ -11,10 +11,18 @@ from dispatch import state
 def test_round_trip_and_atomic(tmp_path: Path) -> None:
     path = tmp_path / "sub" / "state.json"
     assert state.load(path) == state.State()
-    state.save(state.State(briefed={3, 1}, announced={1}, local={7}), path)
-    assert json.loads(path.read_text()) == {"briefed": [1, 3], "announced": [1], "local": [7]}
+    saved = state.State(briefed={3, 1}, announced={1}, local={7}, opened={9: 40}, tries={7: 1})
+    state.save(saved, path)
+    assert json.loads(path.read_text()) == {
+        "briefed": [1, 3],
+        "announced": [1],
+        "local": [7],
+        "opened": {"9": 40},
+        "tries": {"7": 1},
+    }
     assert [p.name for p in path.parent.iterdir()] == ["state.json"]  # no temp left
-    assert state.load(path).handled() == {1, 3, 7}
+    assert state.load(path) == saved
+    assert state.load(path).handled() == {1, 3, 7, 9}
 
 
 def test_dry_run_posted_key_is_dropped(tmp_path: Path) -> None:
@@ -34,6 +42,9 @@ def test_dry_run_posted_key_is_dropped(tmp_path: Path) -> None:
         '{"briefed": [0]}',
         '{"posted": ["1"]}',
         '{"surprise": []}',
+        '{"tries": {"x": 1}}',
+        '{"tries": {"1": -1}}',
+        '{"opened": []}',
     ],
 )
 def test_bad_state_is_an_error(tmp_path: Path, text: str) -> None:

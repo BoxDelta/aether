@@ -37,6 +37,8 @@ ALWAYS_CLAUDE_PATHS: tuple[str, ...] = (
     # Named in docs/05, or found missing in #133
     ".env",
     ".gitignore",
+    ".gitattributes",
+    ".gitmodules",
     "CONTRIBUTING.md",
     "docker-compose.yml",
     "compose.vault.yaml",
@@ -104,6 +106,20 @@ AUTH_PARTS: tuple[str, ...] = (
 ALWAYS_CLAUDE_LABELS: tuple[str, ...] = ("model:opus", "security", "dispatch:claude-only")
 # Not a separate rule: the Dependabot label is one way an issue says it adds a dependency.
 DEPENDENCY_LABELS: tuple[str, ...] = ("dependencies",)
+# A changed file with one of these names adds or changes a dependency (local diffs).
+DEPENDENCY_FILES: tuple[str, ...] = (
+    "package.json",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "Pipfile",
+    "Pipfile.lock",
+    "poetry.lock",
+    "setup.py",
+    "setup.cfg",
+    "Dockerfile",
+)
+_REQUIREMENTS = re.compile(r"requirements[\w.-]*\.(?:txt|in)", re.IGNORECASE)
 
 _EDGE = r"(?<![\w.-])"  # not part of a longer name ("api.github.com", "test_db.py")
 _END = r"(?![\w-])"
@@ -173,24 +189,33 @@ def _auth_part(clean: str) -> str | None:
     return None
 
 
-def path_rule(path: str) -> str | None:
-    """The rule a changed file path matches, or None. For local diffs (step 4b)."""
-    clean = path.removeprefix("./")
+def _listed_path(clean: str) -> str | None:
     for listed in ALWAYS_CLAUDE_PATHS:
         if listed.endswith("/") or listed == "docs/05_":
             if clean.startswith(listed):
-                return f"path {listed}"
+                return listed
         elif listed == ".env":
             if clean.rsplit("/", 1)[-1].startswith(".env") and not clean.endswith(".example"):
-                return "path .env"
+                return listed
         elif clean == listed:
-            return f"path {listed}"
-    for name in CORE_FILES:
-        if clean == f"core/{name}":
-            return f"path core/{name}"
+            return listed
+    return None
+
+
+def path_rule(path: str) -> str | None:
+    """The rule a changed file path matches, or None. For local diffs (step 4b)."""
+    clean = path.removeprefix("./")
+    listed = _listed_path(clean)
+    if listed is None and clean.removeprefix("core/") in CORE_FILES and clean.startswith("core/"):
+        listed = clean
+    if listed is not None:
+        return f"path {listed}"
     word = _auth_part(clean)
     if word is not None:
         return f"auth code (path has '{word}')"
+    name = clean.rsplit("/", 1)[-1]
+    if name in DEPENDENCY_FILES or _REQUIREMENTS.fullmatch(name):
+        return f"adds a dependency (path {name})"
     return None
 
 

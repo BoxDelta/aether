@@ -26,6 +26,7 @@ ExecStart=/usr/bin/env uv run python -m dispatch run
 UMask=0077
 NoNewPrivileges=yes
 Nice=10
-# A run waits up to 5 minutes for the GPU per issue; stop a stuck run well before
-# the next timer firing would pile up.
-TimeoutStartSec=14min
+# A run waits up to 5 minutes for the GPU per issue, then makes at most one local
+# try (Aider up to 10 minutes, tests up to 10). A timer firing during a run stops
+# at once (.dispatch/run.lock), so runs never pile up.
+TimeoutStartSec=40min

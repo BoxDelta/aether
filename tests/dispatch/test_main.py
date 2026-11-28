@@ -8,7 +8,13 @@ import pytest
 from dispatch import __main__ as cli
 from dispatch import classify
 from dispatch.github import Issue
-from tests.dispatch.helpers import OWNER, FakeGitHub, issue_json, labeled, make_settings
+from tests.dispatch.helpers import (
+    FakeGitHub,
+    issue_json,
+    labeled,
+    make_settings,
+    owner_labels,
+)
 
 FIXTURE = Path(__file__).parent / "fixtures" / "triage_set.yaml"
 
@@ -21,7 +27,7 @@ def test_triage_checks_trust_per_issue(tmp_path: Path) -> None:
     settings = make_settings(tmp_path)
     fake = FakeGitHub(
         issues=[issue_json(1), issue_json(2, author="mallory"), issue_json(3)],
-        events={1: [labeled(OWNER)], 2: [labeled(OWNER)], 3: [labeled("mallory")]},
+        events={1: owner_labels(), 2: owner_labels(), 3: [labeled("mallory")]},
     )
     with fake.client(settings) as gh:
         rows = cli.triage_rows(gh, settings, _always_local, None)

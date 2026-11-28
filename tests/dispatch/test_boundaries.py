@@ -1,9 +1,10 @@
-"""Static guards: no GitHub write or merge call in dispatch/, and Aether never imports it.
+"""Static guards: no merge call in dispatch/, GitHub writes only in github.py, and
+Aether never imports it.
 
 ADR-030 §Credentials: the token could merge a passing PR, so the code must have
-no merge call. In step 4a the dispatcher makes no GitHub write at all; its only
-non-GET calls are the POST to LiteLLM in classify.py and the Discord webhook POST
-in notify.py (#135).
+no merge call. The only non-GET calls are the POSTs to LiteLLM (classify.py,
+brief.py), the Discord webhook POST (notify.py) and github.py's ``_post``, whose
+request hook allows exactly "open a pull request" and "add labels" (step 4b).
 """
 
 import ast
@@ -21,6 +22,7 @@ ALLOWED_CALLS = [
     ("classify.py", "post", "/chat/completions"),
     ("brief.py", "post", "/chat/completions"),
     ("notify.py", "post", None),  # the webhook URL from settings, checked below
+    ("github.py", "post", None),  # through the write client's allowlist hook
 ]
 
 
@@ -75,16 +77,23 @@ def test_notify_has_no_github_client_or_token() -> None:
 
 
 def test_no_write_method_names_in_strings() -> None:
+    # "POST" appears only in github.py's allowlist; PUT, PATCH and DELETE nowhere.
     for path in MODULES:
         for text in _strings(path):
-            assert not WRITE_WORDS.search(text), (path.name, text)
+            found = set(WRITE_WORDS.findall(text))
+            assert found <= ({"POST"} if path.name == "github.py" else set()), (path.name, text)
+
+
+MERGE_SHAPES = re.compile(
+    r"/merge\b|merge_method|pulls/|/git/refs|--delete|:refs/heads/main|^\+(?:head|refs)"
+)
 
 
 @pytest.mark.parametrize("path", MODULES, ids=lambda p: p.name)
 def test_no_merge_endpoint(path: Path) -> None:
-    # The merge endpoint is PUT /repos/{o}/{r}/pulls/{n}/merge; "safemerge.fish" is a path rule.
+    # The merge endpoint is PUT /repos/{o}/{r}/pulls/{n}/merge. Also no ref deletes or force pushes.
     for text in _strings(path):
-        assert not re.search(r"(?<![a-z])merge|pulls", text.lower()), (path.name, text)
+        assert not MERGE_SHAPES.search(text.lower()), (path.name, text)
 
 
 def test_github_client_never_used_for_litellm() -> None:

@@ -138,3 +138,88 @@ def test_http_error_message_has_no_token(tmp_path: Path) -> None:
     ):
         github.list_auto_issues(client, settings)
     assert token not in str(info.value)
+
+
+def _write_client(tmp_path: Path, seen: list[httpx.Request]) -> tuple[httpx.Client, object]:
+    settings = make_settings(tmp_path)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(201, json={"number": 90})
+
+    return github.make_write_client(settings, httpx.MockTransport(handler)), settings
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("PUT", f"/repos/{OWNER}/aether/pulls/5/merge"),
+        ("PATCH", f"/repos/{OWNER}/aether/issues/5"),
+        ("DELETE", f"/repos/{OWNER}/aether/git/refs/heads/main"),
+        ("POST", f"/repos/{OWNER}/aether/issues/5/comments"),
+        ("POST", f"/repos/{OWNER}/aether/pulls/5/reviews"),
+        ("POST", f"/repos/{OWNER}/aether/git/refs"),
+    ],
+)
+def test_write_client_refuses_everything_but_two_calls(
+    tmp_path: Path, method: str, path: str
+) -> None:
+    seen: list[httpx.Request] = []
+    client, _ = _write_client(tmp_path, seen)
+    with client, pytest.raises(github.GitHubError, match="not an allowed"):
+        client.request(method, path)
+    assert seen == []  # refused before it was sent
+
+
+def test_write_client_opens_pr_and_adds_dispatcher_labels(tmp_path: Path) -> None:
+    seen: list[httpx.Request] = []
+    client, settings = _write_client(tmp_path, seen)
+    with client:
+        number = github.open_pull_request(client, settings, "dispatch/5-x", "t", "b")  # type: ignore[arg-type]
+        github.add_label(client, settings, number, github.LOCAL_PR_LABEL)  # type: ignore[arg-type]
+    assert number == 90
+    assert [(r.method, r.url.path) for r in seen] == [
+        ("POST", f"/repos/{OWNER}/aether/pulls"),
+        ("POST", f"/repos/{OWNER}/aether/issues/90/labels"),
+    ]
+    import json
+
+    assert json.loads(seen[0].content)["base"] == "main"
+    assert json.loads(seen[0].content)["head"] == "dispatch/5-x"
+
+
+@pytest.mark.parametrize(
+    "label", [github.AUTO_LABEL, github.LOCAL_OK_LABEL, "dispatch:claude-only", "security"]
+)
+def test_dispatcher_never_adds_owner_labels(tmp_path: Path, label: str) -> None:
+    seen: list[httpx.Request] = []
+    client, settings = _write_client(tmp_path, seen)
+    with client, pytest.raises(github.GitHubError, match="never adds"):
+        github.add_label(client, settings, 5, label)  # type: ignore[arg-type]
+    assert seen == []
+
+
+def test_pull_request_only_from_dispatch_branches(tmp_path: Path) -> None:
+    seen: list[httpx.Request] = []
+    client, settings = _write_client(tmp_path, seen)
+    with client, pytest.raises(github.GitHubError, match="dispatch/"):
+        github.open_pull_request(client, settings, "main", "t", "b")  # type: ignore[arg-type]
+    assert seen == []
+
+
+def test_local_ok_needs_the_owner(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    issue = _issue()
+    for events, ok in [
+        ([labeled(OWNER, github.LOCAL_OK_LABEL)], True),
+        ([labeled("mallory", github.LOCAL_OK_LABEL)], False),
+        ([], False),
+    ]:
+        fake = FakeGitHub(events={7: events})
+        with fake.client(settings) as client:
+            assert github.check_local_ok(client, settings, issue).ok is ok
+    no_label = _issue(labels=(github.AUTO_LABEL,))
+    with FakeGitHub().client(settings) as client:
+        assert (
+            github.check_local_ok(client, settings, no_label).reason == "no dispatch:local-ok label"
+        )

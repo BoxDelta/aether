@@ -1,10 +1,12 @@
 """What the dispatcher has done per issue, and one run at a time (ADR-030).
 
-``.dispatch/state.json`` (git-ignored, written atomically) keeps three sets:
+``.dispatch/state.json`` (git-ignored, written atomically) keeps:
 
 - ``briefed``: a Claude brief was written; the issue is never sorted again.
-- ``announced``: Discord accepted "#<n> brief ready"; never posted again.
-- ``local``: sorted to the local path, which picks it up (step 4b).
+- ``local``: sorted to the local path, waiting for a try (step 4b).
+- ``opened``: the local path opened a pull request for it (issue -> pull request).
+- ``announced``: Discord accepted the post for a brief or pull request.
+- ``tries``: failed local tries per issue; the second one turns it into a brief.
 
 The dry run's ``posted`` key (step 4a) is read and dropped: those issues are sorted
 again, because a dry-run post did nothing with them.
@@ -23,6 +25,7 @@ DISPATCH_DIR = Path(__file__).resolve().parents[1] / ".dispatch"
 STATE_FILE = DISPATCH_DIR / "state.json"
 LOCK_FILE = DISPATCH_DIR / "run.lock"
 KEYS = ("briefed", "announced", "local")
+MAPS = ("opened", "tries")
 LEGACY_KEYS = frozenset({"posted"})
 
 
@@ -39,10 +42,12 @@ class State:
     briefed: set[int] = field(default_factory=set)
     announced: set[int] = field(default_factory=set)
     local: set[int] = field(default_factory=set)
+    opened: dict[int, int] = field(default_factory=dict)
+    tries: dict[int, int] = field(default_factory=dict)
 
     def handled(self) -> frozenset[int]:
         """Issues a run skips before the trust check, the rules and the model."""
-        return frozenset(self.briefed | self.local)
+        return frozenset(self.briefed | self.local | set(self.opened))
 
 
 @contextmanager
@@ -76,11 +81,30 @@ def load(path: Path = STATE_FILE) -> State:
         return State()
     except (OSError, ValueError) as exc:
         raise StateError(f"state file unreadable: {path}") from exc
-    if not isinstance(data, dict) or not set(data) <= set(KEYS) | LEGACY_KEYS:
+    if not isinstance(data, dict) or not set(data) <= {*KEYS, *MAPS} | LEGACY_KEYS:
         raise StateError(f"state file malformed: {path}")
     for key in LEGACY_KEYS & set(data):
         _numbers(data[key], path)  # still validated, then dropped
-    return State(**{key: _numbers(data.get(key, []), path) for key in KEYS})
+    return State(
+        briefed=_numbers(data.get("briefed", []), path),
+        announced=_numbers(data.get("announced", []), path),
+        local=_numbers(data.get("local", []), path),
+        opened=_counts(data.get("opened", {}), path),
+        tries=_counts(data.get("tries", {}), path),
+    )
+
+
+def _counts(value: object, path: Path) -> dict[int, int]:
+    if not isinstance(value, dict):
+        raise StateError(f"state file malformed: {path}")
+    out: dict[int, int] = {}
+    for key, count in value.items():
+        if not (isinstance(key, str) and key.isdigit() and int(key) > 0):
+            raise StateError(f"state file malformed: {path}")
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            raise StateError(f"state file malformed: {path}")
+        out[int(key)] = count
+    return out
 
 
 def save(state: State, path: Path = STATE_FILE) -> None:
@@ -89,7 +113,10 @@ def save(state: State, path: Path = STATE_FILE) -> None:
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".state-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump({key: sorted(getattr(state, key)) for key in KEYS}, handle)
+            data: dict[str, object] = {key: sorted(getattr(state, key)) for key in KEYS}
+            for key in MAPS:
+                data[key] = {str(n): c for n, c in sorted(getattr(state, key).items())}
+            json.dump(data, handle)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, path)
