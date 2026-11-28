@@ -34,11 +34,12 @@ def test_settings_local_json_edits_need_approval() -> None:
     assert ".claude/settings.local.json" in _ask_edit_paths()
 
 
-def test_agent_and_command_edits_need_approval() -> None:
+def test_agent_command_and_output_style_edits_need_approval() -> None:
     # Pinned on their own: the sync test passes if both sides drop a path (#200).
     paths = _ask_edit_paths()
     assert ".claude/agents/**" in paths
     assert ".claude/commands/**" in paths
+    assert ".claude/output-styles/**" in paths
 
 
 def test_docs_05_ask_list_matches_settings() -> None:

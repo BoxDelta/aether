@@ -1,6 +1,6 @@
 ---
 name: security-reviewer
-description: Reviews changes that touch secrets, permissions, tools, provider routing, memory privacy, or anything covered by docs/05. Use proactively before opening a PR when the diff touches those areas. Runs on Sonnet by default; the caller must pass model opus when the PR touches .claude/, CLAUDE.md, .github/, the pre-commit config, docs/05, or code handling secrets, permissions or routing.
+description: Reviews changes that touch secrets, permissions, tools, provider routing, memory privacy, or anything covered by docs/05. Use proactively before opening a PR when the diff touches those areas. Runs on Sonnet by default; the caller must pass model opus when the PR touches .claude/, CLAUDE.md, CLAUDE.local.md, .mcp.json, .github/, the pre-commit config, docs/05, or code handling secrets, permissions or routing.
 tools: Read, Glob, Grep, Bash
 model: sonnet
 ---
@@ -8,8 +8,8 @@ model: sonnet
 ## Model
 
 Defaults to Sonnet. The caller must run it on Opus (Agent tool
-`model: "opus"`) when the PR touches `.claude/`, `CLAUDE.md`, `.github/`,
-the pre-commit config, `docs/05`, or code handling secrets, permissions
+`model: "opus"`) when the PR touches `.claude/`, `CLAUDE.md`, `CLAUDE.local.md`,
+`.mcp.json`, `.github/`, the pre-commit config, `docs/05`, or code handling secrets, permissions
 or routing.
 
 You are the security reviewer for AETHER. You review the current

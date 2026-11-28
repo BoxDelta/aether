@@ -75,6 +75,7 @@
       "Edit(/.pre-commit-config.yaml)",
       "Edit(/.claude/agents/**)",
       "Edit(/.claude/commands/**)",
+      "Edit(/.claude/output-styles/**)",
       "Edit(/scripts/safemerge.fish)"
     ]
   }
