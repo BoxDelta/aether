@@ -517,10 +517,10 @@ unattended, so it is the main case for this section:
     agent sockets), the repository's git dir read-only, and only the
     local model's LiteLLM key in its environment. The host checks
     afterwards that nothing in the git dir changed.
--   Known limit: Aider shares the host network, because the local model
-    is on loopback. It can reach other loopback services and the
-    internet. Aider runs no shell commands and fetches no URLs (both
-    off), so this matters only if Aider itself is compromised.
+-   The sandbox has no network (#202). Aider reaches the local model only
+    through a Unix socket bound into the sandbox that forwards to LiteLLM
+    and nowhere else; other loopback services (Postgres, n8n, Plane) and
+    the internet are unreachable (tested with the real sandbox).
 -   Tests run in Docker with `--network none`, read-only, no
     capabilities, CPU, memory and process limits, and a hard timeout,
     on an export of exactly the checked index.

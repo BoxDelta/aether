@@ -203,10 +203,15 @@ one issue sorted `local` per run.
     `~/.ssh` or dispatcher secrets); only the worktree writable; the
     repository's `.git` and the worktree's git dir read-only. Its
     environment is set by the dispatcher (not on bubblewrap's command
-    line) and its only credential is the LiteLLM key, for the local
-    model on loopback. Known limit: it shares the host network, so it
-    can reach other loopback services and the internet; Aider runs no
-    shell commands and fetches no URLs.
+    line) and its only credential is the LiteLLM key. **No network**
+    (#202): the sandbox has its own empty network namespace. The model is
+    reached only through a Unix socket bound into the sandbox
+    (`dispatch/bridge.py`, standard library, no socat), which forwards to
+    the LiteLLM URL from the settings and nothing else; inside, the
+    driver listens on the sandbox's own loopback and forwards to that
+    socket. A test runs the real sandbox and checks that Postgres, n8n,
+    Plane, Langfuse, LiteLLM and llama-swap ports and the internet are
+    unreachable, and that the socket works.
 -   **After Aider**, the host checks that the worktree's `.git` file, the
     git dir's files (`commondir`, `gitdir`, `HEAD`, no new ones) and
     HEAD's branch and commit are unchanged, then rebuilds the index from
@@ -241,7 +246,8 @@ one issue sorted `local` per run.
     mounted read-only:
     ruff, mypy and pytest without database tests. The image is built
     from main's `pyproject.toml`, `uv.lock` and `.python-version` only
-    (`dispatch/test-image/Dockerfile`, base image pinned by digest). Sentinel CI still runs on the
+    (`dispatch/test-image/Dockerfile`, base image pinned by digest,
+    updated by Dependabot's `docker` ecosystem, #204). Sentinel CI still runs on the
     pull request.
 -   **Publish** only after the path check and the tests pass: commit as
     `aether-dispatch`, push `HEAD` to the `dispatch/` branch (no force,

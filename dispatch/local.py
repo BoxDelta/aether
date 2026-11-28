@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from dispatch import diffcheck, rules
+from dispatch import bridge, diffcheck, rules
 from dispatch.classify import clean_reason
 from dispatch.config import DispatchSettings
 from dispatch.github import Issue
@@ -214,6 +214,7 @@ def aider_config(issue: Issue, files: list[str], scratch: Path) -> dict[str, obj
         "model": MODEL,
         "map_tokens": MAP_TOKENS,
         "history": str(scratch / "history"),
+        "model_socket": str(scratch / "sock" / "llm.sock"),
         "settings": str(scratch / "model-settings.yml"),
     }
 
@@ -233,7 +234,6 @@ def sandbox_env(settings: DispatchSettings) -> dict[str, str]:
         "PATH": f"{home}/.local/bin:/usr/bin:/bin",
         "LANG": "C.UTF-8",
         "TERM": "dumb",
-        "OPENAI_API_BASE": settings.dispatch_litellm_url,
         "OPENAI_API_KEY": settings.dispatch_litellm_key.get_secret_value(),
         "LITELLM_LOCAL_MODEL_COST_MAP": "True",  # no model-price download
     }
@@ -242,7 +242,9 @@ def sandbox_env(settings: DispatchSettings) -> dict[str, str]:
 def sandbox_args(root: Path, work: Path, scratch: Path, gitdir: Path) -> list[str]:
     """bubblewrap around Aider. Only /usr and /etc from the host, read-only; no /run
     (Docker, D-Bus, agent sockets), /var, /mnt or /media; an empty home. The git dir
-    is read-only too, so nothing in it can change what host git runs later.
+    is read-only too, so nothing in it can change what host git runs later. No
+    network at all (``--unshare-all``, #202): the model only through the Unix
+    socket bound in by ``bridge.unix_bridge``, which reaches only LiteLLM.
     Order matters: the empty home comes before the binds under it."""
     home = Path.home()
     uv_share = home / ".local" / "share" / "uv"
@@ -258,8 +260,8 @@ def sandbox_args(root: Path, work: Path, scratch: Path, gitdir: Path) -> list[st
         "--proc", "/proc",
         "--tmpfs", "/tmp",  # noqa: S108 - a fresh empty tmpfs inside the sandbox
         "--tmpfs", str(home),
-        "--ro-bind", str(uv_share), str(uv_share),
-        "--ro-bind", str(home / ".local" / "bin"), str(home / ".local" / "bin"),
+        "--ro-bind-try", str(uv_share), str(uv_share),
+        "--ro-bind-try", str(home / ".local" / "bin"), str(home / ".local" / "bin"),
         "--ro-bind", str(root / ".git"), str(root / ".git"),
         "--ro-bind", str(gitdir), str(gitdir),
         "--bind", str(work), str(work),
@@ -267,7 +269,6 @@ def sandbox_args(root: Path, work: Path, scratch: Path, gitdir: Path) -> list[st
         "--bind", str(scratch / "history"), str(scratch / "history"),
         "--chdir", str(work),
         "--unshare-all",
-        "--share-net",  # the local model is on loopback
         "--die-with-parent",
         "--new-session",
     ]  # fmt: skip
@@ -344,7 +345,9 @@ class LocalPath:
         config = aider_config(issue, mentioned_files(issue, work), scratch)
         (scratch / "config.json").write_text(json.dumps(config), "utf-8")
         args = [*sandbox_args(self.root, work, scratch, gitdir), *aider_args(scratch)]
-        result = self.run(args, sandbox_env(self.settings), work, AIDER_TIMEOUT_S)
+        # No network in the sandbox (#202): the model only through this socket.
+        with bridge.unix_bridge(scratch / "sock" / "llm.sock", self.settings.dispatch_litellm_url):
+            result = self.run(args, sandbox_env(self.settings), work, AIDER_TIMEOUT_S)
         if result.returncode != 0:
             raise LocalError(f"aider failed: {tail(result.stderr or result.stdout)}")
 

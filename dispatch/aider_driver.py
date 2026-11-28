@@ -10,21 +10,73 @@ every file the model mentions and re-sends before applying the edit, which
 overflows the 16k context of the local model and drops the edit. Here a mention
 never adds a file, and only the files the issue names are in the chat.
 Checked against aider-chat 0.86.2.
+
+The sandbox has no network (#202). The driver listens on the sandbox's own
+loopback and forwards each connection to the Unix socket the dispatcher bound in
+(``model_socket``), which reaches only LiteLLM. Aider's model calls go to that
+loopback port.
 """
 
+import contextlib
 import json
+import os
+import socket
 import sys
+import threading
 from pathlib import Path
+
+CHUNK = 65536
+
+
+def _pump(source: socket.socket, sink: socket.socket) -> None:
+    try:
+        while data := source.recv(CHUNK):
+            sink.sendall(data)
+    except OSError:
+        pass
+    finally:
+        with contextlib.suppress(OSError):
+            sink.shutdown(socket.SHUT_WR)
+
+
+def _serve(client: socket.socket, socket_path: str) -> None:
+    with client, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as upstream:
+        try:
+            upstream.connect(socket_path)
+        except OSError:
+            return
+        back = threading.Thread(target=_pump, args=(upstream, client), daemon=True)
+        back.start()
+        _pump(client, upstream)
+        back.join()
+
+
+def start_forwarder(socket_path: str) -> int:
+    """127.0.0.1:<free port> inside the sandbox -> the model socket. Returns the port."""
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    server.listen(8)
+
+    def accept() -> None:
+        while True:
+            client, _ = server.accept()
+            threading.Thread(target=_serve, args=(client, socket_path), daemon=True).start()
+
+    threading.Thread(target=accept, daemon=True).start()
+    return int(server.getsockname()[1])
 
 
 def main(config_path: str) -> int:
+    config = json.loads(Path(config_path).read_text("utf-8"))
+    port = start_forwarder(config["model_socket"])
+    os.environ["OPENAI_API_BASE"] = f"http://127.0.0.1:{port}"  # before litellm loads
+
     from aider.analytics import Analytics  # type: ignore[import-not-found]
     from aider.coders import Coder  # type: ignore[import-not-found]
     from aider.io import InputOutput  # type: ignore[import-not-found]
     from aider.models import Model, register_models  # type: ignore[import-not-found]
     from aider.repo import GitRepo  # type: ignore[import-not-found]
 
-    config = json.loads(Path(config_path).read_text("utf-8"))
     history = Path(config["history"])
     register_models([str(Path(config["settings"]))])
     io = InputOutput(

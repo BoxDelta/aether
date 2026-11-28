@@ -201,13 +201,14 @@ def test_aider_gets_no_github_token_or_webhook(repo: Path, tmp_path: Path) -> No
     assert settings.dispatch_discord_webhook is not None
     assert settings.dispatch_discord_webhook.get_secret_value() not in joined
     assert set(env) == {
-        "HOME", "PATH", "LANG", "TERM", "OPENAI_API_BASE", "OPENAI_API_KEY",
+        "HOME", "PATH", "LANG", "TERM", "OPENAI_API_KEY",
         "LITELLM_LOCAL_MODEL_COST_MAP",
     }  # fmt: skip
     key = settings.dispatch_litellm_key.get_secret_value()
     assert env["OPENAI_API_KEY"] == key and key not in args  # not on the command line
     assert args[1:3] == ["--ro-bind", "/usr"]  # not the whole filesystem
     assert "/run" not in args and "/var" not in args
+    assert "--unshare-all" in args and "--share-net" not in args  # no network (#202)
     home = str(Path.home())
     assert args[args.index(home) - 1] == "--tmpfs"  # empty home: no ~/.config, ~/.ssh
     assert args[args.index(str(repo / ".git")) - 1] == "--ro-bind"  # hooks and config read-only

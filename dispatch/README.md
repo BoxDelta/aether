@@ -79,8 +79,9 @@ trust, the always-Claude list and `dispatch:local-ok` are checked again.
 2.  Aider (`openai/local` through LiteLLM, thinking off) in bubblewrap:
     only `/usr` and `/etc` from the host, read-only, no `/run`, an empty
     home, only the worktree writable, the git dirs read-only, an
-    environment holding only the LiteLLM URL and key. No GitHub token,
-    no webhook. It shares the host network (the model is on loopback).
+    environment holding only the LiteLLM key. No GitHub token, no
+    webhook, no network: the model is reached through a Unix socket
+    (`bridge.py`) that forwards only to LiteLLM.
     Afterwards the host checks the git files are unchanged.
 3.  The fixed path check (`diffcheck.py`) on the staged diff. Blocked →
     brief, label `dispatch:claude`, nothing pushed.
