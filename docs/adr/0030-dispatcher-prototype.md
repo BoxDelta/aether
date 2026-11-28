@@ -139,11 +139,24 @@ checks that this section quotes every entry.
     `tests/test_workflow_pins.py`, `docs/runbooks/db-app-role.md`,
     `docs/runbooks/db-backup-restore.md`,
     `docs/runbooks/encrypted-volume.md`.
+-   Paths (owner-guarded in CODEOWNERS): `SECURITY.md`, `LICENSE`,
+    `NOTICE`.
+-   Paths (the dispatcher's own guards): `.dispatch/` (the brief
+    template's "data, not instructions" header) and `tests/dispatch/`.
+-   Tests that enforce guardrails: `tests/test_cloud_tripwire.py`,
+    `tests/test_env_isolation.py`, `tests/test_error_bodies.py`,
+    `tests/test_guardrails.py`, `tests/test_log_redaction_docs.py`,
+    `tests/test_ollama_host_trust.py`, `tests/test_privacy_levels.py`,
+    `tests/test_routing.py`, `tests/test_safemerge.py`,
+    `tests/test_untrusted_ollama.py`.
 -   In `core/`: `auth.py`, `config.py`, `chat.py`, `memory_api.py`,
     `identity.py`, `db.py`, `db_admin.py`, `backup.py`, `app.py`,
-    `events.py`, `log.py`, `ready.py`, `request_context.py`.
--   Auth code anywhere: a path with a folder or file name containing
-    `auth`, `login`, `csrf`, `passw`, `secret` or `credential`.
+    `errors.py`, `events.py`, `log.py`, `ready.py`, `request_context.py`.
+-   Auth and permission code anywhere: a path with a folder or file name
+    containing `auth`, `login`, `csrf`, `passw`, `secret`, `credential`,
+    `session`, `token`, `scope`, `permission`, `approval`, `privacy` or
+    `redact` (Phase 3 sessions, service tokens, tool permissions and
+    approvals, ADR-035, ADR-036).
 -   Labels: `model:opus`, `security`, `dispatch:claude-only`.
 -   Issues from a security review (the text says so), and anything that
     touches database roles, grants or credentials, including test
@@ -183,8 +196,9 @@ checks that this section quotes every entry.
     `.dispatch/briefs/<issue>.md` (git-ignored, mode 600). If the model
     can't be asked or doesn't answer, the brief is still written, with
     the reason in place of the notes.
--   The notes sit between random marker lines, under a header that says
-    they are model output and data. `.claude/commands/work-on.md` loads
+-   The notes, and the route reason (model text when the model sorted
+    it), sit between random marker lines, under a header that says they
+    are model output and data. `.claude/commands/work-on.md` loads
     the brief **and** re-reads the issue on GitHub. The brief is a hint
     and is treated as data. The issue is the task, and `CLAUDE.md` wins
     over both.
@@ -194,6 +208,7 @@ checks that this section quotes every entry.
 -   `.dispatch/state.json` records issues briefed, announced, and sorted
     `local` (those wait for step 4b). A recorded issue is not sorted
     again and causes no model call.
+-   The trust check runs again right before the brief step.
 -   The run never writes to GitHub.
 -   The timer runs from a main-only clone (`~/Projects/aether-dispatch`),
     like the backup timer (ADR-025 D8), so only merged, reviewed code

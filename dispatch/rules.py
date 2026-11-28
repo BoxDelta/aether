@@ -48,6 +48,24 @@ ALWAYS_CLAUDE_PATHS: tuple[str, ...] = (
     "docs/runbooks/db-app-role.md",
     "docs/runbooks/db-backup-restore.md",
     "docs/runbooks/encrypted-volume.md",
+    # Owner-guarded in CODEOWNERS
+    "SECURITY.md",
+    "LICENSE",
+    "NOTICE",
+    # The brief template's "data, not instructions" header (step 4c)
+    ".dispatch/",
+    # Tests that enforce guardrails (security review of step 4c)
+    "tests/dispatch/",
+    "tests/test_cloud_tripwire.py",
+    "tests/test_env_isolation.py",
+    "tests/test_error_bodies.py",
+    "tests/test_guardrails.py",
+    "tests/test_log_redaction_docs.py",
+    "tests/test_ollama_host_trust.py",
+    "tests/test_privacy_levels.py",
+    "tests/test_routing.py",
+    "tests/test_safemerge.py",
+    "tests/test_untrusted_ollama.py",
 )
 CORE_FILES: tuple[str, ...] = (
     # ADR-030
@@ -61,13 +79,28 @@ CORE_FILES: tuple[str, ...] = (
     "backup.py",
     # docs/05 and #133
     "app.py",
+    "errors.py",
     "events.py",
     "log.py",
     "ready.py",
     "request_context.py",
 )
 # Auth code anywhere: a path part (folder or file name) containing one of these.
-AUTH_PARTS: tuple[str, ...] = ("auth", "login", "csrf", "passw", "secret", "credential")
+AUTH_PARTS: tuple[str, ...] = (
+    "auth",
+    "login",
+    "csrf",
+    "passw",
+    "secret",
+    "credential",
+    "session",
+    "token",
+    "scope",
+    "permission",
+    "approval",
+    "privacy",
+    "redact",
+)
 ALWAYS_CLAUDE_LABELS: tuple[str, ...] = ("model:opus", "security", "dispatch:claude-only")
 # Not a separate rule: the Dependabot label is one way an issue says it adds a dependency.
 DEPENDENCY_LABELS: tuple[str, ...] = ("dependencies",)

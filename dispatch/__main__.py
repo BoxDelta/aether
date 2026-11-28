@@ -8,6 +8,7 @@ Nothing here writes to GitHub.
 """
 
 import argparse
+import os
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -58,9 +59,13 @@ def format_table(rows: Sequence[Row]) -> str:
 
 
 def write_report(table: str, now: datetime, reports_dir: Path = REPORTS_DIR) -> Path:
-    reports_dir.mkdir(parents=True, exist_ok=True)
+    reports_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    reports_dir.chmod(0o700)
     path = reports_dir / f"{now.date().isoformat()}.md"
-    with path.open("a", encoding="utf-8") as report:
+    # Mode 600 whatever the umask: reports hold model reasons (manual runs too).
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "a", encoding="utf-8") as report:
         report.write(f"## Triage dry run {now.strftime('%H:%M:%S')}\n\n{table}\n\n")
     return path
 
@@ -142,6 +147,11 @@ def eval_rows(
 
 
 Notes = Callable[[github.Issue], str]
+Trusted = Callable[[github.Issue], bool]
+
+
+def _always(_: github.Issue) -> bool:
+    return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +161,7 @@ class BriefRun:
     template: str
     state_file: Path = state.STATE_FILE
     briefs_dir: Path = brief.BRIEFS_DIR
+    trusted: Trusted = _always  # the trust check again, right before the brief step
 
 
 def write_briefs(
@@ -165,6 +176,8 @@ def write_briefs(
         number = item.issue.number
         if item.decision.route == "local":
             st.local.add(number)
+        elif not run.trusted(item.issue):
+            continue  # trust changed since sorting: nothing recorded, checked next run
         else:
             content = brief.Content(
                 item.issue,
@@ -237,7 +250,12 @@ def _run(
             if items:
                 _print_table([item.row for item in items])
                 now = datetime.now().astimezone()
-                run = BriefRun(settings, now, brief.load_template())
+                run = BriefRun(
+                    settings,
+                    now,
+                    brief.load_template(),
+                    trusted=lambda issue: github.check_trust(gh, settings, issue).ok,
+                )
                 written = write_briefs(items, notes, st, run)
                 print(f"briefs: wrote {len(written)}")
             else:

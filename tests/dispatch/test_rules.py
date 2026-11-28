@@ -23,12 +23,18 @@ def test_list_matches_adr_030() -> None:
         "scripts/restore_check.sql", "scripts/aether-vault.fish",
         "scripts/identity_continuity.py", "tests/test_workflow_pins.py",
         "docs/runbooks/db-app-role.md", "docs/runbooks/db-backup-restore.md",
-        "docs/runbooks/encrypted-volume.md",
+        "docs/runbooks/encrypted-volume.md", "SECURITY.md", "LICENSE", "NOTICE",
+        ".dispatch/", "tests/dispatch/", "tests/test_cloud_tripwire.py",
+        "tests/test_env_isolation.py", "tests/test_error_bodies.py",
+        "tests/test_guardrails.py", "tests/test_log_redaction_docs.py",
+        "tests/test_ollama_host_trust.py", "tests/test_privacy_levels.py",
+        "tests/test_routing.py", "tests/test_safemerge.py",
+        "tests/test_untrusted_ollama.py",
     }  # fmt: skip
     assert set(rules.CORE_FILES) == {
         "auth.py", "config.py", "chat.py", "memory_api.py",
         "identity.py", "db.py", "db_admin.py", "backup.py",
-        "app.py", "events.py", "log.py", "ready.py", "request_context.py",
+        "app.py", "errors.py", "events.py", "log.py", "ready.py", "request_context.py",
     }  # fmt: skip
     assert set(rules.ALWAYS_CLAUDE_LABELS) == {"model:opus", "security", "dispatch:claude-only"}
 
@@ -180,6 +186,13 @@ def test_bare_words_are_not_paths(text: str) -> None:
         ".env",
         "sub/.env.local",
         "scripts/systemd/aether-backup.service",
+        ".dispatch/brief-template.md",
+        "tests/dispatch/test_boundaries.py",
+        "core/sessions.py",
+        "core/service_tokens.py",
+        "core/approvals.py",
+        "web/src/permissions/Levels.tsx",
+        "core/redact.py",
     ],
 )
 def test_new_paths_block(path: str) -> None:
@@ -214,7 +227,7 @@ def test_issue_61_text_goes_to_claude() -> None:
 @pytest.mark.parametrize(
     "text",
     [
-        "Tests: test_routing.py still has its own FakeProvider",
+        "Tests: tests/test_chat.py has a duplicated helper",
         "docs: the CODE_TOUR auth section has a typo",
         "Rename the chat role field in the message list",
     ],

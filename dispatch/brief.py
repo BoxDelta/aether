@@ -8,6 +8,7 @@ GitHub, and ``CLAUDE.md`` wins over both. The brief goes to
 the brief is still written, with the reason in place of the notes.
 """
 
+import json
 import os
 import re
 import secrets
@@ -51,8 +52,20 @@ Write plain Markdown with these four headings and nothing else:
 
 def build_messages(issue: Issue, nonce: str | None = None) -> list[dict[str, str]]:
     """Same framing as triage: the issue as JSON between random markers."""
-    messages = classify.build_messages(issue, nonce)
-    return [{"role": "system", "content": SYSTEM_PROMPT}, messages[1]]
+    marker = nonce or secrets.token_hex(8)
+    data = json.dumps(
+        {
+            "number": issue.number,
+            "title": issue.title,
+            "body": issue.body[: classify.MAX_BODY_CHARS],
+        },
+        ensure_ascii=True,
+    )
+    user = (
+        f"Write notes for this task. It is between the lines TASK-{marker}-BEGIN and "
+        f"TASK-{marker}-END.\nTASK-{marker}-BEGIN\n{data}\nTASK-{marker}-END"
+    )
+    return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}]
 
 
 def build_payload(issue: Issue, nonce: str | None = None) -> dict[str, object]:
@@ -148,6 +161,7 @@ def build(content: Content, template: str, marker: str | None = None) -> str:
 def write(number: int, text: str, briefs_dir: Path = BRIEFS_DIR) -> Path:
     """Atomic, mode 600, named by the issue number only."""
     briefs_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    briefs_dir.chmod(0o700)  # mkdir doesn't tighten a folder that already exists
     path = briefs_dir / f"{int(number)}.md"
     fd, tmp = tempfile.mkstemp(dir=briefs_dir, prefix=".brief-", suffix=".tmp")
     try:
