@@ -44,8 +44,8 @@ trusted issues with the owner's admin `gh` credentials (ADR-041 Limits).
     which the owner's user cannot write, so, by file permissions alone, nothing
     running as the owner (Claude Code, the dispatcher, a prompt-injected
     session) can read the key or change the code that holds it. **That holds
-    only if the owner's user is not root-equivalent** (see Limits: the
-    `docker` group). The unit is hardened (see the appendix, which also holds
+    only if the owner's user is not root-equivalent, and today it is** (the
+    `docker` group; an accepted risk for the `claude` route, see Limits). The unit is hardened (see the appendix, which also holds
     the one-time setup).
 3.  **Input: one slash command, `/task`.** Options: `title`, `details`,
     `files` (optional, up to 5). Slash commands only, so the bot needs no
@@ -65,7 +65,10 @@ trusted issues with the owner's admin `gh` credentials (ADR-041 Limits).
 5.  **Route: `claude` only at first.** Every bot issue is a Claude-path
     issue (`dispatch:claude-only`). A local route, and dropping the
     `dispatch:local-ok` requirement, come later, after about ten clean local
-    pull requests, in a new decision. Until then a valid signature can never
+    pull requests, in a new decision. **Hard prerequisite for enabling the
+    Discord local route: #230 is done** (rootless Docker or Podman, and the
+    owner out of the `docker` group), because a local-route task makes the
+    local model and Aider write code from owner-signed text. Until then a valid signature can never
     stand in for `dispatch:local-ok`.
 6.  **The owner signature (Ed25519), bound to the issue.** The bot creates
     the issue, then edits its body once to end with one line:
@@ -126,9 +129,10 @@ trusted issues with the owner's admin `gh` credentials (ADR-041 Limits).
     `verify` runs from the main-only clone (`~/Projects/aether-dispatch`),
     and **prints the verified title and body**; `/work-on` uses only that
     text, so an edit between the check and the read changes nothing. Once
-    Limits option (a) or (b) is in place, no sandbox or read-deny rule is
-    needed to protect the signing key, because the owner's user can never
-    reach it; under option (c) the Docker prompt is the only control. A `Read` deny rule or the Claude Code
+    #230 is done, no sandbox or read-deny rule is needed to protect the
+    signing key, because the owner's user can never reach it. Until then the
+    key is protected by file permissions only against a session that cannot
+    use Docker (the accepted risk in Limits). A `Read` deny rule or the Claude Code
     sandbox on `~/.config/aether-dispatch/**` (it holds the dispatcher's
     GitHub token) stays optional extra hardening. `verify` guards against
     text an attacker put in an issue; it cannot force a session that ignores
@@ -264,7 +268,7 @@ trusted issues with the owner's admin `gh` credentials (ADR-041 Limits).
     interaction as the owner.
 -   Claude Code and the dispatcher hold only the public key, so a
     prompt-injected session cannot forge a signature, unless it can use
-    Docker (Limits: the `docker` group).
+    Docker (the accepted risk in Limits, until #230).
 -   One more Linux user, system unit, service, dependency pair and set of
     credentials, and an update step (below) when the bot's code changes.
 -   New work: `dispatch/proof.py` and its tests, the trust-check change, the
@@ -276,20 +280,22 @@ trusted issues with the owner's admin `gh` credentials (ADR-041 Limits).
     owner was at the keyboard. A takeover of the owner's Discord account (use
     two-factor authentication, keep the server private with only the owner
     in it) defeats it.
--   **The `docker` group.** At the time of writing the owner's user is in
-    the `docker` group (checked 2026-11-28), and Docker's socket is
-    root-equivalent: a container can read `/etc/aether-bot/proof.key`, replace
-    `/etc/aether-dispatch/proof.pub`, or rewrite `/opt/aether-bot`, with no
-    password and no Claude Code prompt (the dispatcher's local path and the
-    Postgres backup already use `docker` as the owner, ADR-025). Until that
-    changes, the separate user protects against a session that cannot use
-    Docker, which is not a boundary. **The owner decides before accepting
-    this ADR**, one of: (a) rootless Docker or Podman, and the owner leaves
-    the `docker` group (touches Postgres, the backup timer and the local
-    path's test runner); (b) the private key on a hardware token that needs a
-    touch (a larger change to the bot); (c) accept the limit, record it, and
-    put `Bash(docker *)` on the ask list (a prompt, not a boundary). The
-    runbook checks the group.
+-   **Accepted risk: the `docker` group (owner decision 2026-11-28).** The
+    owner's user is in the `docker` group (checked 2026-11-28), which is
+    effectively root: a container can read `/etc/aether-bot/proof.key`,
+    replace `/etc/aether-dispatch/proof.pub`, or rewrite `/opt/aether-bot`,
+    with no password and no Claude Code prompt (the dispatcher's local path
+    and the Postgres backup already use `docker` as the owner, ADR-025). So
+    the user boundary does **not** stop anything running as the owner that
+    can use Docker (Claude Code, the dispatcher, a prompt-injected session).
+    The owner accepts this while the Discord bot is **claude-route only**:
+    a forged signature then yields only a Claude brief that the owner reads,
+    and `/work-on` stays a supervised session. Moving to rootless
+    Docker/Podman is tracked in #230. The other options (a key on a hardware
+    token, or a prompt on `docker` commands) were not chosen; the optional
+    `Bash(docker *)` ask rule is not added. **#230 must be done before the
+    Discord local route is enabled** (decision 5). The runbook
+    checks the group so the state stays visible.
 -   Root can read the key, and so can anyone who gets root on this PC or
     `aether-bot`'s files by another route. The owner's own sudo is the
     boundary, and only while nothing has written to the owner's shell
