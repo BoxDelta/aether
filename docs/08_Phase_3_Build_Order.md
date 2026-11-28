@@ -219,6 +219,12 @@ Claude-only is one issue labelled `dispatch:claude-only`.
   components) and mockups of the five screens are made and approved
   before Step 3. Claude Code builds from them with Tailwind + shadcn/ui
   and the frontend-design skill, so it does not invent styles per screen.
+  **Approved by the owner on 2026-11-28:** the Design System is in
+  [`docs/design-system/`](design-system/README.md) (principles, colour,
+  type, layout and component patterns) with its tokens in
+  [`tokens.json`](design-system/tokens.json). The mockups it was taken from
+  are linked from its README. Map the tokens into the Tailwind theme and
+  shadcn's CSS variables; do not add colours or sizes per screen.
 - **Component sources:** shadcn/ui is the base. Extra blocks may come
   from MIT-licensed shadcn-style registries: BagUI (dashboard metrics,
   tables, activity) for Activity and Status, and Spell UI for one or two
