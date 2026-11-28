@@ -25,8 +25,8 @@ Constraints:
 
 -   One 8 GB GPU and 32 GB RAM, shared with Aether's Ollama model
     (ADR-002, ADR-023), Postgres, n8n and Plane.
--   The repository is public with the `protect-main` ruleset (ADR-022,
-    docs/05 §10.1, §10.4).
+-   The repository is public with the `checks` and `review` rulesets (ADR-022,
+    ADR-041, docs/05 §10.1, §10.4).
 -   Outside text is data, never instructions (`CLAUDE.md` rule 12,
     docs/05 §2 and §6).
 -   No agent framework inside Core (ADR-005). Cloud providers beyond
@@ -354,13 +354,13 @@ each sorted issue.
 
 ### Credentials
 
--   GitHub (to be superseded by ADR-041 once accepted and the ruleset
-    is changed): a classic token of the machine user
+-   GitHub (to be superseded by ADR-041 once accepted): a classic token of the machine user
     `boxdelta-dispatch`, scope `public_repo` only, 90-day expiry. The
-    account is a collaborator on `BoxDelta/aether` only. `protect-main`
-    requires one code-owner approval (only the owner's counts), with
-    stale approvals dismissed and only the owner on the bypass list, so
-    the dispatcher can't merge its own pull requests; its code also has
+    account is a collaborator on `BoxDelta/aether` only. The `review`
+    ruleset requires one code-owner approval (only the owner's counts),
+    with stale approvals dismissed and the most recent push approved; only
+    the owner (admin) can bypass it, and the `checks` ruleset has no
+    bypass at all (ADR-041), so the dispatcher can't merge its own pull requests; its code also has
     no merge call, and a test checks it never calls GitHub's merge
     endpoint. Until the owner swaps the token, the earlier fine-grained
     owner token stays, and the local path is skipped.

@@ -33,22 +33,35 @@ of step 4b).
     fork, star, and create public repositories of its own. It has no
     `workflow` scope, so it can't push changes to `.github/workflows` on
     any branch.
-3.  **The approval rule (#215).** GitHub counts an approval from any
-    account with write access, so a bare "one approval" would let a stolen
-    machine-user token approve and merge a pull request, or push to a
-    branch after the owner approved. So `protect-main` gets all of:
-    -   one approving review, **from a code owner**, with `* @BoxDelta` as
-        the first line of `.github/CODEOWNERS`, so only the owner's
-        approval counts;
-    -   stale approvals dismissed when new commits are pushed, and the most
-        recent push must be approved by someone other than its pusher;
-    -   only the owner (admin) on the bypass list.
+3.  **The approval rule (#215): two rulesets on `main`.** GitHub counts an
+    approval from any account with write access, so a bare "one approval"
+    would let a stolen machine-user token approve and merge a pull request,
+    or push to a branch after the owner approved. So `main` has two active
+    rulesets, split so that the owner's bypass of approvals can never skip
+    the checks:
+    -   **`checks`**: the Sentinel status checks `checks` and `secrets`
+        (source: GitHub Actions), no force pushes, no branch deletion. The
+        **bypass list is empty**: nobody skips it, not even the owner.
+    -   **`review`**: a pull request is required (nobody pushes to `main`
+        directly), one approving review **from a code owner** (`* @BoxDelta`
+        is the first rule in `.github/CODEOWNERS`, so only the owner's
+        approval counts), stale approvals dismissed when new commits are
+        pushed, and the most recent push approved by someone other than its
+        pusher. The **only bypass is the repository admin role**, for pull
+        requests only, so the owner can merge their own pull requests but
+        can't push to `main` directly.
 
     Then the machine user can't merge, even though `public_repo` with
     write access could call the merge endpoint. The dispatcher's code
     still has no merge call and a test checks it. The owner merges their
-    own pull requests with the bypass (`safemerge` with `--admin`, #214)
-    and the machine user's after reviewing them.
+    own pull requests with the bypass (`safemerge`, which uses `--admin`
+    only for pull requests authored by `BoxDelta`, only with the reviewed
+    commit hash, and only after `checks` and `secrets` succeeded; #214),
+    and the machine user's after approving them (`safemerge` refuses those
+    unless the owner's latest review approves the exact head commit).
+    This amends ADR-022 ("Ruleset design": no approvals, no code-owner
+    review, empty bypass list) and ADR-018 ("After the public flip":
+    CODEOWNERS not enforced) once this ADR is accepted.
 4.  **Trust checks read the issue's timeline.** `dispatch:auto` and
     `dispatch:local-ok` count only when the last `labeled` event for that
     label was by the owner's own account: login `DISPATCH_OWNER` and account
@@ -122,10 +135,13 @@ of step 4b).
     `dispatch:local-ok` after the owner added it under another name is
     assumed to keep the old name in its earlier events (fails closed); not
     yet confirmed on GitHub.
--   With one approval required, the owner's own pull requests (no second
-    reviewer) need the bypass: `safemerge` (`scripts/safemerge.fish`)
-    calls `gh pr merge` without `--admin`, so it will need `--admin` or
-    the owner merges in the web UI with the bypass. That is an
-    owner-approved edit to `scripts/safemerge.fish` (#214).
+-   Until the token swap (the cut-over), the dispatcher still uses the
+    owner's token, so its pull requests show `BoxDelta` as author and
+    `safemerge` treats them as the owner's own: the reviewed hash is the
+    check. After the swap they show `boxdelta-dispatch`.
+-   The owner's own credentials (the gh CLI, Claude Code sessions) are
+    admin: they can use the `review` bypass or edit the rulesets. That is
+    held by rules (`CLAUDE.md` rule 5, the `gh pr merge` deny rule), not by
+    GitHub. Nothing the machine user holds can do it.
 -   If the repository becomes private, `public_repo` stops working and this
     ADR needs revisiting (the `repo` scope is much wider).

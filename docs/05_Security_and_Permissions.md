@@ -585,28 +585,32 @@ Independence is meant to come from GitHub permissions rather than trust
 in an AI. Since the public flip on 2026-11-14 (ADR-022), part of it
 does; the rest is still only a rule.
 
-**Enforced by the `protect-main` ruleset on `main`** (ADR-022, "Ruleset
-design"):
+**Enforced by two rulesets on `main`** (ADR-022 "Ruleset design",
+amended by ADR-041, #215):
 
--   a pull request is required; nobody can push directly to `main`;
--   the Sentinel status checks `checks` and `secrets` are required, with
-    GitHub Actions as their source, so a failing check blocks the merge
-    and a status with the same name from elsewhere cannot satisfy them;
--   force pushes and branch deletion are blocked;
--   the bypass list is empty.
+-   **`checks`**, with an **empty bypass list** (nobody skips it, not even
+    the owner):
+    -   the Sentinel status checks `checks` and `secrets` are required,
+        with GitHub Actions as their source, so a failing check blocks the
+        merge and a status with the same name from elsewhere cannot
+        satisfy them;
+    -   force pushes and branch deletion are blocked.
+-   **`review`**, with the repository admin role (the owner) as its only
+    bypass, for pull requests only:
+    -   a pull request is required; nobody can push directly to `main`;
+    -   one approving review from a **code owner** is required.
+        `.github/CODEOWNERS` has `* @BoxDelta` as its first rule, so only
+        the owner's approval counts, not one from the dispatcher's machine
+        user;
+    -   stale approvals are dismissed when new commits are pushed, and the
+        most recent push must be approved by someone other than its
+        pusher.
 
-These hold as long as the ruleset is unchanged; admin credentials can
-edit or disable it (see below). **Not required:** approvals (the
-required approving review count is 0) and code-owner review (off). There
-is one maintainer, and GitHub does not let an author approve their own
-PR. CodeQL is not among the required checks.
-
-**Planned change (ADR-041, #215, when accepted):** for the dispatcher's
-machine user, `protect-main` will require one approving review from a
-code owner (`* @BoxDelta` in CODEOWNERS, so only the owner's approval
-counts), dismiss stale approvals, require approval of the most recent
-push, and put only the owner on the bypass list. The owner then merges
-their own pull requests with the bypass (`safemerge --admin`, #214).
+The owner's own pull requests have no second reviewer, so the owner
+merges them with the `review` bypass (`safemerge`, `--admin`); the
+`checks` ruleset still applies. These hold as long as the rulesets are
+unchanged; admin credentials can edit or disable them (see below).
+CodeQL is not among the required checks.
 
 **Still only a rule, not a permission.** The agent works with the
 owner's GitHub credentials, which have admin rights, so GitHub does not
@@ -642,8 +646,10 @@ them and the owner checks:
     -   the owner's planner chat (claude.ai), for plans, ADRs and a
         second look at guardrail PRs (ADR-027, Proposed).
     These find problems; none of them can block or approve a merge.
-    `.github/CODEOWNERS` names the owner for `.github/` and `CLAUDE.md`,
-    but nothing enforces it, so reviewing changes to those paths before
+    `.github/CODEOWNERS` names the owner for every file (`*`); the
+    `review` ruleset enforces it for the dispatcher's machine user, but the
+    owner's own pull requests pass with the bypass, so reviewing changes to
+    `.github/` and `CLAUDE.md` before
     merging is the owner's manual step.
 
 Before the flip (GitHub Free, private repository; ADR-018), none of the
