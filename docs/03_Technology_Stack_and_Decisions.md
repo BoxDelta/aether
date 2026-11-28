@@ -25,8 +25,11 @@ looks impressive.
   orchestration     orchestrator                            (ADR-005);
                                                             OpenClaw after v1
 
-  Local inference   Ollama            Selected local models Preferred initial
-                                                            experiment
+  Local inference   llama-swap        Aether's and the      Proposed
+                    (llama.cpp),      dispatcher's local    (ADR-040); Ollama
+                    Qwen3.6-35B-A3B   model                 stays, disabled by
+                    Q4_K_M                                  default in Phase 3,
+                                                            removed after
 
   Cloud reasoning   Claude API        Complex reasoning     Candidate; API
                                       and coding tasks      billing separate
@@ -100,6 +103,23 @@ retrieval design requires it. - Monitor actual VRAM use and desktop
 responsiveness. - Prefer cloud inference when local inference would
 materially interfere with gaming or normal use. - Unload local models
 when idle if that improves resource availability.
+
+**Measured on this PC (2026-11-27, `tests/local-model/README.md`,
+ADR-040, Proposed):**
+- **Model:** Qwen3.6-35B-A3B Q4_K_M under llama-swap, with
+  `--n-cpu-moe 35` and a 16k context.
+- **VRAM:** about 1.9 GiB stays free while loaded, above the 1.5 GB
+  target (ADR-040 D1).
+- **Speed:** about 41 tok/s generation and about 314 tok/s prompt
+  reading.
+- **Thinking:** off on every request.
+- **RAM:** about 18 GB stays available with the other services running.
+- **Idle:** llama-swap's `ttl` (900 s, set outside this repo) unloads
+  the model when idle.
+- **Runtimes:** one model and one parallel request, shared with the
+  dispatcher.
+- **Ollama:** the current runtime (`llama3.1:8b`) until ADR-040 is
+  implemented.
 
 Potential Ollama settings such as one loaded model and one parallel
 request are starting hypotheses, not guaranteed optimal values. Validate

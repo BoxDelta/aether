@@ -78,3 +78,6 @@ ADR-009 onward have their own files here.
     token, pause and revoke). Accepted (owner, 2026-11-27).
 -   **ADR-039:** One main chat with automatic topics. Accepted (owner,
     2026-11-27).
+-   **ADR-040:** Local model via llama-swap (Qwen3.6-35B-A3B, direct
+    OpenAI-compatible adapter, not through LiteLLM; ADR-030 fold-in).
+    Proposed (2026-11-27).
