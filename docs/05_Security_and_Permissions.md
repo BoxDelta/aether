@@ -519,9 +519,11 @@ unattended, so it is the main case for this section:
     that nothing in the git dir changed.
 -   The sandbox has no network (#202). Aider reaches the local model only
     through a Unix socket bound into the sandbox. The bridge behind it
-    forwards only `POST /v1/chat/completions` to LiteLLM, adds the real
-    key outside the sandbox, and refuses every other route (403), so
-    LiteLLM's admin routes can't be reached (#210). Other loopback
+    forwards only `POST /v1/chat/completions` with model `local` and the
+    body keys Aider sends, adds the real key outside the sandbox, and
+    refuses every other route or body param (403), so LiteLLM's admin
+    routes and per-request `api_base`/`user_config` style overrides
+    can't be used (#210). Other loopback
     services (Postgres, n8n, Plane) and
     the internet are unreachable. A test runs the real sandbox and
     checks this on the owner's PC; Sentinel's runner has no
@@ -532,8 +534,8 @@ unattended, so it is the main case for this section:
     on an export of exactly the checked index.
 -   Host git ignores the owner's global config and runs no hooks.
 -   A fixed path check blocks anything on the always-Claude list before
-    a pull request opens, and gitleaks scans the added lines before any
-    push; a finding of either turns the try into a Claude brief. The
+    a pull request opens, and gitleaks scans exactly what would be
+    pushed before the tests and any push; a finding of either turns the try into a Claude brief. The
     owner still reviews and merges.
 
 ## 9. Audit and observability

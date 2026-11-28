@@ -81,11 +81,12 @@ trust, the always-Claude list and `dispatch:local-ok` are checked again.
     home, only the worktree writable, the git dirs read-only, no
     credential (a dummy LiteLLM key). No GitHub token, no webhook, no
     network: the model is reached through a Unix socket (`bridge.py`)
-    that forwards only `POST /v1/chat/completions` to LiteLLM and adds
-    the real key itself; anything else gets 403.
+    that forwards only `POST /v1/chat/completions` (model `local`, only
+    Aider's body keys) to LiteLLM and adds the real key itself; anything
+    else gets 403.
     Afterwards the host checks the git files are unchanged.
 3.  The fixed path check (`diffcheck.py`) on the staged diff, then
-    gitleaks on the added lines. Blocked → brief, label
+    gitleaks on the export of the staged index. Blocked → brief, label
     `dispatch:claude`, nothing pushed. gitleaks comes from `PATH` or the
     one pre-commit built (`uv run pre-commit run gitleaks` once).
 4.  ruff, mypy and pytest in Docker: `--network none`, `--read-only`,

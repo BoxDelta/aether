@@ -9,6 +9,11 @@ socket. Here, outside the sandbox, the bridge:
     ``POST /v1/chat/completions`` to the LiteLLM URL from the settings (checked
     again here: http, loopback). Any other method or path gets 403 and never
     reaches LiteLLM (no admin routes, no key or model management);
+-   checks the body too, because LiteLLM obeys request params (``api_base``,
+    ``user_config``, ``fallbacks``, logging params...) that could send the call,
+    with the master key, somewhere else. Only model ``local`` and the keys Aider
+    0.86 sends are allowed, and the bridge forwards its own re-encoding of the
+    parsed body, never the original bytes;
 -   drops every header Aider sent and adds the real LiteLLM key itself. Aider
     only ever holds a dummy key; the real one never enters the sandbox's
     environment or files;
@@ -22,6 +27,7 @@ dropped, all closed when the try ends.
 import contextlib
 import http.client
 import ipaddress
+import json
 import os
 import socket
 import threading
@@ -39,6 +45,13 @@ MAX_REPLY_BYTES = 16 * 1024 * 1024
 # The only request that leaves the sandbox. Aider 0.86 sends nothing else to the
 # model API (checked with a live run, ADR-030).
 ALLOWED = frozenset({("POST", "/v1/chat/completions")})
+# The body keys Aider 0.86 sends (recorded from a live run, ADR-030); anything else,
+# such as api_base, api_key, user_config, fallbacks, metadata or tags, gets 403.
+MODEL = "local"
+BODY_KEYS = frozenset({"model", "messages", "temperature", "chat_template_kwargs"})
+MESSAGE_KEYS = frozenset({"role", "content"})
+ROLES = frozenset({"system", "user", "assistant"})
+TEMPLATE_KWARGS = {"enable_thinking": False}
 SANDBOX_KEY = "sk-dispatch-sandbox-dummy"  # what Aider holds; not a credential
 
 
@@ -77,9 +90,10 @@ def _content_length(lines: list[str]) -> int:
     headers = {}
     for line in lines:
         name, sep, value = line.partition(":")
-        if not sep:
+        key = name.strip().lower()
+        if not sep or key in headers:  # no duplicate headers (Content-Length smuggling)
             raise Refused("400 Bad Request")
-        headers[name.strip().lower()] = value.strip()
+        headers[key] = value.strip()
     if "transfer-encoding" in headers:
         raise Refused("411 Length Required")
     try:
@@ -106,6 +120,55 @@ def read_request(client: socket.socket) -> bytes:
             raise Refused("400 Bad Request")
         body += chunk
     return body[:length]
+
+
+def _no_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise Refused("403 Forbidden")
+        result[key] = value
+    return result
+
+
+def _content_ok(content: object) -> bool:
+    if isinstance(content, str):
+        return True
+    return isinstance(content, list) and all(
+        isinstance(part, dict)
+        and set(part) == {"type", "text"}
+        and part["type"] == "text"
+        and isinstance(part["text"], str)
+        for part in content
+    )
+
+
+def check_body(body: bytes) -> bytes:
+    """The re-encoded body if it is a plain chat call to model ``local`` with only
+    Aider's keys; ``Refused`` otherwise."""
+    try:
+        data = json.loads(body, object_pairs_hook=_no_duplicates)
+    except (ValueError, RecursionError):
+        raise Refused("400 Bad Request") from None
+    if not isinstance(data, dict) or not set(data) <= BODY_KEYS or data.get("model") != MODEL:
+        raise Refused("403 Forbidden")
+    messages = data.get("messages")
+    if not isinstance(messages, list) or not messages:
+        raise Refused("403 Forbidden")
+    for message in messages:
+        if (
+            not isinstance(message, dict)
+            or set(message) != MESSAGE_KEYS
+            or message["role"] not in ROLES
+            or not _content_ok(message["content"])
+        ):
+            raise Refused("403 Forbidden")
+    temperature = data.get("temperature", 0)
+    if isinstance(temperature, bool) or not isinstance(temperature, int | float):
+        raise Refused("403 Forbidden")
+    if data.get("chat_template_kwargs", TEMPLATE_KWARGS) != TEMPLATE_KWARGS:
+        raise Refused("403 Forbidden")
+    return json.dumps(data, ensure_ascii=False).encode("utf-8")
 
 
 def _reply(client: socket.socket, status: str, content_type: str, body: bytes) -> None:
@@ -171,7 +234,7 @@ def _serve_one(client: socket.socket, host: str, port: int, key: str, opened: _O
         with client:
             client.settimeout(IDLE_TIMEOUT_S)
             try:
-                body = read_request(client)
+                body = check_body(read_request(client))
             except Refused as refused:
                 with contextlib.suppress(OSError):
                     _reply(client, str(refused), "text/plain", b"")

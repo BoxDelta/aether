@@ -224,16 +224,31 @@ one issue sorted `local` per run.
         `POST /v1/chat/completions` (Aider 0.86 sends nothing else; a
         live run showed no `GET /v1/models`). Any other method or path,
         including LiteLLM's key, user and config admin routes, gets 403
-        and never reaches LiteLLM. Chunked or over-size requests are
-        refused;
+        and never reaches LiteLLM. Chunked, over-size or
+        duplicate-header requests are refused, and only one request per
+        connection is read;
+    -   checks the body, because LiteLLM obeys request params
+        (`api_base` with `api_key`, `user_config`, `fallbacks`, logging
+        and metadata params) that could send the call, with the master
+        key, to another host. The body must be one JSON object without
+        duplicate keys, model `local`, and only the keys Aider 0.86 sends
+        (`model`, `messages`, `temperature`, `chat_template_kwargs` with
+        thinking off; messages only `role` and `content`). Anything else
+        gets 403. The bridge forwards its own re-encoding of the parsed
+        body, never Aider's bytes;
     -   drops every header Aider sent and adds the real key itself. The
         real key never enters the sandbox's environment, command line or
         files (tested), and is masked if LiteLLM ever echoed it.
 -   **gitleaks before any push (#210).** After the path check passes,
-    gitleaks (on `PATH`, or the one pre-commit built from the pinned
-    hook) scans the lines the diff adds, redacted. A finding blocks the
-    try like the path check: no tests, no push, a Claude brief and
-    `dispatch:claude`. gitleaks missing or failing is a failed try.
+    gitleaks scans the export of the staged index (exactly what would be
+    pushed; Sentinel keeps main clean), redacted, with its working
+    directory inside the export. It is the build pre-commit made from the
+    revision pinned in main's `.pre-commit-config.yaml`, else gitleaks on
+    the dispatcher's `PATH`. A finding (exit code 3) blocks the try like
+    the path check: no tests, no push, a Claude brief and
+    `dispatch:claude`. gitleaks missing or erroring is a failed try. The
+    path check refuses any changed line with a `gitleaks:allow` marker,
+    since it would hide a secret from gitleaks here and in Sentinel.
 -   **After Aider**, the host checks that the worktree's `.git` file, the
     git dir's files (`commondir`, `gitdir`, `HEAD`, no new ones) and
     HEAD's branch and commit are unchanged, then rebuilds the index from

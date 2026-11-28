@@ -51,7 +51,7 @@ FAKE_GITLEAKS = "/fake/bin/gitleaks"
 @pytest.fixture(autouse=True)
 def _fake_gitleaks(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> None:
     if not request.node.name.startswith("test_real_gitleaks"):
-        monkeypatch.setattr(local, "gitleaks_path", lambda: Path(FAKE_GITLEAKS))
+        monkeypatch.setattr(local, "gitleaks_path", lambda _root: Path(FAKE_GITLEAKS))
 
 
 @dataclass
@@ -78,7 +78,7 @@ class FakeTools:
             self.edit(cwd)
             return local.Result(0, "", "")
         if argv[0] == FAKE_GITLEAKS:
-            return local.Result(1 if self.leak else 0, "", "")
+            return local.Result(local.GITLEAKS_FINDING if self.leak else 0, "", "")
         if argv[0] == "docker":
             ok = self.tests_pass or argv[1] == "image"
             return local.Result(0 if ok else 1, "" if ok else "1 failed", "")
@@ -346,7 +346,7 @@ def test_gitleaks_finding_blocks_before_tests_and_push(repo: Path, tmp_path: Pat
 def test_missing_gitleaks_is_a_failed_try(
     repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(local, "gitleaks_path", lambda: None)
+    monkeypatch.setattr(local, "gitleaks_path", lambda _root: None)
     outcome = _path(repo, make_settings(tmp_path), FakeTools(_fix_typo)).attempt(ISSUE, _never)
     assert outcome.kind == "failed" and "gitleaks not found" in outcome.reason
 
@@ -359,8 +359,13 @@ def _fake_secret() -> str:
     )
 
 
-@pytest.mark.skipif(local.gitleaks_path() is None, reason="gitleaks not installed")
-def test_real_gitleaks_blocks_a_diff_with_a_fake_secret(repo: Path, tmp_path: Path) -> None:
+@pytest.mark.skipif(local.gitleaks_path(local.ROOT) is None, reason="gitleaks not installed")
+def test_real_gitleaks_blocks_a_diff_with_a_fake_secret(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = local.gitleaks_path(local.ROOT)  # the temp repo has no pre-commit config
+    monkeypatch.setattr(local, "gitleaks_path", lambda _root: real)
+
     def leak(work: Path) -> None:
         _fix_typo(work)
         (work / "docs" / "guide.md").write_text(
@@ -369,6 +374,36 @@ def test_real_gitleaks_blocks_a_diff_with_a_fake_secret(repo: Path, tmp_path: Pa
 
     tools = FakeTools(leak)
     outcome = _path(repo, make_settings(tmp_path), tools).attempt(ISSUE, _never)
-    assert outcome.kind == "blocked" and "gitleaks" in outcome.reason
+    assert outcome.kind == "blocked" and "gitleaks" in outcome.reason, outcome
     clean = FakeTools(_fix_typo)
     assert _path(repo, make_settings(tmp_path), clean).attempt(ISSUE, lambda b: 1).kind == "opened"
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["++token = SECRET", "+x\rtoken = SECRET", "x\x1ctoken = SECRET"],
+    ids=["plus-plus", "carriage-return", "file-separator"],
+)
+def test_real_gitleaks_sees_lines_a_diff_parser_could_miss(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, line: str
+) -> None:
+    real = local.gitleaks_path(local.ROOT)
+    if real is None:
+        pytest.skip("gitleaks not installed")
+    monkeypatch.setattr(local, "gitleaks_path", lambda _root: real)
+
+    def leak(work: Path) -> None:
+        text = "The reply is streamed back.\n" + line.replace("SECRET", _fake_secret()) + "\n"
+        (work / "docs" / "guide.md").write_text(text)
+
+    outcome = _path(repo, make_settings(tmp_path), FakeTools(leak)).attempt(ISSUE, _never)
+    assert outcome.kind == "blocked", outcome
+
+
+def test_gitleaks_allow_marker_is_blocked(repo: Path, tmp_path: Path) -> None:
+    def marker(work: Path) -> None:
+        (work / "docs" / "guide.md").write_text("The reply is streamed back. # GitLeaks:Allow\n")
+
+    tools = FakeTools(marker)
+    outcome = _path(repo, make_settings(tmp_path), tools).attempt(ISSUE, _never)
+    assert outcome.kind == "blocked" and "gitleaks:allow" in outcome.reason

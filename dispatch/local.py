@@ -5,11 +5,12 @@ Isolation:
 
 - Aider runs in bubblewrap. It sees the filesystem read-only, an empty home, the
   worktree read-write and its own git index; the repository's ``.git`` (config and
-  hooks) stays read-only. Its environment holds only the local model's address and
-  LiteLLM key: no GitHub token, no Discord webhook, no ``.env`` (a fresh worktree
-  has none, and ``--env-file`` points at ``/dev/null``).
+  hooks) stays read-only. Its environment holds no credential (a dummy LiteLLM
+  key; the bridge adds the real one outside): no GitHub token, no Discord webhook,
+  no ``.env`` (a fresh worktree has none, and ``--env-file`` points at
+  ``/dev/null``).
 - Tests (ruff, mypy, pytest without database tests) run in Docker with
-  ``--network none``, the worktree mounted read-only, no capabilities, as the
+  ``--network none``, an export of the staged index mounted read-only, no capabilities, as the
   owner's user, with no secret in the environment.
 - Only after the path check and the tests pass does the dispatcher commit, push
   the ``dispatch/<n>-<slug>`` branch (the token goes in a header through git's
@@ -19,12 +20,14 @@ Nothing here merges, closes, force-pushes or pushes to ``main``.
 """
 
 import base64
+import contextlib
 import hashlib
 import json
 import os
 import re
 import secrets
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
@@ -240,23 +243,36 @@ def sandbox_env() -> dict[str, str]:
     }
 
 
-def gitleaks_path() -> Path | None:
-    """gitleaks on PATH, else the one pre-commit built from the pinned hook."""
+GITLEAKS_REPO = "https://github.com/gitleaks/gitleaks"
+GITLEAKS_FINDING = 3  # --exit-code: a finding, told apart from gitleaks' own errors (1)
+
+
+def _pinned_gitleaks_rev(root: Path) -> str | None:
+    text = (root / ".pre-commit-config.yaml").read_text("utf-8")
+    match = re.search(re.escape(GITLEAKS_REPO) + r"\s*\n\s*rev:\s*([0-9a-f]{40})\b", text)
+    return match.group(1) if match else None
+
+
+def gitleaks_path(root: Path) -> Path | None:
+    """The gitleaks pre-commit built from the hook revision pinned in main's
+    ``.pre-commit-config.yaml`` (the same version as the commit hook), else gitleaks
+    on the dispatcher's own PATH. None if neither exists."""
+    try:
+        rev = _pinned_gitleaks_rev(root)
+        db = Path.home() / ".cache" / "pre-commit" / "db.db"
+        if rev is not None and db.is_file():
+            with contextlib.closing(sqlite3.connect(f"file:{db}?mode=ro", uri=True)) as conn:
+                row = conn.execute(
+                    "SELECT path FROM repos WHERE repo = ? AND ref = ?", (GITLEAKS_REPO, rev)
+                ).fetchone()
+            if row is not None:
+                built = Path(row[0]) / "golangenv-default" / "bin" / "gitleaks"
+                if built.is_file():
+                    return built
+    except (OSError, sqlite3.Error):
+        pass
     found = shutil.which("gitleaks")
-    if found:
-        return Path(found)
-    cache = Path.home() / ".cache" / "pre-commit"
-    built = sorted(cache.glob("*/golangenv-default/bin/gitleaks"), key=lambda p: p.stat().st_mtime)
-    return built[-1] if built else None
-
-
-def added_lines(diff: str) -> str:
-    """The lines the diff adds, without the +++ headers."""
-    return "".join(
-        line[1:] + "\n"
-        for line in diff.splitlines()
-        if line.startswith("+") and not line.startswith("+++")
-    )
+    return Path(found) if found else None
 
 
 def sandbox_args(root: Path, work: Path, scratch: Path, gitdir: Path) -> list[str]:
@@ -405,26 +421,29 @@ class LocalPath:
             "--find-renames", "--ignore-submodules=none", cwd=work,
         )  # fmt: skip
         names = self.git("diff", "--cached", "--name-only", "-z", "--no-renames", cwd=work)
-        check = diffcheck.check(text, tuple(n for n in names.split("\0") if n))
-        if check.ok and not self.no_secrets(text, scratch):
-            return diffcheck.DiffCheck(False, "gitleaks found a possible secret", (), 0)
-        return check
+        return diffcheck.check(text, tuple(n for n in names.split("\0") if n))
 
-    def no_secrets(self, diff: str, scratch: Path) -> bool:
-        """gitleaks on the lines the diff adds, before anything is pushed (#210).
-        Findings are redacted; a finding blocks the try and turns it into a brief."""
-        tool = gitleaks_path()
+    def export(self, work: Path, scratch: Path) -> Path:
+        """The staged index as plain files: exactly what was checked and will be
+        committed, without ignored or untracked files the model may have left."""
+        export = scratch / "export"
+        self.git("checkout-index", "--all", "--force", f"--prefix={export}/", cwd=work)
+        return export
+
+    def no_secrets(self, export: Path) -> bool:
+        """gitleaks on the whole export, before the tests and any push (#210).
+        Sentinel keeps main clean, so a finding is the model's. Findings are
+        redacted; a finding blocks the try and turns it into a brief. The diff
+        check already refuses ``gitleaks:allow`` markers."""
+        tool = gitleaks_path(self.root)
         if tool is None:
-            raise LocalError("gitleaks not found (install it or run pre-commit once)")
-        added = scratch / "added" / "diff.txt"
-        added.parent.mkdir()
-        added.write_text(added_lines(diff), "utf-8")
+            raise LocalError("gitleaks not found (run `uv run pre-commit run gitleaks` once)")
         result = self.run(
-            [str(tool), "dir", str(added.parent), "--no-banner", "--redact",
-             "--exit-code", "1", "--log-level", "error"],
-            base_env(), None, GIT_TIMEOUT_S,
+            [str(tool), "dir", ".", "--no-banner", "--redact",
+             "--exit-code", str(GITLEAKS_FINDING), "--log-level", "error"],
+            base_env(), export, GIT_TIMEOUT_S,
         )  # fmt: skip
-        if result.returncode not in (0, 1):
+        if result.returncode not in (0, GITLEAKS_FINDING):
             raise LocalError("gitleaks failed")
         return result.returncode == 0
 
@@ -454,11 +473,8 @@ class LocalPath:
             raise LocalError(f"test image build failed: {tail(result.stderr)}")
         return tag
 
-    def tests(self, work: Path, scratch: Path) -> None:
-        """On an export of the staged index: exactly what was checked and will be
-        committed, without ignored or untracked files the model may have left."""
-        export = scratch / "export"
-        self.git("checkout-index", "--all", "--force", f"--prefix={export}/", cwd=work)
+    def tests(self, export: Path) -> None:
+        """ruff, mypy and pytest in the no-network container, on the export."""
         name = f"dispatch-test-{secrets.token_hex(6)}"
         try:
             result = self.run(
@@ -508,7 +524,10 @@ class LocalPath:
                     if check.reason == "no change":
                         return Outcome("failed", "Aider made no change")
                     return Outcome("blocked", f"path check: {check.reason}")
-                self.tests(work, scratch)
+                export = self.export(work, scratch)
+                if not self.no_secrets(export):
+                    return Outcome("blocked", "gitleaks found a possible secret")
+                self.tests(export)
                 self.publish(issue, work, branch)
             return Outcome("opened", check.reason, open_pr(branch))
         except LocalError as exc:

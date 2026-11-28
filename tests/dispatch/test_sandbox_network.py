@@ -6,6 +6,7 @@ bubblewrap can't create namespaces (for example CI runners without it).
 """
 
 import http.server
+import json
 import secrets
 import shutil
 import socket
@@ -52,7 +53,7 @@ def ask(request):
     while chunk := u.recv(4096):
         reply += chunk
     return reply.split(b"\\r\\n", 1)[0].decode()
-body = b'{"model":"local","messages":[]}'
+body = b'{"model":"local","messages":[{"role":"user","content":"hi"}]}'
 print("CHAT", ask(b"POST /v1/chat/completions HTTP/1.1\\r\\nAuthorization: Bearer "
       + os.environ["OPENAI_API_KEY"].encode() + b"\\r\\nContent-Length: "
       + str(len(body)).encode() + b"\\r\\n\\r\\n" + body))
@@ -91,6 +92,9 @@ needs_sandbox = pytest.mark.skipif(
 class FakeLiteLLM:
     port: int
     seen: list[tuple[str, str, str]] = field(default_factory=list)  # method, path, auth
+    headers: list[dict[str, str]] = field(default_factory=list)
+    bodies: list[bytes] = field(default_factory=list)
+    reply: bytes = b'{"choices":[{"message":{"content":"pong"}}]}'
 
 
 @pytest.fixture
@@ -101,9 +105,10 @@ def fake_litellm() -> Iterator[FakeLiteLLM]:
     class Handler(http.server.BaseHTTPRequestHandler):
         def _answer(self) -> None:
             length = int(self.headers.get("Content-Length") or 0)
-            self.rfile.read(length)
+            fake.bodies.append(self.rfile.read(length))
             fake.seen.append((self.command, self.path, self.headers.get("Authorization", "")))
-            body = b'{"choices":[{"message":{"content":"pong"}}]}'
+            fake.headers.append({k.lower(): v for k, v in self.headers.items()})
+            body = fake.reply
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -138,10 +143,18 @@ def _ask(sock: Path, request: bytes) -> bytes:
     return reply
 
 
-def _post(path: str = "/v1/chat/completions", auth: str = "Bearer dummy") -> bytes:
-    body = b'{"model":"local","messages":[]}'
+CHAT = b'{"model":"local","messages":[{"role":"user","content":"hi"}]}'
+
+
+def _post(
+    path: str = "/v1/chat/completions",
+    auth: str = "Bearer dummy",
+    body: bytes = CHAT,
+    extra: str = "",
+) -> bytes:
     return (
-        f"POST {path} HTTP/1.1\r\nAuthorization: {auth}\r\nContent-Length: {len(body)}\r\n\r\n"
+        f"POST {path} HTTP/1.1\r\nAuthorization: {auth}\r\n{extra}"
+        f"Content-Length: {len(body)}\r\n\r\n"
     ).encode() + body
 
 
@@ -275,3 +288,88 @@ def test_sandbox_env_holds_no_real_key() -> None:
     env = local.sandbox_env()
     assert env["OPENAI_API_KEY"] == bridge.SANDBOX_KEY
     assert "OPENAI_API_BASE" not in env  # the driver points at its own forwarder
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'{"model":"local","messages":[{"role":"user","content":"hi"}],'
+        b'"api_base":"http://127.0.0.1:5678","api_key":"x"}',
+        b'{"model":"local","messages":[{"role":"user","content":"hi"}],"user_config":{}}',
+        b'{"model":"local","messages":[{"role":"user","content":"hi"}],"fallbacks":["x"]}',
+        b'{"model":"local","messages":[{"role":"user","content":"hi"}],"metadata":{}}',
+        b'{"model":"local","messages":[{"role":"user","content":"hi"}],"base_url":"http://x"}',
+        b'{"model":"other","messages":[{"role":"user","content":"hi"}]}',
+        b'{"model":"local","model":"other","messages":[{"role":"user","content":"hi"}]}',
+        b'{"model":"local","messages":[{"role":"user","content":"hi","name":"x"}]}',
+        b'{"model":"local","messages":[{"role":"tool","content":"hi"}]}',
+        b'{"model":"local","messages":[{"role":"user","content":"hi"}],'
+        b'"chat_template_kwargs":{"enable_thinking":true}}',
+        b'{"model":"local","messages":[]}',
+        b"[]",
+        b"not json",
+    ],
+    ids=[
+        "api-base-and-key", "user-config", "fallbacks", "metadata", "base-url",
+        "other-model", "duplicate-model", "message-extra-key", "tool-role",
+        "thinking-on", "no-messages", "array", "not-json",
+    ],
+)  # fmt: skip
+def test_bodies_that_could_redirect_the_call_are_refused(
+    tmp_path: Path, fake_litellm: FakeLiteLLM, body: bytes
+) -> None:
+    sock = tmp_path / "sock" / "llm.sock"
+    with bridge.unix_bridge(sock, _url(fake_litellm), REAL_KEY):
+        reply = _ask(sock, _post(body=body))
+    assert reply.split(b" ")[1] in {b"400", b"403"}
+    assert fake_litellm.seen == []
+
+
+def test_aider_body_is_forwarded_re_encoded(tmp_path: Path, fake_litellm: FakeLiteLLM) -> None:
+    body = (
+        b'{ "model": "local", "temperature": 0, "chat_template_kwargs": '
+        b'{"enable_thinking": false}, "messages": [{"role": "system", "content": "s"},'
+        b' {"role": "user", "content": [{"type": "text", "text": "hi"}]}] }'
+    )
+    sock = tmp_path / "sock" / "llm.sock"
+    with bridge.unix_bridge(sock, _url(fake_litellm), REAL_KEY):
+        assert _ask(sock, _post(body=body)).startswith(b"HTTP/1.1 200 OK")
+    assert json.loads(fake_litellm.bodies[0]) == json.loads(body)
+    assert fake_litellm.bodies[0] != body  # the bridge's encoding, not Aider's bytes
+
+
+def test_only_the_bridges_headers_reach_litellm(tmp_path: Path, fake_litellm: FakeLiteLLM) -> None:
+    extra = (
+        "x-litellm-api-key: sneaky\r\nAPI-Key: sneaky\r\nx-litellm-tags: t\r\n"
+        "X-Forwarded-For: 1.2.3.4\r\n"
+    )
+    sock = tmp_path / "sock" / "llm.sock"
+    with bridge.unix_bridge(sock, _url(fake_litellm), REAL_KEY):
+        _ask(sock, _post(extra=extra))
+    sent = fake_litellm.headers[0]
+    assert not {"x-litellm-api-key", "api-key", "x-litellm-tags", "x-forwarded-for"} & set(sent)
+    assert sent["authorization"] == f"Bearer {REAL_KEY}"
+
+
+def test_pipelined_requests_reach_litellm_once(tmp_path: Path, fake_litellm: FakeLiteLLM) -> None:
+    sock = tmp_path / "sock" / "llm.sock"
+    with bridge.unix_bridge(sock, _url(fake_litellm), REAL_KEY):
+        _ask(sock, _post() + b"GET /key/info HTTP/1.1\r\n\r\n" + _post())
+    assert len(fake_litellm.seen) == 1
+    assert json.loads(fake_litellm.bodies[0]) == json.loads(CHAT)
+
+
+def test_duplicate_content_length_is_refused(tmp_path: Path, fake_litellm: FakeLiteLLM) -> None:
+    sock = tmp_path / "sock" / "llm.sock"
+    with bridge.unix_bridge(sock, _url(fake_litellm), REAL_KEY):
+        reply = _ask(sock, _post(extra="Content-Length: 5\r\n"))
+    assert reply.split(b" ")[1] == b"400"
+    assert fake_litellm.seen == []
+
+
+def test_a_reply_echoing_the_key_is_masked(tmp_path: Path, fake_litellm: FakeLiteLLM) -> None:
+    fake_litellm.reply = b'{"error":"bad key ' + REAL_KEY.encode() + b'"}'
+    sock = tmp_path / "sock" / "llm.sock"
+    with bridge.unix_bridge(sock, _url(fake_litellm), REAL_KEY):
+        reply = _ask(sock, _post())
+    assert REAL_KEY.encode() not in reply and b"bad key ***" in reply
