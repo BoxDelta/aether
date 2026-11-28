@@ -1,18 +1,17 @@
 # ADR-042: Discord bot (step 4d) and the owner signature
 
-**Status:** Proposed (owner decisions 2026-11-28 on #228; draft for acceptance)\
+**Status:** Accepted (owner, 2026-11-28; decisions on #228)\
 **Date:** 2026-11-28\
 **Owner:** BoxDelta\
-**Amends (once accepted):** ADR-030 §Trust (a second way for an issue to
+**Amends:** ADR-030 §Trust (a second way for an issue to
 count as the owner's), §Credentials (the Discord token and the bot's GitHub
 token live in the bot's own files, owned by another Linux user) and §Local
 path (the dispatcher never adds `dispatch:auto`; the bot, a separate
 program, does); ADR-041 decision 4; ADR-022 decision 6 and `CLAUDE.md`
 rule 12 (agents act only on issues the owner wrote). The `CLAUDE.md`
-change is in the pull request that proposes this ADR, and applies only once
-this ADR is Accepted and `verify` exists; docs/05 §10.1 and
-`CONTRIBUTING.md` (which state the rule the old way) change in the
-acceptance PR.
+change was made in the pull request that proposed this ADR, and applies only
+once `verify` exists; docs/05 §10.1 and `CONTRIBUTING.md` were changed in the
+acceptance pull request.
 
 ## Context
 
