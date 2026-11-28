@@ -1,5 +1,5 @@
-# Every file needs the owner's review. protect-main requires review from Code Owners (ADR-041, #215),
-# so only the owner's approval counts. Last matching pattern wins; the specific lines below are kept.
+# Every file needs the owner's review: this default plus the specific lines below, all the owner.
+# Not enforced until protect-main turns on "Require review from Code Owners" (planned in ADR-041, Proposed; #215).
 * @BoxDelta
 /.github/   @BoxDelta
 /CLAUDE.md  @BoxDelta
