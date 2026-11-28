@@ -125,9 +125,10 @@ trusted issues with the owner's admin `gh` credentials (ADR-041 Limits).
     only when `verify` succeeds, and keeps refusing every other author.
     `verify` runs from the main-only clone (`~/Projects/aether-dispatch`),
     and **prints the verified title and body**; `/work-on` uses only that
-    text, so an edit between the check and the read changes nothing. No
-    sandbox or read-deny rule is needed to protect the signing key, because
-    the owner's user never has it. A `Read` deny rule or the Claude Code
+    text, so an edit between the check and the read changes nothing. Once
+    Limits option (a) or (b) is in place, no sandbox or read-deny rule is
+    needed to protect the signing key, because the owner's user can never
+    reach it; under option (c) the Docker prompt is the only control. A `Read` deny rule or the Claude Code
     sandbox on `~/.config/aether-dispatch/**` (it holds the dispatcher's
     GitHub token) stays optional extra hardening. `verify` guards against
     text an attacker put in an issue; it cannot force a session that ignores
@@ -161,7 +162,11 @@ trusted issues with the owner's admin `gh` credentials (ADR-041 Limits).
     apply). Logs hold IDs and counts, never task text, and never the
     signature or the proof line; the `discord.gateway` and `discord.http`
     loggers are held at INFO or above, and the Discord token and the bot's
-    GitHub token are registered with the log redactor. Limits: 5 tasks per
+    GitHub token are registered with a redactor that is part of the
+    `dispatch/` package. The bot imports nothing outside `dispatch/`, the
+    standard library and its pinned dependency groups, so the update diff
+    (appendix) covers all the code that runs in the key process; a test
+    checks the imports. Limits: 5 tasks per
     hour, title up to 120 characters, details up to 2000.
 12. **Dependencies, in `dispatch`-only dependency groups**, each pinned to an
     exact version, covered by Dependabot (the existing `uv` entry reads
@@ -257,7 +262,8 @@ trusted issues with the owner's admin `gh` credentials (ADR-041 Limits).
 -   Someone who has only the Discord bot token can't make Discord deliver an
     interaction as the owner.
 -   Claude Code and the dispatcher hold only the public key, so a
-    prompt-injected session cannot forge a signature.
+    prompt-injected session cannot forge a signature, unless it can use
+    Docker (Limits: the `docker` group).
 -   One more Linux user, system unit, service, dependency pair and set of
     credentials, and an update step (below) when the bot's code changes.
 -   New work: `dispatch/proof.py` and its tests, the trust-check change, the
@@ -274,7 +280,7 @@ trusted issues with the owner's admin `gh` credentials (ADR-041 Limits).
     root-equivalent: a container can read `/etc/aether-bot/proof.key`, replace
     `/etc/aether-dispatch/proof.pub`, or rewrite `/opt/aether-bot`, with no
     password and no Claude Code prompt (the dispatcher's local path and the
-    Postgres backup already use `docker` as the owner, ADR-025 D8). Until that
+    Postgres backup already use `docker` as the owner, ADR-025). Until that
     changes, the separate user protects against a session that cannot use
     Docker, which is not a boundary. **The owner decides before accepting
     this ADR**, one of: (a) rootless Docker or Podman, and the owner leaves
@@ -287,8 +293,8 @@ trusted issues with the owner's admin `gh` credentials (ADR-041 Limits).
     `aether-bot`'s files by another route. The owner's own sudo is the
     boundary, and only while nothing has written to the owner's shell
     configuration (a `sudo` function or a PATH entry would capture the
-    password): run the runbook and updates from a fresh login shell with
-    `command sudo` and absolute paths. `pkexec`, `run0`, `systemd-run`,
+    password): run the runbook from `fish --no-config` with `/usr/bin/sudo`
+    and absolute paths, as written. `pkexec`, `run0`, `systemd-run`,
     `systemctl` and `su` are not on the Claude Code ask list; adding them is
     a follow-up (`.claude/settings.json`, owner approval). GNOME can show a
     polkit password dialog for them.
@@ -308,26 +314,32 @@ trusted issues with the owner's admin `gh` credentials (ADR-041 Limits).
 
 ## Appendix: runbook (the owner runs this with sudo; fish)
 
+Run it from a clean shell: start `fish --no-config` (so a `sudo` function or
+PATH entry in your fish configuration cannot intercept the password) and call
+`/usr/bin/sudo` with absolute paths for every tool it runs, because `sudo`
+must not run a file your user can write. The commands below do that. If you
+have a custom `secure_path` in sudoers, it does not matter then.
+
 The commands in part 1 can be run before the bot exists. Part 2 is fixed in
 the pull request that adds the bot, which also adds the unit file.
 
 **Part 1: user, directories, key.**
 
 ```fish
-sudo useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/bin/nologin aether-bot
-sudo install -d -o aether-bot -g aether-bot -m 700 /etc/aether-bot /var/lib/aether-bot
-sudo install -d -o root -g root -m 755 /etc/aether-dispatch
-sudo -u aether-bot sh -c 'umask 077; openssl genpkey -algorithm ed25519 -out /etc/aether-bot/proof.key'
-sudo -u aether-bot openssl pkey -in /etc/aether-bot/proof.key -pubout | sudo tee /etc/aether-dispatch/proof.pub >/dev/null
-sudo chown root:root /etc/aether-dispatch/proof.pub
-sudo chmod 644 /etc/aether-dispatch/proof.pub
-printf '%s\n' YOUR_NUMERIC_DISCORD_ID | sudo tee /etc/aether-dispatch/owner_id >/dev/null
-sudo chown root:root /etc/aether-dispatch/owner_id
-sudo chmod 644 /etc/aether-dispatch/owner_id
-sudo install -o aether-bot -g aether-bot -m 600 /dev/null /etc/aether-bot/bot.env
-printf 'BOT_OWNER_DISCORD_ID=%s\nBOT_GUILD_ID=%s\nBOT_CHANNEL_ID=%s\n' YOUR_ID SERVER_ID CHANNEL_ID | sudo -u aether-bot tee -a /etc/aether-bot/bot.env >/dev/null
-read -s -P 'Discord bot token: ' tok; and printf 'DISCORD_BOT_TOKEN=%s\n' $tok | sudo -u aether-bot tee -a /etc/aether-bot/bot.env >/dev/null; set -e tok
-read -s -P 'second boxdelta-dispatch token (public_repo, 90 days): ' tok; and printf 'BOT_GITHUB_TOKEN=%s\n' $tok | sudo -u aether-bot tee -a /etc/aether-bot/bot.env >/dev/null; set -e tok
+/usr/bin/sudo /usr/bin/useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/bin/nologin aether-bot
+/usr/bin/sudo /usr/bin/install -d -o aether-bot -g aether-bot -m 700 /etc/aether-bot /var/lib/aether-bot
+/usr/bin/sudo /usr/bin/install -d -o root -g root -m 755 /etc/aether-dispatch
+/usr/bin/sudo -u aether-bot /usr/bin/sh -c 'umask 077; /usr/bin/openssl genpkey -algorithm ed25519 -out /etc/aether-bot/proof.key'
+/usr/bin/sudo -u aether-bot /usr/bin/openssl pkey -in /etc/aether-bot/proof.key -pubout | /usr/bin/sudo /usr/bin/tee /etc/aether-dispatch/proof.pub >/dev/null
+/usr/bin/sudo /usr/bin/chown root:root /etc/aether-dispatch/proof.pub
+/usr/bin/sudo /usr/bin/chmod 644 /etc/aether-dispatch/proof.pub
+printf '%s\n' YOUR_NUMERIC_DISCORD_ID | /usr/bin/sudo /usr/bin/tee /etc/aether-dispatch/owner_id >/dev/null
+/usr/bin/sudo /usr/bin/chown root:root /etc/aether-dispatch/owner_id
+/usr/bin/sudo /usr/bin/chmod 644 /etc/aether-dispatch/owner_id
+/usr/bin/sudo /usr/bin/install -o aether-bot -g aether-bot -m 600 /dev/null /etc/aether-bot/bot.env
+printf 'BOT_OWNER_DISCORD_ID=%s\nBOT_GUILD_ID=%s\nBOT_CHANNEL_ID=%s\n' YOUR_ID SERVER_ID CHANNEL_ID | /usr/bin/sudo -u aether-bot /usr/bin/tee -a /etc/aether-bot/bot.env >/dev/null
+read -s -P 'Discord bot token: ' tok; and printf 'DISCORD_BOT_TOKEN=%s\n' $tok | /usr/bin/sudo -u aether-bot /usr/bin/tee -a /etc/aether-bot/bot.env >/dev/null; set -e tok
+read -s -P 'second boxdelta-dispatch token (public_repo, 90 days): ' tok; and printf 'BOT_GITHUB_TOKEN=%s\n' $tok | /usr/bin/sudo -u aether-bot /usr/bin/tee -a /etc/aether-bot/bot.env >/dev/null; set -e tok
 ```
 
 The variable names are fixed in the bot pull request. Replace the capitals
@@ -337,63 +349,71 @@ portal with "Public Bot" off and no privileged intents.
 **Part 1 checks** (each must behave as noted):
 
 ```fish
-cat /etc/aether-bot/proof.key                     # Permission denied
-cat /etc/aether-bot/bot.env                       # Permission denied
-sudo -u aether-bot cat ~/.config/aether-dispatch/dispatch.env   # Permission denied
-sudo -k; sudo -n true; echo $status               # non-zero: sudo asks for a password
-sudo -l | grep -i nopasswd                        # no output
+/usr/bin/cat /etc/aether-bot/proof.key            # Permission denied
+/usr/bin/cat /etc/aether-bot/bot.env              # Permission denied
+/usr/bin/sudo -u aether-bot /usr/bin/cat ~/.config/aether-dispatch/dispatch.env   # Permission denied
+/usr/bin/sudo -k; /usr/bin/sudo -n /usr/bin/true; echo $status   # non-zero: sudo asks for a password
+/usr/bin/sudo -l | /usr/bin/grep -i nopasswd      # no output
 id -nG | string match -q '*docker*'; and echo "owner is root-equivalent via Docker (see Limits)"
-ls -l /etc/aether-dispatch                        # both files root:root, -rw-r--r--
+/usr/bin/ls -l /etc/aether-dispatch               # both files root:root, -rw-r--r--
 ```
 
 **Part 2: deploy the code and the unit** (after the bot pull request is
 merged; the exact commands and the unit file come with it).
 
 ```fish
-sudo install -d -o root -g root -m 755 /opt/aether-bot
-sudo git clone https://github.com/BoxDelta/aether.git /opt/aether-bot/repo
-sudo env UV_PROJECT_ENVIRONMENT=/opt/aether-bot/venv UV_PYTHON_INSTALL_DIR=/opt/aether-bot/python /usr/bin/uv sync --locked --no-build --no-dev --group dispatch --group dispatch-bot --project /opt/aether-bot/repo
-sudo install -o root -g root -m 644 /opt/aether-bot/repo/scripts/systemd/system/aether-bot.service /etc/systemd/system/aether-bot.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now aether-bot.service
+/usr/bin/sudo /usr/bin/install -d -o root -g root -m 755 /opt/aether-bot
+/usr/bin/sudo /usr/bin/git clone https://github.com/BoxDelta/aether.git /opt/aether-bot/repo
+/usr/bin/sudo /usr/bin/env UV_PROJECT_ENVIRONMENT=/opt/aether-bot/venv UV_PYTHON_INSTALL_DIR=/opt/aether-bot/python /usr/bin/uv sync --locked --no-build --no-dev --group dispatch --group dispatch-bot --project /opt/aether-bot/repo
+/usr/bin/sudo /usr/bin/install -o root -g root -m 644 /opt/aether-bot/repo/scripts/systemd/system/aether-bot.service /etc/systemd/system/aether-bot.service
+/usr/bin/sudo /usr/bin/systemctl daemon-reload
+/usr/bin/sudo /usr/bin/systemctl enable --now aether-bot.service
 ```
 
-`uv` is the pacman copy at `/usr/bin/uv` (root-owned), called by absolute
-path, because `sudo` must not run a file the owner's user can write. The
-`--no-build` flag installs wheels only, so no package build runs as root, and
+`uv` is the pacman copy at `/usr/bin/uv` (root-owned). The `--no-build` flag
+installs wheels only, so no package build runs as root, and
 `UV_PYTHON_INSTALL_DIR` keeps the interpreter where `aether-bot` can run it.
 
 The unit runs as `aether-bot` with `NoNewPrivileges`, `ProtectSystem=strict`,
 `ProtectHome=true`, `ProtectProc=invisible`, `ProcSubset=pid`, `PrivateTmp`,
 `PrivateDevices`, `ProtectKernel*`, `RestrictNamespaces`, `RestrictSUIDSGID`,
 `LockPersonality`, `UMask=0077`, an empty `CapabilityBoundingSet`,
-`RestrictAddressFamilies=AF_INET AF_INET6`, `IPAddressDeny=localhost
-link-local multicast` (so a compromised dependency cannot reach LiteLLM,
-Postgres, n8n or the other local services; allow the DNS resolver if it is
-local), a system-call filter, and write access only to `/var/lib/aether-bot`.
+`RestrictAddressFamilies=AF_INET AF_INET6`, a system-call filter, and write
+access only to `/var/lib/aether-bot`. For the network it uses
+`IPAddressDeny=localhost link-local multicast 10.0.0.0/8 172.16.0.0/12
+192.168.0.0/16 100.64.0.0/10 fc00::/7` with `IPAddressAllow=` for only the
+DNS resolver. That keeps a compromised dependency away from the loopback
+services (LiteLLM, Postgres, n8n), Docker's bridge networks, the LAN and
+Tailscale; it can still reach the public internet, which it needs for Discord
+and GitHub.
 
 **Updating the bot.** Everything merged to `main` reaches the process that
 holds the key, so read the whole diff of the bot's code, dependencies and
 unit before deploying (a Dependabot bump of `discord.py` or `aiohttp` counts):
 
 ```fish
-sudo git -C /opt/aether-bot/repo fetch origin main
-sudo git -C /opt/aether-bot/repo log --oneline HEAD..origin/main
-sudo git -C /opt/aether-bot/repo diff --stat HEAD origin/main -- dispatch pyproject.toml uv.lock scripts/systemd
-sudo git -C /opt/aether-bot/repo diff HEAD origin/main -- dispatch scripts/systemd
-sudo git -C /opt/aether-bot/repo merge --ff-only origin/main
-sudo env UV_PROJECT_ENVIRONMENT=/opt/aether-bot/venv UV_PYTHON_INSTALL_DIR=/opt/aether-bot/python /usr/bin/uv sync --locked --no-build --no-dev --group dispatch --group dispatch-bot --project /opt/aether-bot/repo
-sudo install -o root -g root -m 644 /opt/aether-bot/repo/scripts/systemd/system/aether-bot.service /etc/systemd/system/aether-bot.service
-sudo systemctl daemon-reload
-sudo systemctl restart aether-bot.service
+/usr/bin/sudo /usr/bin/git -C /opt/aether-bot/repo fetch origin main
+/usr/bin/sudo /usr/bin/git -C /opt/aether-bot/repo log --oneline HEAD..origin/main
+/usr/bin/sudo /usr/bin/git -C /opt/aether-bot/repo diff --stat HEAD origin/main
+/usr/bin/sudo /usr/bin/git -C /opt/aether-bot/repo diff HEAD origin/main -- dispatch scripts/systemd pyproject.toml .python-version
+/usr/bin/sudo /usr/bin/git -C /opt/aether-bot/repo merge --ff-only origin/main
+/usr/bin/sudo /usr/bin/env UV_PROJECT_ENVIRONMENT=/opt/aether-bot/venv UV_PYTHON_INSTALL_DIR=/opt/aether-bot/python /usr/bin/uv sync --locked --no-build --no-dev --group dispatch --group dispatch-bot --project /opt/aether-bot/repo
+/usr/bin/sudo /usr/bin/install -o root -g root -m 644 /opt/aether-bot/repo/scripts/systemd/system/aether-bot.service /etc/systemd/system/aether-bot.service
+/usr/bin/sudo /usr/bin/systemctl daemon-reload
+/usr/bin/sudo /usr/bin/systemctl restart aether-bot.service
 ```
 
-**Checks after starting:** `ss -ltnp` shows nothing for `aether-bot`;
-`systemd-analyze security aether-bot.service` shows the hardening; a
-`/task` from another Discord user is ignored.
+`uv.lock` shows only in the stat; the bot imports nothing outside `dispatch/`
+(decision 11), so the diff above is all the code that runs in the key
+process.
+
+**Checks after starting:** `/usr/bin/ss -ltnp` shows nothing for `aether-bot`;
+`systemd-analyze security aether-bot.service` shows the hardening; a `/task`
+from another Discord user is ignored.
 
 **Revoking.** Delete the bot's GitHub token in `boxdelta-dispatch`'s
 settings, or reset the Discord bot token in the developer portal; each is
-independent. To stop signing at once, `sudo systemctl disable --now
-aether-bot.service`. To invalidate every earlier signature, replace
-`/etc/aether-dispatch/proof.pub` with a new public key.
+independent. To stop signing at once,
+`/usr/bin/sudo /usr/bin/systemctl disable --now aether-bot.service`. To
+invalidate every earlier signature, replace `/etc/aether-dispatch/proof.pub`
+with a new public key.
