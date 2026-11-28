@@ -182,6 +182,22 @@ def check_author(issue: Issue, settings: DispatchSettings) -> TrustCheck:
 class Actor:
     login: str
     kind: str  # GitHub's account type: "User", "Bot", "Organization"
+    via_app: bool = False  # an app acting for the user (performed_via_github_app)
+
+
+def _actor(event: dict[str, Any]) -> Actor:
+    actor = event.get("actor") or {}
+    return Actor(
+        str(actor.get("login") or ""),
+        str(actor.get("type") or ""),
+        event.get("performed_via_github_app") is not None,
+    )
+
+
+def _timeline(
+    client: httpx.Client, settings: DispatchSettings, number: int
+) -> list[dict[str, Any]]:
+    return list(_pages(client, f"{_repo_path(settings)}/issues/{number}/timeline", {}))
 
 
 def label_adder(
@@ -189,12 +205,20 @@ def label_adder(
 ) -> Actor | None:
     """Who added label ``name`` last, from the issue's timeline events (ADR-041)."""
     adder: Actor | None = None
-    for event in _pages(client, f"{_repo_path(settings)}/issues/{number}/timeline", {}):
+    for event in _timeline(client, settings, number):
         label = event.get("label") or {}
         if event.get("event") == "labeled" and label.get("name") == name:
-            actor = event.get("actor") or {}
-            adder = Actor(str(actor.get("login") or ""), str(actor.get("type") or ""))
+            adder = _actor(event)
     return adder
+
+
+def renamed_by_other(client: httpx.Client, settings: DispatchSettings, number: int) -> bool:
+    """Someone other than the owner changed the issue's title (ADR-041). Body edits
+    are not in the timeline (#216)."""
+    return any(
+        event.get("event") == "renamed" and not is_owner(_actor(event), settings)
+        for event in _timeline(client, settings, number)
+    )
 
 
 def is_owner(actor: Actor | None, settings: DispatchSettings) -> bool:
@@ -204,6 +228,7 @@ def is_owner(actor: Actor | None, settings: DispatchSettings) -> bool:
         actor is not None
         and actor.login == settings.dispatch_owner
         and actor.kind == "User"
+        and not actor.via_app
         and actor.login != settings.dispatch_bot_login
     )
 
@@ -245,6 +270,8 @@ def check_trust(client: httpx.Client, settings: DispatchSettings, issue: Issue) 
         return TrustCheck(False, f"no {AUTO_LABEL} label event")
     if not is_owner(adder, settings):
         return TrustCheck(False, f"{AUTO_LABEL} not added by the owner")
+    if renamed_by_other(client, settings, issue.number):
+        return TrustCheck(False, "title changed by someone other than the owner")
     return TrustCheck(True, "opened and labelled by the owner")
 
 

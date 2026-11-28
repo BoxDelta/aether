@@ -253,7 +253,7 @@ one issue sorted `local` per run.
     write client allows exactly two calls on this repository (open a
     pull request, add `dispatch:local` or `dispatch:claude`, checked in
     the request body) and refuses anything else before it is sent.
--   **Identity (ADR-041):** the token belongs to the machine user
+-   **Identity (ADR-041, pending acceptance):** the token belongs to the machine user
     `boxdelta-dispatch`, so its pull requests and labels show as that
     account. The trust checks read the issue's timeline and count a
     `dispatch:auto` or `dispatch:local-ok` label only if its last
@@ -310,10 +310,12 @@ each sorted issue.
 
 ### Credentials
 
--   GitHub (superseded by ADR-041): a classic token of the machine user
+-   GitHub (to be superseded by ADR-041 once accepted and the ruleset
+    is changed): a classic token of the machine user
     `boxdelta-dispatch`, scope `public_repo` only, 90-day expiry. The
     account is a collaborator on `BoxDelta/aether` only. `protect-main`
-    requires one approval, with only the owner on the bypass list, so
+    requires one code-owner approval (only the owner's counts), with
+    stale approvals dismissed and only the owner on the bypass list, so
     the dispatcher can't merge its own pull requests; its code also has
     no merge call, and a test checks it never calls GitHub's merge
     endpoint. Until the owner swaps the token, the earlier fine-grained

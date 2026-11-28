@@ -35,13 +35,13 @@ are written by the local model from issue text, stored on the PC
 `/work-on` as data, never as instructions: the issue is the task and
 `CLAUDE.md` wins (§6). The local path (step 4b) also uses the
 dispatcher's GitHub token to push `dispatch/` branches, open pull
-requests and add two labels; it can't merge (§8, ADR-030). The token is
-a classic token of the machine user `boxdelta-dispatch` (scope
-`public_repo` only, 90 days, ADR-041), so GitHub shows its actions as
-that account. The trust checks count a dispatcher label only when the
-owner's own account added it, and the local path runs only when the
-token is the machine user's. `protect-main` requires one approval with
-only the owner on the bypass list, so the machine user can't merge. The
+requests and add two labels; it can't merge (§8, ADR-030). Once ADR-041
+is accepted and the token swapped, the token is a classic token of the
+machine user `boxdelta-dispatch` (scope `public_repo` only, 90 days), so
+GitHub shows its actions as that account. The trust checks count a
+dispatcher label only when the owner's own account added it, and the
+local path runs only when the token is the machine user's. The ruleset
+change that stops the machine user merging is in §10.1. The
 token is set with `scripts/dispatch_set_token.py`, which reads it from
 standard input and never prints it. The dispatcher's timer runs from a main-only clone
 (`~/Projects/aether-dispatch`), so only merged, reviewed code runs with
@@ -590,6 +590,13 @@ edit or disable it (see below). **Not required:** approvals (the
 required approving review count is 0) and code-owner review (off). There
 is one maintainer, and GitHub does not let an author approve their own
 PR. CodeQL is not among the required checks.
+
+**Planned change (ADR-041, #215, when accepted):** for the dispatcher's
+machine user, `protect-main` will require one approving review from a
+code owner (`* @BoxDelta` in CODEOWNERS, so only the owner's approval
+counts), dismiss stale approvals, require approval of the most recent
+push, and put only the owner on the bypass list. The owner then merges
+their own pull requests with the bypass (`safemerge --admin`, #214).
 
 **Still only a rule, not a permission.** The agent works with the
 owner's GitHub credentials, which have admin rights, so GitHub does not

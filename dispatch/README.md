@@ -209,7 +209,8 @@ environment. The file must be mode 600. Variable names:
     ```
 
     The script checks the token's login and scope with GitHub before it
-    writes, and never prints the token.
+    writes, and never prints the token. After it succeeds and one run
+    passes, delete your own fine-grained dispatcher token on GitHub.
 -   `DISPATCH_BOT_LOGIN`: optional, default `boxdelta-dispatch`.
 -   `DISPATCH_LITELLM_KEY`: key for the local LiteLLM proxy.
 -   `DISPATCH_LITELLM_URL`: LiteLLM base URL; must be a loopback address,

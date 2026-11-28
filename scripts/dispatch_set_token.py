@@ -15,6 +15,7 @@ Owner, in fish:
 
 import json
 import os
+import re
 import sys
 import tempfile
 import urllib.error
@@ -23,8 +24,16 @@ from pathlib import Path
 
 VARIABLE = "DISPATCH_GITHUB_TOKEN"
 DEFAULT_ENV_FILE = Path("~/.config/aether-dispatch/dispatch.env")
-BOT_LOGIN = "boxdelta-dispatch"
+DEFAULT_BOT_LOGIN = "boxdelta-dispatch"
 API = "https://api.github.com/user"
+# Every spelling python-dotenv reads: "export X=", "X =", leading spaces.
+_DEFINES = re.compile(rf"^\s*(export\s+)?{VARIABLE}\s*=")
+_BOT = re.compile(r"^\s*(?:export\s+)?DISPATCH_BOT_LOGIN\s*=\s*['\"]?([\w-]+)['\"]?\s*$")
+
+
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *_args: object, **_kwargs: object) -> None:
+        return None  # never send the token anywhere else
 
 
 def env_file() -> Path:
@@ -42,8 +51,9 @@ def check(token: str) -> tuple[str, str, str]:
             "User-Agent": "aether-dispatch",
         },
     )
+    opener = urllib.request.build_opener(_NoRedirects)
     try:
-        with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310
+        with opener.open(request, timeout=20) as response:
             login = str(json.loads(response.read()).get("login") or "")
             scopes = response.headers.get("x-oauth-scopes", "")
             expires = response.headers.get("github-authentication-token-expiration", "")
@@ -54,9 +64,20 @@ def check(token: str) -> tuple[str, str, str]:
     return login, scopes, expires
 
 
+def bot_login(text: str) -> str:
+    """``DISPATCH_BOT_LOGIN`` from the env file, as the dispatcher reads it."""
+    for line in text.splitlines():
+        if match := _BOT.match(line):
+            return match.group(1)
+    return DEFAULT_BOT_LOGIN
+
+
 def replace(text: str, token: str) -> str:
-    lines = [line for line in text.splitlines() if not line.startswith(f"{VARIABLE}=")]
-    return "\n".join([f"{VARIABLE}={token}", *lines]) + "\n"
+    lines = [line for line in text.splitlines() if not _DEFINES.match(line)]
+    result = "\n".join([f"{VARIABLE}={token}", *lines]) + "\n"
+    if sum(1 for line in result.splitlines() if _DEFINES.match(line)) != 1:
+        raise SystemExit(f"could not leave exactly one {VARIABLE} line")
+    return result
 
 
 def write(path: Path, text: str) -> None:
@@ -64,6 +85,8 @@ def write(path: Path, text: str) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.chmod(tmp, 0o600)
         os.replace(tmp, path)
     except BaseException:
@@ -77,13 +100,17 @@ def main() -> int:
     token = sys.stdin.read().strip()
     if not token.startswith("ghp_") or any(c.isspace() for c in token):
         raise SystemExit("that is not a classic personal access token (ghp_...)")
+    path = env_file()
+    if path.is_symlink():
+        raise SystemExit(f"{path} is a symlink; point DISPATCH_ENV_FILE at the real file")
+    text = path.read_text("utf-8")
+    expected = bot_login(text)
     login, scopes, expires = check(token)
-    if login != BOT_LOGIN:
-        raise SystemExit(f"the token belongs to {login or 'nobody'}, not {BOT_LOGIN}")
+    if login != expected:
+        raise SystemExit(f"the token belongs to {login or 'nobody'}, not {expected}")
     if {s.strip() for s in scopes.split(",")} != {"public_repo"}:
         raise SystemExit("the token's scopes must be exactly public_repo")
-    path = env_file()
-    write(path, replace(path.read_text("utf-8"), token))
+    write(path, replace(text, token))
     print(f"{VARIABLE} replaced in {path}: {login}, public_repo only, expires {expires or '?'}")
     return 0
 

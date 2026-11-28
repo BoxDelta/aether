@@ -289,3 +289,18 @@ def test_token_identity(tmp_path: Path, login: str, scopes: str, ok: bool, reaso
     with fake.client(settings) as client:
         identity = github.check_token_identity(client, settings)
     assert identity.ok is ok and reason in identity.reason
+
+
+def test_label_added_through_an_app_for_the_owner_does_not_count(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    event = {**labeled(OWNER, github.LOCAL_OK_LABEL), "performed_via_github_app": {"id": 1}}
+    with FakeGitHub(events={7: [event]}).client(settings) as client:
+        assert not github.check_local_ok(client, settings, _issue()).ok
+
+
+@pytest.mark.parametrize(("renamer", "ok"), [(OWNER, True), (BOT, False)])
+def test_title_renamed_by_someone_else_fails_trust(tmp_path: Path, renamer: str, ok: bool) -> None:
+    settings = make_settings(tmp_path)
+    renamed = {"event": "renamed", "actor": {"login": renamer, "type": "User"}}
+    with FakeGitHub(events={7: [labeled(OWNER), renamed]}).client(settings) as client:
+        assert github.check_trust(client, settings, _issue()).ok is ok

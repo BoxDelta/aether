@@ -2,7 +2,9 @@
 
 **Status:** Proposed (owner decision 2026-11-27; draft for acceptance)\
 **Date:** 2026-11-27\
-**Owner:** BoxDelta
+**Owner:** BoxDelta\
+**Amends:** ADR-022 (ruleset design) and ADR-018 (bypass list), ADR-030
+§Credentials and §Trust
 
 ## Context
 
@@ -25,19 +27,36 @@ of step 4b).
     by the token's own account (or an organisation it belongs to), so a
     collaborator can't use one on `BoxDelta/aether`. `public_repo` is the
     smallest classic scope that can push branches, open pull requests and
-    add labels on a public repository. It reaches every public repository
-    the machine user can write to, which is only this one.
-3.  **The approval rule.** `protect-main` requires one approving review, and
-    only the owner (admin) is on the bypass list. The machine user can't
-    approve its own pull requests, and it isn't on the bypass list, so it
-    can't merge, even though `public_repo` with write access could call the
-    merge endpoint. The dispatcher's code still has no merge call and a test
-    checks it. The owner merges with `safemerge` as before.
+    add labels on a public repository. Write access to repositories
+    is only this one (the only collaboration). It still lets the account
+    open issues, pull requests and comments on any public repository,
+    fork, star, and create public repositories of its own. It has no
+    `workflow` scope, so it can't push changes to `.github/workflows` on
+    any branch.
+3.  **The approval rule (#215).** GitHub counts an approval from any
+    account with write access, so a bare "one approval" would let a stolen
+    machine-user token approve and merge a pull request, or push to a
+    branch after the owner approved. So `protect-main` gets all of:
+    -   one approving review, **from a code owner**, with `* @BoxDelta` as
+        the first line of `.github/CODEOWNERS`, so only the owner's
+        approval counts;
+    -   stale approvals dismissed when new commits are pushed, and the most
+        recent push must be approved by someone other than its pusher;
+    -   only the owner (admin) on the bypass list.
+
+    Then the machine user can't merge, even though `public_repo` with
+    write access could call the merge endpoint. The dispatcher's code
+    still has no merge call and a test checks it. The owner merges their
+    own pull requests with the bypass (`safemerge` with `--admin`, #214)
+    and the machine user's after reviewing them.
 4.  **Trust checks read the issue's timeline.** `dispatch:auto` and
     `dispatch:local-ok` count only when the last `labeled` event for that
     label was by the owner's own account: login `DISPATCH_OWNER` and account
     type `User`, never `DISPATCH_BOT_LOGIN` (default `boxdelta-dispatch`).
-    A label the machine user adds, or re-adds after the owner, never counts.
+    A label the machine user adds, or re-adds after the owner, never counts,
+    and neither does one an app added for the owner
+    (`performed_via_github_app`). A title change by anyone but the owner
+    (`renamed` event) fails the trust check.
     The local path re-checks `dispatch:local-ok` right before each try.
 5.  **Token identity check.** Before any local try the run calls `GET /user`.
     The local path is skipped unless the login is the machine user's (never
@@ -51,6 +70,9 @@ of step 4b).
 7.  **Expiry and rotation.** Tokens expire after 90 days. The owner rotates
     one about a week before expiry: create the new token on the machine
     user, set it with the script, check one run, then delete the old token.
+    **At the cut-over**, the owner also deletes their own fine-grained
+    dispatcher token right after the script succeeds and one run passes:
+    labels added with it would count as the owner's.
     If a token may be exposed, delete it at once in the machine user's
     settings, then set a new one. GitHub's secret scanning also revokes
     classic tokens it finds in public repositories.
@@ -74,9 +96,13 @@ of step 4b).
 -   The local path stays off until the owner swaps the token. The Claude
     path only reads, so it keeps working with either token.
 -   A stolen token can push branches, open and comment on pull requests and
-    issues, and add or remove labels on this repository until it is deleted.
-    It can't merge, push to `main` or edit workflows (`protect-main`), and
-    its labels never pass the trust checks.
+    issues, edit issue text, and add or remove labels on this repository
+    until it is deleted. It can't merge or push to `main` (`protect-main`
+    with the rules in decision 3), can't change workflows (no `workflow`
+    scope), and its labels never pass the trust checks.
+-   It could edit the body of an owner's issue after the owner labelled it,
+    so the local model and the brief would read text the owner didn't
+    write. Title changes are caught; body edits are not yet (#216).
 -   One more account to look after: two-factor authentication, recovery
     codes, and the 90-day rotation.
 
@@ -86,9 +112,16 @@ of step 4b).
     issues or edit comments). Only the write client's allowlist limits that
     in practice.
 -   Once the owner approves a machine-user pull request, the machine user
-    could merge it itself (write access plus an approval). The dispatcher
-    has no merge call, so this needs a stolen token; the owner merges
-    right after approving, or approves only at merge time.
+    could merge it itself (write access plus a code-owner approval of the
+    latest push). The dispatcher has no merge call, so this needs a stolen
+    token; the owner merges right after approving.
+-   Any tool holding the owner's own credentials (the gh CLI, Claude Code
+    sessions) can still add `dispatch:local-ok` and have it count. That is
+    a rule (`CLAUDE.md`), not a permission.
+-   Label events carry the label's name, not its id. A label renamed to
+    `dispatch:local-ok` after the owner added it under another name is
+    assumed to keep the old name in its earlier events (fails closed); not
+    yet confirmed on GitHub.
 -   With one approval required, the owner's own pull requests (no second
     reviewer) need the bypass: `safemerge` (`scripts/safemerge.fish`)
     calls `gh pr merge` without `--admin`, so it will need `--admin` or
