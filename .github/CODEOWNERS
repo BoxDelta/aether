@@ -1,5 +1,5 @@
-# Every file needs the owner's review: this default plus the specific lines below, all the owner.
-# Enforced by the `review` ruleset on main (code-owner review; ADR-041, Proposed; #215).
+# The owner is code owner of every file: this default plus the specific lines below.
+# The `review` ruleset on main requires a code owner's approval (owner decision, #215; ADR-041, Proposed).
 * @BoxDelta
 /.github/   @BoxDelta
 /CLAUDE.md  @BoxDelta
