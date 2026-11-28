@@ -1,10 +1,13 @@
-"""Read-only GitHub access for the dispatcher (ADR-030 §Trust).
+"""GitHub access for the dispatcher (ADR-030 §Trust, §Local path).
 
-Step 4a only reads. The client refuses any method but GET before a request
-leaves the process, and the token is only ever sent to ``api.github.com``.
+The read client refuses any method but GET before a request leaves the process.
+The write client (step 4b) allows exactly two calls: open a pull request and add
+labels to an issue or pull request. Nothing can merge, close, edit, delete or
+comment. The token is only ever sent to ``api.github.com``.
 """
 
-from collections.abc import Iterator
+import re
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -15,7 +18,14 @@ from dispatch.config import DispatchSettings
 API_HOST = "api.github.com"
 API_URL = f"https://{API_HOST}"
 AUTO_LABEL = "dispatch:auto"
+LOCAL_OK_LABEL = "dispatch:local-ok"
+LOCAL_PR_LABEL = "dispatch:local"
+CLAUDE_LABEL = "dispatch:claude"
 READ_METHODS = frozenset({"GET"})
+# Step 4b writes. Anything else is refused before it is sent. The label body is
+# checked too: the dispatcher's fine-grained token acts as the owner, so GitHub's
+# event history can't tell its labels from the owner's (ADR-030 §Trust).
+ALLOWED_LABEL_BODIES = (b'{"labels":["dispatch:local"]}', b'{"labels":["dispatch:claude"]}')
 TIMEOUT_S = 20.0
 MAX_PAGES = 20
 
@@ -46,8 +56,44 @@ def _refuse_writes(request: httpx.Request) -> None:
         raise GitHubError("refused a request outside api.github.com")
 
 
+def _write_guard(settings: DispatchSettings) -> Callable[[httpx.Request], None]:
+    repo = re.escape(_repo_path(settings))
+    pulls = re.compile(repo + r"/pulls")
+    labels = re.compile(repo + r"/issues/\d+/labels")
+
+    def guard(request: httpx.Request) -> None:
+        if request.url.host != API_HOST or request.url.scheme != "https":
+            raise GitHubError("refused a request outside api.github.com")
+        if request.method in READ_METHODS:
+            return
+        path, body = request.url.path, request.content.replace(b" ", b"")
+        allowed = request.method == "POST" and (
+            pulls.fullmatch(path) is not None
+            or (labels.fullmatch(path) is not None and body in ALLOWED_LABEL_BODIES)
+        )
+        if not allowed:
+            raise GitHubError(f"refused {request.method}: not an allowed dispatcher write")
+
+    return guard
+
+
+def make_write_client(
+    settings: DispatchSettings, transport: httpx.BaseTransport | None = None
+) -> httpx.Client:
+    """For step 4b only: GET, open a pull request, add a dispatcher label. Nothing else."""
+    return _client(settings, _write_guard(settings), transport)
+
+
 def make_client(
     settings: DispatchSettings, transport: httpx.BaseTransport | None = None
+) -> httpx.Client:
+    return _client(settings, _refuse_writes, transport)
+
+
+def _client(
+    settings: DispatchSettings,
+    hook: Callable[[httpx.Request], None],
+    transport: httpx.BaseTransport | None,
 ) -> httpx.Client:
     return httpx.Client(
         base_url=API_URL,
@@ -59,7 +105,7 @@ def make_client(
         timeout=TIMEOUT_S,
         follow_redirects=False,
         trust_env=False,  # no proxy, CA bundle or netrc from the shell (docs/05 §5)
-        event_hooks={"request": [_refuse_writes]},
+        event_hooks={"request": [hook]},
         transport=transport,
     )
 
@@ -132,12 +178,14 @@ def check_author(issue: Issue, settings: DispatchSettings) -> TrustCheck:
     return TrustCheck(True, "opened by the owner")
 
 
-def label_adder(client: httpx.Client, settings: DispatchSettings, number: int) -> str | None:
-    """Who added ``dispatch:auto`` last, from the issue's event history."""
+def label_adder(
+    client: httpx.Client, settings: DispatchSettings, number: int, name: str = AUTO_LABEL
+) -> str | None:
+    """Who added label ``name`` last, from the issue's event history."""
     adder: str | None = None
     for event in _pages(client, f"{_repo_path(settings)}/issues/{number}/events", {}):
         label = event.get("label") or {}
-        if event.get("event") == "labeled" and label.get("name") == AUTO_LABEL:
+        if event.get("event") == "labeled" and label.get("name") == name:
             adder = str((event.get("actor") or {}).get("login") or "")
     return adder
 
@@ -155,3 +203,49 @@ def check_trust(client: httpx.Client, settings: DispatchSettings, issue: Issue) 
     if adder != settings.dispatch_owner:
         return TrustCheck(False, f"{AUTO_LABEL} not added by the owner")
     return TrustCheck(True, "opened and labelled by the owner")
+
+
+def check_local_ok(client: httpx.Client, settings: DispatchSettings, issue: Issue) -> TrustCheck:
+    """``dispatch:local-ok`` is on the issue and the owner added it (step 4b)."""
+    if LOCAL_OK_LABEL not in issue.labels:
+        return TrustCheck(False, f"no {LOCAL_OK_LABEL} label")
+    adder = label_adder(client, settings, issue.number, LOCAL_OK_LABEL)
+    if adder != settings.dispatch_owner:
+        return TrustCheck(False, f"{LOCAL_OK_LABEL} not added by the owner")
+    return TrustCheck(True, f"{LOCAL_OK_LABEL} added by the owner")
+
+
+def _post(client: httpx.Client, path: str, body: dict[str, Any]) -> dict[str, Any]:
+    try:
+        response = client.post(path, json=body)
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise GitHubError(f"GitHub request failed: {type(exc).__name__}") from None
+    data = response.json()
+    if not isinstance(data, dict | list):
+        raise GitHubError("GitHub answered something unexpected")
+    return data if isinstance(data, dict) else {"items": data}
+
+
+def open_pull_request(
+    client: httpx.Client, settings: DispatchSettings, branch: str, title: str, body: str
+) -> int:
+    """Open a pull request from ``branch`` into main. Returns its number. Never merges."""
+    if not branch.startswith("dispatch/"):
+        raise GitHubError("refused: dispatcher branches start with dispatch/")
+    data = _post(
+        client,
+        f"{_repo_path(settings)}/pulls",
+        {"title": title, "head": branch, "base": "main", "body": body, "draft": False},
+    )
+    number = data.get("number")
+    if not isinstance(number, int):
+        raise GitHubError("GitHub answered a pull request without a number")
+    return number
+
+
+def add_label(client: httpx.Client, settings: DispatchSettings, number: int, label: str) -> None:
+    """Add one dispatcher label to an issue or pull request."""
+    if label not in {LOCAL_PR_LABEL, CLAUDE_LABEL}:
+        raise GitHubError(f"refused: the dispatcher never adds {label}")
+    _post(client, f"{_repo_path(settings)}/issues/{int(number)}/labels", {"labels": [label]})

@@ -1,6 +1,6 @@
 # ADR-030: Dispatcher prototype during Phase 2
 
-**Status:** Accepted (owner, 2026-11-26); amended 2026-11-27 (owner: dry run ended, one always-Claude list, Claude path)\
+**Status:** Accepted (owner, 2026-11-26); amended 2026-11-27 (owner: dry run ended, one always-Claude list, Claude path, local path)\
 **Date:** 2026-11-26\
 **Owner:** BoxDelta
 
@@ -133,7 +133,7 @@ checks that this section quotes every entry.
     `docs/05_*`, `docs/adr/`, `dispatch/`.
 -   Paths (tools and identity): `tools/`, `identity/`.
 -   Paths (named in docs/05, or found missing in #133): `.env` (and
-    `.env.*`), `.gitignore`, `CONTRIBUTING.md`, `docker-compose.yml`,
+    `.env.*`), `.gitignore`, `.gitattributes`, `.gitmodules`, `CONTRIBUTING.md`, `docker-compose.yml`,
     `compose.vault.yaml`, `scripts/systemd/`, `scripts/restore_check.sql`,
     `scripts/aether-vault.fish`, `scripts/identity_continuity.py`,
     `tests/test_workflow_pins.py`, `docs/runbooks/db-app-role.md`,
@@ -141,6 +141,16 @@ checks that this section quotes every entry.
     `docs/runbooks/encrypted-volume.md`.
 -   Paths (owner-guarded in CODEOWNERS): `SECURITY.md`, `LICENSE`,
     `NOTICE`.
+-   File names guarded anywhere in the tree (git control files, test and
+    lint config that can switch off guardrail tests or Sentinel rules,
+    Python start-up hooks, Compose overrides, the secret-scan config):
+    `.gitignore`, `.gitattributes`, `.gitmodules`, `conftest.py`,
+    `pytest.ini`, `tox.ini`, `setup.cfg`, `ruff.toml`, `.ruff.toml`,
+    `mypy.ini`, `.mypy.ini`, `.gitleaks.toml`, `.gitleaksignore`,
+    `.python-version`, `sitecustomize.py`, `usercustomize.py`,
+    `docker-compose.override.yml`, `docker-compose.override.yaml`,
+    `compose.override.yml`, `compose.override.yaml`, `.envrc`, and any
+    `.pth` file.
 -   Paths (the dispatcher's own guards): `.dispatch/` (the brief
     template's "data, not instructions" header) and `tests/dispatch/`.
 -   Tests that enforce guardrails: `tests/test_cloud_tripwire.py`,
@@ -162,30 +172,98 @@ checks that this section quotes every entry.
     touches database roles, grants or credentials, including test
     fixtures that create roles (#61). In a diff, this is checked on the
     changed lines.
--   Anything that adds a dependency or needs an ADR.
+-   Anything that adds a dependency or needs an ADR. In a diff, a
+    changed file named `package.json`, `package-lock.json`,
+    `pnpm-lock.yaml`, `yarn.lock`, `Pipfile`, `Pipfile.lock`,
+    `poetry.lock`, `setup.py`, `setup.cfg`, `Dockerfile` or
+    `requirements*.txt` counts as one.
 
 ### Local path (Aider)
 
--   Aider works in its own git worktree on a branch named
-    `dispatch/<issue>-<short-name>`. A fresh worktree has no `.env`.
--   Aider runs with shell-command suggestions off
-    (`--no-suggest-shell-commands`), analytics off and update checks
-    off. The exact flags are checked against Aider's docs when 4b is
-    built and listed in `dispatch/README.md`.
--   Neither Aider nor the test container gets the GitHub token or any
-    other secret in its environment.
--   Tests on model-written code run in a Docker container with no
-    network (`--network none`), with only the worktree mounted: ruff,
-    mypy and pytest without database tests. Sentinel CI still runs on
-    the pull request.
--   Then the diff is checked: no always-Claude path, no new dependency,
-    and at most about 200 changed lines across 5 files. If it fails the
-    check, the task goes to `claude`.
--   If it passes, the dispatcher pushes the branch and opens a pull
-    request labelled `dispatch:local`. Review is unchanged: Sentinel,
-    `reviewer`, `security-reviewer` where `CLAUDE.md` asks, Codex on
-    risky PRs, and the owner merges with `safemerge`.
--   Two failed tries: relabel `dispatch:claude` and write a brief.
+Built as step 4b (2026-11-27). `python -m dispatch run` tries at most
+one issue sorted `local` per run.
+
+-   **Labels.** The local path only takes issues with
+    `dispatch:local-ok`, added by the owner (checked in the event
+    history, like `dispatch:auto`). Without it, sorting gives `claude`
+    with no model call. `dispatch:claude-only` always means `claude`.
+    The dispatcher never adds `dispatch:auto`, `dispatch:local-ok` or
+    `dispatch:claude-only`; it adds only `dispatch:local` (to its pull
+    requests) and `dispatch:claude`.
+-   **Checks again before acting:** trust, the always-Claude list on the
+    issue, and `dispatch:local-ok`. An issue that no longer passes gets a
+    brief instead.
+-   **Worktree:** a fresh git worktree from `origin/main` on a branch
+    named `dispatch/<issue>-<short-name>`, under `.dispatch/worktrees/`
+    (git-ignored). It has no `.env`, and it is removed after each try.
+-   **Aider** (0.86, installed with `uv tool install`, outside the
+    repository) runs in bubblewrap: only `/usr` and `/etc` from the host,
+    read-only; no `/run`, `/var`, `/mnt` or `/media` (so no Docker
+    socket, D-Bus or agent sockets); an empty home (no `~/.config`,
+    `~/.ssh` or dispatcher secrets); only the worktree writable; the
+    repository's `.git` and the worktree's git dir read-only. Its
+    environment is set by the dispatcher (not on bubblewrap's command
+    line) and its only credential is the LiteLLM key, for the local
+    model on loopback. Known limit: it shares the host network, so it
+    can reach other loopback services and the internet; Aider runs no
+    shell commands and fetches no URLs.
+-   **After Aider**, the host checks that the worktree's `.git` file, the
+    git dir's files (`commondir`, `gitdir`, `HEAD`, no new ones) and
+    HEAD's branch and commit are unchanged, then rebuilds the index from
+    HEAD before staging. Host git runs with `GIT_CONFIG_GLOBAL=/dev/null`,
+    no system config, no hooks (`core.hooksPath=/dev/null`; Sentinel's
+    `secrets` job checks the pull request instead) and no fsmonitor;
+    the diff uses `--no-textconv`. It never gets the
+    GitHub token or the Discord webhook. It runs through Aider's
+    scripting API (`dispatch/aider_driver.py`, copied from the clone,
+    run with Aider's own Python in isolated mode): auto commits, dirty
+    commits, shell-command suggestions, URL detection, lint, test and
+    analytics off, and a file the model mentions is never added
+    mid-edit (with the command-line `--yes-always`, Aider adds every
+    mentioned file before applying the edit, which overflows the 16k
+    context). Only existing files the issue names, and not on the
+    always-Claude list, are in the chat (at most 5). Thinking is off
+    through the model settings. The task message starts with fixed
+    rules, never with an Aider `/command`, and carries the issue as JSON.
+-   **The fixed path check** (`dispatch/diffcheck.py`) runs on the staged
+    diff and the `--name-only` list, before any test or push. It blocks
+    a diff that touches any entry of the always-Claude list, a
+    dependency file, changed lines about database roles, grants or
+    credentials, a binary file, a symlink, a submodule, a mode change, a
+    path git had to quote, a changed `.git` file, or more than 200
+    changed lines or 5 files. A blocked diff opens no pull request: the
+    issue gets a Claude brief and the label `dispatch:claude`.
+    Tests: one diff that passes and one that blocks, and each rule.
+-   **Tests** run in Docker with `--network none`, `--read-only`, no
+    capabilities, `--init`, CPU, memory and process limits, a hard
+    `timeout -s KILL` inside and `docker kill` after, as the owner's
+    user, on an export of exactly the staged index (`git checkout-index`)
+    mounted read-only:
+    ruff, mypy and pytest without database tests. The image is built
+    from main's `pyproject.toml`, `uv.lock` and `.python-version` only
+    (`dispatch/test-image/Dockerfile`, base image pinned by digest). Sentinel CI still runs on the
+    pull request.
+-   **Publish** only after the path check and the tests pass: commit as
+    `aether-dispatch`, push `HEAD` to the `dispatch/` branch (no force,
+    never `main`; the token goes in an HTTP header through git's
+    environment, never on the command line or in a file), open a pull
+    request into `main` with `Refs #<n>`, and label it `dispatch:local`.
+    The push allows only HTTPS, no redirects and no tags. The GitHub
+    write client allows exactly two calls on this repository (open a
+    pull request, add `dispatch:local` or `dispatch:claude`, checked in
+    the request body) and refuses anything else before it is sent.
+-   **Known limit (trust):** the token is a fine-grained personal access
+    token, so GitHub records its actions as the owner's. The label
+    history can't tell a label the dispatcher added from one the owner
+    added; only the write client's checks stop it adding
+    `dispatch:auto` or `dispatch:local-ok`. A separate machine user or
+    GitHub App would fix that.
+    Review is unchanged: Sentinel, `reviewer`, `security-reviewer` where
+    `CLAUDE.md` asks, Codex on risky PRs, and the owner merges with
+    `safemerge`.
+-   **Two failed tries** (Aider error, no change, failed tests): label
+    `dispatch:claude` and write a brief.
+-   Discord gets `#<n> local PR #<p> opened`: numbers only.
 
 ### Claude path
 
@@ -209,7 +287,7 @@ checks that this section quotes every entry.
     `local` (those wait for step 4b). A recorded issue is not sorted
     again and causes no model call.
 -   The trust check runs again right before the brief step.
--   The run never writes to GitHub.
+-   The Claude path never writes to GitHub (the local path does, below).
 -   The timer runs from a main-only clone (`~/Projects/aether-dispatch`),
     like the backup timer (ADR-025 D8), so only merged, reviewed code
     runs with the dispatcher's credentials.

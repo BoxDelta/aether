@@ -50,7 +50,7 @@ def make_settings(tmp_path: Path) -> DispatchSettings:
 def issue_json(
     number: int,
     author: str = OWNER,
-    labels: tuple[str, ...] = (github.AUTO_LABEL,),
+    labels: tuple[str, ...] = (github.AUTO_LABEL, github.LOCAL_OK_LABEL),
     title: str = "Fix a typo in docs/CODE_TOUR.md",
     body: str = "One word is misspelled.",
     pull_request: bool = False,
@@ -69,6 +69,11 @@ def issue_json(
 
 def labeled(actor: str, label: str = github.AUTO_LABEL) -> dict[str, Any]:
     return {"event": "labeled", "actor": {"login": actor}, "label": {"name": label}}
+
+
+def owner_labels() -> list[dict[str, Any]]:
+    """The owner added both dispatch:auto and dispatch:local-ok."""
+    return [labeled(OWNER), labeled(OWNER, github.LOCAL_OK_LABEL)]
 
 
 @dataclass

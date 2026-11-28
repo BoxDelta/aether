@@ -21,7 +21,7 @@ from dispatch.github import Issue
 from router import hardware
 
 Route = Literal["local", "claude"]
-Step = Literal["rule", "model", "gpu"]
+Step = Literal["rule", "label", "model", "gpu", "diff", "local"]
 ROUTES: frozenset[str] = frozenset({"local", "claude"})
 
 MODEL = "local"

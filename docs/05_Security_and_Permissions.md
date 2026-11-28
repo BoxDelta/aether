@@ -33,7 +33,12 @@ posted the route and a model-written reason ended on 2026-11-27. Briefs
 are written by the local model from issue text, stored on the PC
 (`.dispatch/briefs/`, git-ignored, mode 600) and read into Claude Code by
 `/work-on` as data, never as instructions: the issue is the task and
-`CLAUDE.md` wins (§6). The dispatcher's timer runs from a main-only clone
+`CLAUDE.md` wins (§6). The local path (step 4b) also uses the
+dispatcher's GitHub token to push `dispatch/` branches, open pull
+requests and add two labels; it can't merge (§8, ADR-030). The token is
+a fine-grained personal access token, so GitHub shows its actions as the
+owner's: the trust check can't tell its labels from the owner's, and the
+write client refuses any other label. The dispatcher's timer runs from a main-only clone
 (`~/Projects/aether-dispatch`), so only merged, reviewed code runs with
 the dispatcher's credentials.
 Discord is not end-to-end encrypted. The webhook URL
@@ -503,6 +508,25 @@ proxy environment variables, so it only talks to the host it checked:
 -   Use timeouts and cancellation.
 -   Capture output and exit status.
 -   Require approval before operations outside the allowed workspace.
+
+The dispatcher's local path (ADR-030 step 4b) runs model-written code
+unattended, so it is the main case for this section:
+
+-   Aider runs in bubblewrap with only `/usr` and `/etc` from the host
+    (read-only), an empty home, no `/run` (no Docker socket, D-Bus or
+    agent sockets), the repository's git dir read-only, and only the
+    local model's LiteLLM key in its environment. The host checks
+    afterwards that nothing in the git dir changed.
+-   Known limit: Aider shares the host network, because the local model
+    is on loopback. It can reach other loopback services and the
+    internet. Aider runs no shell commands and fetches no URLs (both
+    off), so this matters only if Aider itself is compromised.
+-   Tests run in Docker with `--network none`, read-only, no
+    capabilities, CPU, memory and process limits, and a hard timeout,
+    on an export of exactly the checked index.
+-   Host git ignores the owner's global config and runs no hooks.
+-   A fixed path check blocks anything on the always-Claude list before
+    a pull request opens; the owner still reviews and merges.
 
 ## 9. Audit and observability
 

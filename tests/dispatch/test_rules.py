@@ -18,7 +18,8 @@ def test_list_matches_adr_030() -> None:
         ".github/", ".claude/", "CLAUDE.md", ".pre-commit-config.yaml",
         "scripts/safemerge.fish", ".env.example", "pyproject.toml", "uv.lock",
         "router/", "memory/", "migrations/", "docs/05_", "docs/adr/", "dispatch/",
-        "tools/", "identity/", ".env", ".gitignore", "CONTRIBUTING.md",
+        "tools/", "identity/", ".env", ".gitignore", ".gitattributes", ".gitmodules",
+        "CONTRIBUTING.md",
         "docker-compose.yml", "compose.vault.yaml", "scripts/systemd/",
         "scripts/restore_check.sql", "scripts/aether-vault.fish",
         "scripts/identity_continuity.py", "tests/test_workflow_pins.py",
@@ -48,6 +49,8 @@ def test_list_is_quoted_in_adr_030() -> None:
         assert f"`{name}`" in adr, name
     for label in rules.ALWAYS_CLAUDE_LABELS:
         assert f"`{label}`" in adr, label
+    for name in (*rules.GUARDED_NAMES, *rules.GUARDED_SUFFIXES):
+        assert f"`{name}`" in adr, name
 
 
 def _docs05_paths() -> list[str]:
@@ -234,3 +237,23 @@ def test_issue_61_text_goes_to_claude() -> None:
 )
 def test_issue_61_rule_leaves_ordinary_text(text: str) -> None:
     assert rules.text_rule(text) is None
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "tests/conftest.py",
+        "web/conftest.py",
+        "docs/.gitattributes",
+        "web/.gitignore",
+        "pytest.ini",
+        "ruff.toml",
+        ".gitleaksignore",
+        ".python-version",
+        "src/evil.pth",
+        "compose.override.yaml",
+        ".envrc",
+    ],
+)
+def test_guarded_names_anywhere(path: str) -> None:
+    assert rules.path_rule(path) is not None

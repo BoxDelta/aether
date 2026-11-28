@@ -1,7 +1,8 @@
 """Discord posts for the Claude path (ADR-030 §Claude path).
 
-One message per brief: ``#<n> brief ready``. Nothing else: no issue title, body,
-reason, code or file contents. Mentions are always off and link embeds suppressed.
+One message per brief, ``#<n> brief ready``, or per local pull request,
+``#<n> local PR #<p> opened``. Nothing else: no issue title, body, reason, code or
+file contents. Mentions are always off and link embeds suppressed.
 A failed post prints a short error and the run carries on; the post is tried again
 on the next run, never in a loop.
 """
@@ -19,6 +20,11 @@ SUPPRESS_EMBEDS = 1 << 2  # Discord message flag
 def brief_ready(number: int) -> str:
     """The only message the Claude path posts. ``number`` is an int, never issue text."""
     return f"#{int(number)} brief ready"
+
+
+def pr_opened(number: int, pr: int) -> str:
+    """The local path's message: issue and pull request numbers only."""
+    return f"#{int(number)} local PR #{int(pr)} opened"
 
 
 def build_payload(content: str) -> dict[str, object]:

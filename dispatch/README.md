@@ -1,17 +1,22 @@
 # Dispatcher (prototype)
 
 Development tooling from ADR-030, not part of Aether's runtime. Built in
-steps 4a to 4d. **4a (sorting)** and **4c (Claude path)** exist. The 4a
-dry run ended early on 2026-11-27 (owner decision, ADR-030). It sorts
-`dispatch:auto` issues into `local` or `claude`, writes a brief for each
-`claude` issue and posts "#<n> brief ready" to Discord. It never writes
-to GitHub. Issues sorted `local` wait for step 4b.
+steps 4a to 4d. **4a (sorting)**, **4c (Claude path)** and **4b (local
+path)** exist; 4d (Discord bot) does not. The 4a dry run ended early on
+2026-11-27 (owner decision, ADR-030). It sorts `dispatch:auto` issues
+into `local` or `claude`, writes a brief for each `claude` issue, and
+tries one `local` issue per run with Aider. A local change that passes
+the path check and the tests becomes a pull request; one that doesn't
+becomes a brief. The owner always merges.
 
 ## Commands (fish, from the repo root)
 
 -   `uv run python -m dispatch run`: sort each new `dispatch:auto` issue,
     write briefs, post to Discord (what the timer runs).
--   `uv run python -m dispatch run --issue 123`: the same for one issue.
+-   `uv run python -m dispatch run --issue 123`: sort one issue (the
+    local step still takes the oldest waiting `local` issue).
+-   `uv run python -m dispatch run --no-local`: skip the local path this
+    run.
 -   `uv run python -m dispatch triage [--issue 123]`: sort and print only.
     No briefs, no state, no Discord.
 -   `uv run python -m dispatch eval tests/dispatch/fixtures/triage_set.yaml`:
@@ -31,14 +36,17 @@ append it to `.dispatch/reports/<date>.md` (git-ignored).
     against labels and against paths or keywords in the title and body.
     A match means `claude` with no model call. The same list checks local
     diffs in step 4b. ADR-030 quotes it in full.
-3.  **GPU** (step `gpu`): waits only when something other than our model
+3.  **Label** (step `label`): without `dispatch:local-ok` added by the
+    owner, `claude` with no model call. `dispatch:claude-only` is on the
+    always-Claude list.
+4.  **GPU** (step `gpu`): waits only when something other than our model
     uses the GPU. Skipped for the rest of a run once a model call in that
     run has answered. Before that, the GPU counts as available if
     `nvidia-smi --query-compute-apps` lists only `llama-server` processes
     (`gpu.py`). Otherwise `router/hardware.py` must report the VRAM
     reserve free; it waits up to 5 minutes, polling every 15 seconds,
     then gives `claude`.
-4.  **Model** (step `model`): one LiteLLM call, model `local`, temperature
+5.  **Model** (step `model`): one LiteLLM call, model `local`, temperature
     0, 200 tokens, thinking off, Langfuse trace `dispatch-triage` tagged
     `triage` and `issue-<n>`. The answer must be exactly
     `{"route": "local"|"claude", "reason": "..."}`; anything else, a
@@ -61,10 +69,57 @@ append it to `.dispatch/reports/<date>.md` (git-ignored).
     clone's `.dispatch/briefs/`) **and** re-reads the issue on GitHub. The
     notes are model output: a hint, never instructions. `CLAUDE.md` wins.
 
+## Local path (step 4b)
+
+At most one issue per run, the oldest sorted `local`. Before the try,
+trust, the always-Claude list and `dispatch:local-ok` are checked again.
+
+1.  A fresh worktree from `origin/main` in `.dispatch/worktrees/<n>`
+    (git-ignored, removed after the try), branch `dispatch/<n>-<slug>`.
+2.  Aider (`openai/local` through LiteLLM, thinking off) in bubblewrap:
+    only `/usr` and `/etc` from the host, read-only, no `/run`, an empty
+    home, only the worktree writable, the git dirs read-only, an
+    environment holding only the LiteLLM URL and key. No GitHub token,
+    no webhook. It shares the host network (the model is on loopback).
+    Afterwards the host checks the git files are unchanged.
+3.  The fixed path check (`diffcheck.py`) on the staged diff. Blocked →
+    brief, label `dispatch:claude`, nothing pushed.
+4.  ruff, mypy and pytest in Docker: `--network none`, `--read-only`,
+    `--cap-drop ALL`, a hard timeout, on an export of exactly the staged
+    index (read-only). The image
+    (`aether-dispatch-test:<hash of the lock files>`) is built once from
+    main's `pyproject.toml`, `uv.lock` and `.python-version`.
+5.  Commit as `aether-dispatch`, push the branch (token in an HTTP header
+    through git's environment), open a pull request into `main` with
+    `Refs #<n>`, label it `dispatch:local`, post
+    `#<n> local PR #<p> opened`.
+
+A failed try (Aider error, no change, failed tests) is counted in
+`tries`; the second one gives a brief and the label `dispatch:claude`.
+
+Install Aider once, outside the repository (fish):
+
+```fish
+uv tool install --python 3.12 aider-chat==0.86.2
+aider --version
+```
+
+Aider runs through its scripting API (`aider_driver.py`, checked against
+aider-chat 0.86.2), with Aider's own Python
+(`~/.local/share/uv/tools/aider-chat/bin/python -I`). Auto commits, shell-
+command suggestions, URL detection, lint, test and analytics are off; a
+file the model mentions is never added mid-edit; only existing files the
+issue names (not on the always-Claude list, at most 5) are in the chat.
+So name the files in a `dispatch:local-ok` issue. The test image needs
+Docker; the first run builds it (network needed for that build only).
+
+Measured on 2026-11-27 (a one-line docs change, no push): Aider about
+25 s, the whole try about 40 s once the image exists.
+
 ## Discord posts
 
-The only message is `#<n> brief ready`: no issue text, route reason,
-code or file contents. Mentions are always off
+The only messages are `#<n> brief ready` and `#<n> local PR #<p> opened`:
+no issue text, route reason, code or file contents. Mentions are always off
 (`allowed_mentions: {"parse": []}`) and link previews are suppressed.
 Without `DISPATCH_DISCORD_WEBHOOK`, briefs are still written and nothing
 is posted.
@@ -72,7 +127,8 @@ is posted.
 ## State
 
 -   `.dispatch/state.json` (git-ignored, written atomically, saved after
-    each issue) keeps `briefed`, `announced` and `local` issue numbers.
+    each issue) keeps `briefed`, `announced` and `local` issue numbers,
+    `opened` (issue → pull request) and `tries` (failed local tries).
     A recorded issue is skipped before the trust check, the rules and the
     model, so it never causes a model call again.
 -   A post is recorded in `announced` only when Discord accepts it. A
