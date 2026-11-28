@@ -87,5 +87,5 @@ ADR-009 onward have their own files here.
     one required code-owner approval via two rulesets, `checks` and `review` (#215).
     Accepted (owner, 2026-11-28).
 -   **ADR-042:** Discord bot (step 4d): outbound only, claude route only,
-    and an Ed25519 signature, made by a separate Linux user, that a request came from the owner. Proposed
-    (2026-11-28).
+    and an Ed25519 signature, made by a separate Linux user, that a request came from the owner.
+    Accepted (owner, 2026-11-28).
