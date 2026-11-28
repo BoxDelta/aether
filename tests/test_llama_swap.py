@@ -556,7 +556,7 @@ def test_a_private_lan_host_needs_allow_cloud_and_gets_public_memory(identity: I
 
     with pytest.raises(NoRoute, match="off-network"):
         asyncio.run(r.handle(request(), RouteOptions()))
-    assert rec.chats() == []
+    assert rec.requests == []  # not even /running or /v1/models
     out = asyncio.run(r.handle(request(), RouteOptions(allow_cloud=True)))
     assert out.decision.reason.endswith(OFF_NETWORK_MARK)
 
@@ -714,3 +714,19 @@ def test_an_untrusted_host_gets_public_memory_only(identity: Identity) -> None:
     assert [a.limit for a in source.asked] == ["public"]
     system = rec.chats()[0]["messages"][0]["content"]
     assert "public fact" in system and "personal fact" not in system
+
+
+def test_no_request_reaches_an_untrusted_host_for_a_cloud_override(identity: Identity) -> None:
+    from tests.fakes import FakeProvider
+
+    p, rec = provider(url="http://192.168.1.20:9292")
+    r = Router(
+        [p, FakeProvider("claude", "cloud")],
+        identity,
+        secret_check=CHECK,
+        probe=_probe(7000),
+    )
+
+    out = asyncio.run(r.handle(request(), RouteOptions(allow_cloud=True, override="claude")))
+
+    assert out.decision.provider == "claude" and rec.requests == []

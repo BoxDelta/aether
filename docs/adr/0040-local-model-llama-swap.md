@@ -152,8 +152,8 @@ Recorded here; the Decision above is otherwise unchanged.
     Ollama" under Host trust, and the note about Bearer auth to a
     private-LAN host.
 -   **Loaded or cold comes from llama-swap's `/running` endpoint**, read
-    over the same client as every other call (loopback, no redirects, no
-    proxies, 1 s timeout), never from the GPU. If it can't be reached, the
+    over the same client as every other call (the configured host, loopback
+    when trusted; no redirects, no proxies, 1 s timeout), never from the GPU. If it can't be reached, the
     model counts as cold. NVML supplies free VRAM only, so the GPU probe no
     longer reads `llama-server`'s allocation (this replaces the GPU probe
     bullet's use of NVML's process list).

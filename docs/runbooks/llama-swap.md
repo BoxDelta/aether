@@ -31,6 +31,9 @@ runs in the dispatcher stack, outside this repository.
     ask about counts as cold). llama-swap's `ttl` (900 s) unloads it after the last request,
     dispatcher traffic included.
 
+- Check once on the host that reading `/running` does not reset llama-swap's
+  `ttl` (it should not; Aether never keeps the model warm).
+
 ## Check
 
 ```fish

@@ -567,7 +567,8 @@ differences:
     when `LLAMA_SWAP_MODEL` is set. With neither, only the cloud provider
     exists, so a default (local-only) request has no route.
 -   Loaded or cold: decided by llama-swap itself, from `GET /running`
-    (loopback, the same client rules, 1 s timeout; it never loads a model).
+    (the configured host, loopback when trusted; the same client rules, 1 s
+    timeout; it never loads a model).
     NVML supplies free VRAM only. If `/running` can't be reached, is slow,
     or isn't understood, the model counts as cold. A loaded model needs no
     new VRAM, so the 1.5 GiB reserve is not checked for a request to it
@@ -577,8 +578,8 @@ differences:
     `allow_cloud`, else local without headroom as before). Other providers
     and the dispatcher use free VRAM alone.
 -   Known limitations: `allow_cloud` also covers an off-network llama-swap
-    host, which its name doesn't say. A key sent to an off-network `http`
-    URL travels in plain text (Core logs a fixed warning); a key under 8
+    host, which its name doesn't say. The key, with `/running` and
+    `/v1/models` requests, sent to an off-network `http` URL travels in plain text (Core logs a fixed warning); a key under 8
     characters is refused at startup because it could not be redacted.
     While llama-swap is unreachable the model counts as cold, but then it
     is unavailable anyway.

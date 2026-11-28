@@ -671,3 +671,29 @@ def test_no_failover_logs_one_line_not_also_no_route(
     messages = [r.getMessage() for r in caplog.records]
     assert "No failover" in messages
     assert "No route" not in messages
+
+
+def test_a_cancelled_decision_cancels_the_running_check_too(identity: Identity) -> None:
+    import httpx
+
+    from router.llama_swap import LlamaSwapProvider
+
+    async def hang(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "m"}]})
+        await asyncio.Event().wait()  # /running never answers
+        raise AssertionError("unreachable")
+
+    p = LlamaSwapProvider("http://127.0.0.1:9292", "m", transport=httpx.MockTransport(hang))
+    router = Router([p], identity, secret_check=CHECK, probe=lambda: snapshot(4.0))
+
+    async def body() -> list[asyncio.Task[object]]:
+        task = asyncio.ensure_future(router.decide(req(), RouteOptions()))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+        return [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+
+    assert asyncio.run(body()) == []
