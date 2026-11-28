@@ -370,7 +370,16 @@ def _run(
                 print(f"briefs: wrote {len(written)}")
             else:
                 print("nothing new")
-            if st.local and not args.no_local:
+            identity = (
+                github.check_token_identity(gh, settings)
+                if st.local and not args.no_local
+                else None
+            )
+            if identity is not None and not identity.ok:
+                print(f"local path skipped: {identity.reason} (ADR-041)")
+            elif identity is not None:
+                if identity.expires:
+                    print(f"github token expires {identity.expires}")
                 now = datetime.now().astimezone()
                 run = BriefRun(settings, now, brief.load_template())
                 open_issues = {i.number: i for i in github.list_auto_issues(gh, settings)}

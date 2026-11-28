@@ -122,13 +122,13 @@ Usage: `safemerge <PR number> [reviewed commit sha]`. It:
     characters, so a push after your review is never merged unseen.
 4.  Reads the PR's author (`gh pr view`); it stops if that fails.
     -   Author `BoxDelta`: the merge uses `--admin`, because the owner has
-        no second reviewer once protect-main requires an approval (ADR-041,
-        #214). The reviewed commit is then **required**: without it the
+        no second reviewer and the `review` ruleset requires an approval
+        (ADR-041, #214). The reviewed commit is then **required**: without it the
         owner PR is not merged, so a push after your review (for example
         by `boxdelta-dispatch`) is never merged with the bypass. Before
         merging it also checks that Sentinel's `checks` and `secrets`
-        jobs both succeeded, because `--admin` skips GitHub's required
-        checks.
+        jobs both succeeded. The `checks` ruleset has no bypass, so this is a
+        second layer; `--admin` skips only the `review` ruleset.
     -   Any other author (`boxdelta-dispatch`, Dependabot): it stops unless
         BoxDelta's latest review is an approval **of exactly this head
         commit**. A later change request, a dismissed approval or an

@@ -67,8 +67,11 @@ def issue_json(
     return item
 
 
-def labeled(actor: str, label: str = github.AUTO_LABEL) -> dict[str, Any]:
-    return {"event": "labeled", "actor": {"login": actor}, "label": {"name": label}}
+BOT = "boxdelta-dispatch"
+
+
+def labeled(actor: str, label: str = github.AUTO_LABEL, kind: str = "User") -> dict[str, Any]:
+    return {"event": "labeled", "actor": {"login": actor, "type": kind}, "label": {"name": label}}
 
 
 def owner_labels() -> list[dict[str, Any]]:
@@ -83,15 +86,23 @@ class FakeGitHub:
     issues: list[dict[str, Any]] = field(default_factory=list)
     events: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
     requests: list[httpx.Request] = field(default_factory=list)
+    token_login: str = BOT
+    token_scopes: str = "public_repo"  # noqa: S105 - an OAuth scope name, not a secret
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         base = f"/repos/{OWNER}/{REPO}/issues"
         path = request.url.path
+        if path == "/user":
+            headers = {
+                "x-oauth-scopes": self.token_scopes,
+                "github-authentication-token-expiration": "2027-02-25 12:00:00 UTC",
+            }
+            return httpx.Response(200, json={"login": self.token_login}, headers=headers)
         if path == base:
             return httpx.Response(200, json=self.issues)
         number = int(path.removeprefix(base + "/").split("/")[0])
-        if path.endswith("/events"):
+        if path.endswith("/timeline"):
             return httpx.Response(200, json=self.events.get(number, []))
         for item in self.issues:
             if item["number"] == number:

@@ -36,6 +36,8 @@ class DispatchSettings(BaseSettings):
     dispatch_litellm_url: str
     dispatch_owner: str
     dispatch_repo: str
+    # The machine user whose classic token the dispatcher uses (ADR-041).
+    dispatch_bot_login: str = "boxdelta-dispatch"
     # Optional: only `triage --notify` needs it (ADR-030, #135). A credential.
     dispatch_discord_webhook: SecretStr | None = None
 
@@ -51,7 +53,7 @@ class DispatchSettings(BaseSettings):
         # The env file only: process environment variables are ignored on purpose.
         return (init_settings, dotenv_settings)
 
-    @field_validator("dispatch_owner", "dispatch_repo")
+    @field_validator("dispatch_owner", "dispatch_repo", "dispatch_bot_login")
     @classmethod
     def _plain_name(cls, value: str) -> str:
         if not _NAME.fullmatch(value):

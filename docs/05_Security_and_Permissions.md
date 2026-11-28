@@ -35,10 +35,15 @@ are written by the local model from issue text, stored on the PC
 `/work-on` as data, never as instructions: the issue is the task and
 `CLAUDE.md` wins (§6). The local path (step 4b) also uses the
 dispatcher's GitHub token to push `dispatch/` branches, open pull
-requests and add two labels; it can't merge (§8, ADR-030). The token is
-a fine-grained personal access token, so GitHub shows its actions as the
-owner's: the trust check can't tell its labels from the owner's, and the
-write client refuses any other label. The dispatcher's timer runs from a main-only clone
+requests and add two labels; it can't merge (§8, ADR-030). Once ADR-041
+is accepted and the token swapped, the token is a classic token of the
+machine user `boxdelta-dispatch` (scope `public_repo` only, 90 days), so
+GitHub shows its actions as that account. The trust checks count a
+dispatcher label only when the owner's own account added it, and the
+local path runs only when the token is the machine user's. The ruleset
+change that stops the machine user merging is in §10.1. The
+token is set with `scripts/dispatch_set_token.py`, which reads it from
+standard input and never prints it. The dispatcher's timer runs from a main-only clone
 (`~/Projects/aether-dispatch`), so only merged, reviewed code runs with
 the dispatcher's credentials.
 Discord is not end-to-end encrypted. The webhook URL
@@ -580,21 +585,33 @@ Independence is meant to come from GitHub permissions rather than trust
 in an AI. Since the public flip on 2026-11-14 (ADR-022), part of it
 does; the rest is still only a rule.
 
-**Enforced by the `protect-main` ruleset on `main`** (ADR-022, "Ruleset
-design"):
+**Enforced by two rulesets on `main`** (ADR-022 "Ruleset design",
+to be amended by ADR-041, Proposed; owner decision, #215):
 
--   a pull request is required; nobody can push directly to `main`;
--   the Sentinel status checks `checks` and `secrets` are required, with
-    GitHub Actions as their source, so a failing check blocks the merge
-    and a status with the same name from elsewhere cannot satisfy them;
--   force pushes and branch deletion are blocked;
--   the bypass list is empty.
+-   **`checks`**, with an **empty bypass list** (nobody skips it, not even
+    the owner):
+    -   the Sentinel status checks `checks` and `secrets` are required,
+        with GitHub Actions as their source, so a failing check blocks the
+        merge and a status with the same name from elsewhere cannot
+        satisfy them;
+    -   force pushes and branch deletion are blocked.
+-   **`review`**, with the repository admin role (the owner) as its only
+    bypass, for pull requests only:
+    -   a pull request is required; nobody can push directly to `main`;
+    -   one approving review from a **code owner** is required.
+        `.github/CODEOWNERS` has `* @BoxDelta` as its first rule (added by
+        #215; merge it before the token cut-over, because a file with no
+        owner takes an approval from any writer), so only the owner's
+        approval counts, not one from the dispatcher's machine user;
+    -   stale approvals are dismissed when new commits are pushed, and the
+        most recent push must be approved by someone other than its
+        pusher.
 
-These hold as long as the ruleset is unchanged; admin credentials can
-edit or disable it (see below). **Not required:** approvals (the
-required approving review count is 0) and code-owner review (off). There
-is one maintainer, and GitHub does not let an author approve their own
-PR. CodeQL is not among the required checks.
+The owner's own pull requests have no second reviewer, so the owner
+merges them with the `review` bypass (`safemerge`, `--admin`); the
+`checks` ruleset still applies. These hold as long as the rulesets are
+unchanged; admin credentials can edit or disable them (see below).
+CodeQL is not among the required checks.
 
 **Still only a rule, not a permission.** The agent works with the
 owner's GitHub credentials, which have admin rights, so GitHub does not
@@ -630,8 +647,10 @@ them and the owner checks:
     -   the owner's planner chat (claude.ai), for plans, ADRs and a
         second look at guardrail PRs (ADR-027, Proposed).
     These find problems; none of them can block or approve a merge.
-    `.github/CODEOWNERS` names the owner for `.github/` and `CLAUDE.md`,
-    but nothing enforces it, so reviewing changes to those paths before
+    `.github/CODEOWNERS` names the owner for every file (`*`); the
+    `review` ruleset enforces it for the dispatcher's machine user, but the
+    owner's own pull requests pass with the bypass, so reviewing changes to
+    `.github/` and `CLAUDE.md` before
     merging is the owner's manual step.
 
 Before the flip (GitHub Free, private repository; ADR-018), none of the

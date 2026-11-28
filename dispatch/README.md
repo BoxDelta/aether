@@ -203,8 +203,20 @@ Read only from the file named by `DISPATCH_ENV_FILE` (default
 `~/.config/aether-dispatch/dispatch.env`), never from the shell
 environment. The file must be mode 600. Variable names:
 
--   `DISPATCH_GITHUB_TOKEN`: fine-grained token for this repository only
-    (ADR-030 §Credentials).
+-   `DISPATCH_GITHUB_TOKEN`: classic token of the machine user
+    `boxdelta-dispatch`, scope `public_repo` only, 90-day expiry
+    (ADR-041). Set it without echo or shell history:
+
+    ```fish
+    read -s -P 'boxdelta-dispatch token: ' tok
+    and printf '%s' $tok | python3 -I ~/Projects/aether/scripts/dispatch_set_token.py
+    set -e tok
+    ```
+
+    The script checks the token's login and scope with GitHub before it
+    writes, and never prints the token. After it succeeds and one run
+    passes, delete your own fine-grained dispatcher token on GitHub.
+-   `DISPATCH_BOT_LOGIN`: optional, default `boxdelta-dispatch`.
 -   `DISPATCH_LITELLM_KEY`: key for the local LiteLLM proxy.
 -   `DISPATCH_LITELLM_URL`: LiteLLM base URL; must be a loopback address,
     for example `http://127.0.0.1:4000`.
