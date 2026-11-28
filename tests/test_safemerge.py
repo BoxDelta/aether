@@ -8,6 +8,7 @@ GitHub or the real checkout. The stubs only record what would have run.
 Skipped where fish isn't installed (Sentinel's runner); run locally.
 """
 
+import json
 import os
 import shutil
 import stat
@@ -22,11 +23,21 @@ FISH = shutil.which("fish")
 HEAD = "0123456789abcdef0123456789abcdef01234567"
 
 pytestmark = pytest.mark.skipif(FISH is None, reason="fish not installed")
+needs_jq = pytest.mark.skipif(shutil.which("jq") is None, reason="jq not installed")
 
 GH_STUB = """#!/bin/sh
 echo "gh $*" >> "$STUB_LOG"
 case "$1 $2" in
   "pr view")
+    case "$*" in
+      *"--json author"*)
+        if [ -n "$STUB_AUTHOR_FAIL" ]; then exit 1; fi
+        printf '%s\\n' "${STUB_AUTHOR:-BoxDelta}"; exit 0 ;;
+      *"--json reviews"*)
+        # Run the function's real jq filter (last arg) over the fixture, as gh would.
+        for last; do :; done
+        printf '%s' "$STUB_REVIEWS" | jq -r "$last"; exit $? ;;
+    esac
     if [ -n "$STUB_VIEW_FAIL" ]; then echo "GraphQL: Could not resolve" >&2; exit 1; fi
     printf '%s\\n' "$STUB_SHA"; exit 0 ;;
   "pr checks")
@@ -48,6 +59,8 @@ fi
 exit 0
 """
 ORIGIN = "git@github.com:BoxDelta/aether.git"
+OWNER = "BoxDelta"
+BOT = "boxdelta-dispatch"
 
 
 def _executable(path: Path, body: str) -> None:
@@ -63,6 +76,9 @@ def run(
     checks_exit: int = 0,
     no_checks: bool = False,
     origin: str = ORIGIN,
+    author: str = OWNER,
+    reviews: list[dict[str, object]] | None = None,
+    author_fail: bool = False,
 ) -> tuple[int, str, list[str]]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -79,7 +95,11 @@ def run(
         "STUB_SHA": sha,
         "STUB_CHECKS_EXIT": str(checks_exit),
         "STUB_ORIGIN": origin,
+        "STUB_AUTHOR": author,
+        "STUB_REVIEWS": json.dumps({"reviews": reviews or []}),
     }
+    if author_fail:
+        env["STUB_AUTHOR_FAIL"] = "1"
     if no_checks:
         env["STUB_NO_CHECKS"] = "1"
     if view_fail:
@@ -95,6 +115,9 @@ def run(
         check=False,
     )
     return proc.returncode, proc.stdout + proc.stderr, log.read_text().splitlines()
+
+
+AUTHOR = "gh pr view 55 --repo BoxDelta/aether --json author --jq .author.login"
 
 
 def merged(calls: list[str]) -> bool:
@@ -114,8 +137,10 @@ def test_reviewed_commit_matches_merges_that_exact_head(tmp_path: Path) -> None:
     assert code == 0
     assert calls == [
         "gh pr view 55 --repo BoxDelta/aether --json headRefOid --jq .headRefOid",
+        AUTHOR,
         "gh pr checks 55 --repo BoxDelta/aether --watch --fail-fast",
-        f"gh pr merge 55 --repo BoxDelta/aether --merge --delete-branch --match-head-commit {HEAD}",
+        f"gh pr merge 55 --repo BoxDelta/aether --merge --delete-branch "
+        f"--match-head-commit {HEAD} --admin",
         "git remote get-url origin",
         "git switch main",
         "git pull",
@@ -162,7 +187,7 @@ def test_without_reviewed_commit_still_pins_the_viewed_head(tmp_path: Path) -> N
     code, _, calls = run(tmp_path, "55")
 
     assert code == 0
-    assert f"--match-head-commit {HEAD}" in calls[2]
+    assert f"--match-head-commit {HEAD}" in calls[3]
 
 
 # --- hardened reviewed-commit and head checks (#60 review) ---------------------------
@@ -229,6 +254,96 @@ def test_not_in_any_repo_merges_but_does_not_touch_git(tmp_path: Path) -> None:
     code, _, calls = run(tmp_path, "55", HEAD[:7], origin="")
     assert code == 0 and merged(calls)
     assert calls[-1] == "git remote get-url origin"
+
+
+# --- who may be merged, and how (#214) ----------------------------------------------
+
+
+def _review(state: str, oid: str = HEAD, login: str = OWNER) -> dict[str, object]:
+    return {"author": {"login": login}, "state": state, "commit": {"oid": oid}}
+
+
+def merge_call(calls: list[str]) -> str:
+    return next(c for c in calls if c.startswith("gh pr merge"))
+
+
+def test_owner_pr_merges_with_admin_and_the_head_pin(tmp_path: Path) -> None:
+    code, _, calls = run(tmp_path, "55", HEAD[:7])
+
+    assert code == 0
+    assert merge_call(calls).endswith(f"--match-head-commit {HEAD} --admin")
+    assert not any("--json reviews" in c for c in calls)
+
+
+@needs_jq
+def test_bot_pr_with_owner_approval_on_the_head_merges_without_admin(tmp_path: Path) -> None:
+    code, _, calls = run(tmp_path, "55", HEAD[:7], author=BOT, reviews=[_review("APPROVED")])
+
+    assert code == 0
+    assert merge_call(calls).endswith(f"--match-head-commit {HEAD}")
+    assert "--admin" not in merge_call(calls)
+
+
+@needs_jq
+@pytest.mark.parametrize(
+    "reviews",
+    [
+        [],
+        [_review("COMMENTED")],
+        [_review("CHANGES_REQUESTED")],
+        [_review("DISMISSED")],
+        [_review("APPROVED", login=BOT)],
+        [_review("APPROVED", login="someone-else")],
+        [_review("APPROVED", oid="f" * 40)],
+        [_review("APPROVED"), _review("CHANGES_REQUESTED")],
+        [_review("APPROVED", oid="f" * 40), _review("COMMENTED")],
+    ],
+    ids=[
+        "none",
+        "comment-only",
+        "changes-requested",
+        "dismissed",
+        "bot-approves-itself",
+        "other-account",
+        "approval-on-an-older-commit",
+        "owner-later-requested-changes",
+        "stale-approval-then-comment",
+    ],
+)
+def test_bot_pr_without_a_current_owner_approval_does_not_merge(
+    tmp_path: Path, reviews: list[dict[str, object]]
+) -> None:
+    code, out, calls = run(tmp_path, "55", HEAD[:7], author=BOT, reviews=reviews)
+
+    assert code == 1
+    assert f"BoxDelta has no approving review on {HEAD}; not merging" in out
+    assert not merged(calls)
+    assert not any(c.startswith("gh pr checks") for c in calls)
+
+
+@needs_jq
+def test_owner_approval_after_changes_requested_counts(tmp_path: Path) -> None:
+    reviews = [_review("CHANGES_REQUESTED"), _review("APPROVED")]
+    code, _, calls = run(tmp_path, "55", HEAD[:7], author=BOT, reviews=reviews)
+    assert code == 0 and merged(calls)
+
+
+def test_unknown_author_is_treated_like_the_bot(tmp_path: Path) -> None:
+    code, _, calls = run(tmp_path, "55", HEAD[:7], author="dependabot[bot]")
+    assert code == 1 and not merged(calls)
+
+
+def test_unreadable_author_does_not_merge(tmp_path: Path) -> None:
+    code, _, calls = run(tmp_path, "55", HEAD[:7], author_fail=True)
+
+    assert code == 1
+    assert not merged(calls)
+    assert not any(c.startswith("gh pr checks") for c in calls)
+
+
+def test_reviewed_commit_mismatch_is_checked_before_the_author(tmp_path: Path) -> None:
+    code, _, calls = run(tmp_path, "55", "deadbeef", author=BOT)
+    assert code == 1 and calls == [VIEW]
 
 
 def test_script_contains_only_the_function() -> None:
