@@ -41,11 +41,11 @@ local `safemerge` fish function that waits for Sentinel checks to pass.
 Agents never merge their own PRs or push to `main` (`CLAUDE.md` rule 5).
 Tracked in #10, closed as limited by plan.
 
-> **Owner decision 2026-11-28 (#215), recorded in ADR-041 (Proposed):** the
+> **Owner decision 2026-11-28 (#215), recorded in ADR-041 (Accepted 2026-11-28):** the
 > bypass list and CODEOWNERS parts of the section below no longer hold.
 > A `review` ruleset requires one code-owner approval (bypass: the
 > repository admin role, for pull requests only), and a separate `checks`
-> ruleset has an empty bypass list. ADR-041 amends this ADR once accepted.
+> ruleset has an empty bypass list. ADR-041 amends this ADR.
 > See ADR-041 decision 3 and docs/05 §10.1.
 
 ### After the public flip (2026-11-14, ADR-022)

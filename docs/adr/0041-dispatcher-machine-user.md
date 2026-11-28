@@ -1,6 +1,6 @@
 # ADR-041: Dispatcher identity: a machine user with a classic token
 
-**Status:** Proposed (owner decision 2026-11-27; draft for acceptance)\
+**Status:** Accepted (owner, 2026-11-28; decided 2026-11-27)\
 **Date:** 2026-11-27\
 **Owner:** BoxDelta\
 **Amends:** ADR-022 (ruleset design) and ADR-018 (bypass list), ADR-030
@@ -62,7 +62,7 @@ of step 4b).
     unless the owner's latest review approves the exact head commit).
     This amends ADR-022 ("Ruleset design": no approvals, no code-owner
     review, empty bypass list) and ADR-018 ("After the public flip":
-    CODEOWNERS not enforced) once this ADR is accepted.
+    CODEOWNERS not enforced); both carry a note pointing here.
 4.  **Trust checks read the issue's timeline.** `dispatch:auto` and
     `dispatch:local-ok` count only when the last `labeled` event for that
     label was by the owner's own account: login `DISPATCH_OWNER` and account

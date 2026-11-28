@@ -77,12 +77,12 @@ publish all of that.
         points reporters to it), and re-check Sentinel. During that
         short window the owner is the only person with write access.
 
-> **Owner decision 2026-11-28 (#215), recorded in ADR-041 (Proposed):** the
+> **Owner decision 2026-11-28 (#215), recorded in ADR-041 (Accepted 2026-11-28):** the
 > design below is replaced by two rulesets: `checks` (required Sentinel
 > checks, force-push and deletion blocks, empty bypass list) and `review`
 > (pull request, one code-owner approval, stale approvals dismissed, most
 > recent push approved; the repository admin role is the only bypass, for
-> pull requests only). ADR-041 amends this ADR once accepted. See ADR-041
+> pull requests only). ADR-041 amends this ADR. See ADR-041
 > decision 3.
 
 **Ruleset design.** The post-flip rulesets on `main`:

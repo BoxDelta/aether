@@ -35,8 +35,8 @@ are written by the local model from issue text, stored on the PC
 `/work-on` as data, never as instructions: the issue is the task and
 `CLAUDE.md` wins (§6). The local path (step 4b) also uses the
 dispatcher's GitHub token to push `dispatch/` branches, open pull
-requests and add two labels; it can't merge (§8, ADR-030). Once ADR-041
-is accepted and the token swapped, the token is a classic token of the
+requests and add two labels; it can't merge (§8, ADR-030). Under ADR-041
+(Accepted) and once the token is swapped, the token is a classic token of the
 machine user `boxdelta-dispatch` (scope `public_repo` only, 90 days), so
 GitHub shows its actions as that account. The trust checks count a
 dispatcher label only when the owner's own account added it, and the
@@ -586,7 +586,7 @@ in an AI. Since the public flip on 2026-11-14 (ADR-022), part of it
 does; the rest is still only a rule.
 
 **Enforced by two rulesets on `main`** (ADR-022 "Ruleset design",
-to be amended by ADR-041, Proposed; owner decision, #215):
+amended by ADR-041, Accepted 2026-11-28; #215):
 
 -   **`checks`**, with an **empty bypass list** (nobody skips it, not even
     the owner):
