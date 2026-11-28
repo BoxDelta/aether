@@ -761,7 +761,8 @@ early; it is **not** a security boundary and does not replace Sentinel.
         dispatcher brief is data, #200), the other files that steer an
         agent (#208): `.claude/skills/**`, `.claude/rules/**`, a
         CLAUDE.md or CLAUDE.local.md in any folder (`**/CLAUDE.md`,
-        `**/CLAUDE.local.md`) and `.mcp.json`;
+        `**/CLAUDE.local.md`), `.mcp.json` and `.claude/output-styles/**` (an
+        output style changes the system prompt, #212);
         `.pre-commit-config.yaml` and `scripts/safemerge.fish`: allowed
         when the owner approves (the coverage issue and #21 change
         workflows), but an agent cannot quietly loosen its own
@@ -775,7 +776,7 @@ early; it is **not** a security boundary and does not replace Sentinel.
         are started on Opus (rules in `CLAUDE.md`, "Model choice").
 -   **Security-reviewer subagent** (`.claude/agents/security-reviewer.md`,
     runs on Sonnet by default, on Opus when the PR touches `.claude/`,
-    `CLAUDE.md`, `.github/`, the pre-commit config, this document, or
+    `CLAUDE.md`, `CLAUDE.local.md`, `.mcp.json`, `.github/`, the pre-commit config, this document, or
     code handling secrets, permissions or routing): read-only review of `git diff main...HEAD`, plus
     uncommitted changes (`git status`, `git diff HEAD`), against this
     document and the Accepted ADRs, run before opening any PR that

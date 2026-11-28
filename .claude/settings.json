@@ -80,6 +80,7 @@
       "Edit(/**/CLAUDE.md)",
       "Edit(/**/CLAUDE.local.md)",
       "Edit(/.mcp.json)",
+      "Edit(/.claude/output-styles/**)",
       "Edit(/scripts/safemerge.fish)"
     ]
   }
