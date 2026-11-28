@@ -113,6 +113,9 @@ GUARDED_NAMES: tuple[str, ...] = (
     "compose.override.yml",
     "compose.override.yaml",
     ".envrc",
+    "CLAUDE.md",
+    "CLAUDE.local.md",
+    ".mcp.json",
 )
 GUARDED_SUFFIXES: tuple[str, ...] = (".pth",)
 # Auth code anywhere: a path part (folder or file name) containing one of these.

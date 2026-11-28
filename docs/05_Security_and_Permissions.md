@@ -519,19 +519,29 @@ unattended, so it is the main case for this section:
 
 -   Aider runs in bubblewrap with only `/usr` and `/etc` from the host
     (read-only), an empty home, no `/run` (no Docker socket, D-Bus or
-    agent sockets), the repository's git dir read-only, and only the
-    local model's LiteLLM key in its environment. The host checks
-    afterwards that nothing in the git dir changed.
--   Known limit: Aider shares the host network, because the local model
-    is on loopback. It can reach other loopback services and the
-    internet. Aider runs no shell commands and fetches no URLs (both
-    off), so this matters only if Aider itself is compromised.
+    agent sockets), the repository's git dir read-only, and no
+    credential: its LiteLLM key is a dummy. The host checks afterwards
+    that nothing in the git dir changed.
+-   The sandbox has no network (#202). Aider reaches the local model only
+    through a Unix socket bound into the sandbox. The bridge behind it
+    forwards only `POST /v1/chat/completions` with model `local` and the
+    body keys Aider sends, adds the real key outside the sandbox, and
+    refuses every other route or body param (403), so LiteLLM's admin
+    routes and per-request `api_base`/`user_config` style overrides
+    can't be used (#210). Other loopback
+    services (Postgres, n8n, Plane) and
+    the internet are unreachable. A test runs the real sandbox and
+    checks this on the owner's PC; Sentinel's runner has no
+    `/usr/bin/python3` for the sandbox, so there it is skipped and only
+    the sandbox arguments and the bridge are checked.
 -   Tests run in Docker with `--network none`, read-only, no
     capabilities, CPU, memory and process limits, and a hard timeout,
     on an export of exactly the checked index.
 -   Host git ignores the owner's global config and runs no hooks.
 -   A fixed path check blocks anything on the always-Claude list before
-    a pull request opens; the owner still reviews and merges.
+    a pull request opens, and gitleaks scans exactly what would be
+    pushed before the tests and any push; a finding of either turns the try into a Claude brief. The
+    owner still reviews and merges.
 
 ## 9. Audit and observability
 
@@ -607,7 +617,11 @@ them and the owner checks:
     which waits for Sentinel checks to pass and merges only the head
     commit it checked. When given the reviewed hash
     (`safemerge <PR> <hash>`, the normal practice), it refuses to merge
-    unless the PR head matches it. The
+    unless the PR head matches it. It merges with `--admin` only when
+    the PR author is `BoxDelta` (then the reviewed hash is required and
+    Sentinel's `checks` and `secrets` must both have succeeded); for any other author (the dispatcher's
+    `boxdelta-dispatch`) it refuses unless the owner's latest review is
+    an approval of that exact head commit (ADR-041, #214). The
     live function stays in the owner's fish config. A backup and
     documentation copy is in `scripts/safemerge.fish` (README, "Merging
     with `safemerge`"), and is never sourced or symlinked, so a pull
@@ -653,7 +667,11 @@ Sentinel's dependency layer is GitHub Dependabot (#34):
     `docker-compose.yml` (`docker-compose` ecosystem, #52) gets digest
     and 18.x updates only. Major versions are ignored, because they need
     an upgrade plan (ADR-020). Sentinel tests each update against a live
-    database.
+    database. The dispatcher's test image (`docker` ecosystem,
+    `dispatch/test-image`, #204) gets digest and patch updates only.
+    Sentinel does not build that image, so the first build of a bump is
+    on the owner's PC, the next time the dispatcher tests a diff; the
+    owner checks those PRs by hand.
 -   **Cooldown:** version updates wait 7 days after a release before
     being proposed, so a compromised or broken release has time to be
     noticed and pulled. Security updates are not delayed.
@@ -733,14 +751,18 @@ early; it is **not** a security boundary and does not replace Sentinel.
         `CLAUDE.md`, `.claude/settings.json`,
         `.claude/settings.local.json`, `.claude/agents/**`,
         `.claude/commands/**` (the work-on command holds the rule that a
-        dispatcher brief is data, #200),
+        dispatcher brief is data, #200), the other files that steer an
+        agent (#208): `.claude/skills/**`, `.claude/rules/**`, a
+        CLAUDE.md or CLAUDE.local.md in any folder (`**/CLAUDE.md`,
+        `**/CLAUDE.local.md`) and `.mcp.json`;
         `.pre-commit-config.yaml` and `scripts/safemerge.fish`: allowed
         when the owner approves (the coverage issue and #21 change
         workflows), but an agent cannot quietly loosen its own
         guardrails. `.claude/settings.local.json` is git-ignored, so
         hooks or allow rules added there never show in a diff; the ask
-        rule is where an Edit to it surfaces (a shell write is covered
-        only by the general Bash prompt, see Limitations) (#84).
+        rule is where an Edit to it surfaces (#84). For every ask path, a
+        shell write is covered only by the general Bash prompt (see
+        Limitations).
     -   Deny wins over ask and allow, in every settings file.
     -   *model*: `"sonnet"` by default; issues labelled `model:opus`
         are started on Opus (rules in `CLAUDE.md`, "Model choice").

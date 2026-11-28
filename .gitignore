@@ -9,6 +9,7 @@ node_modules/
 .pytest_cache/
 .ruff_cache/
 .claude/settings.local.json
+CLAUDE.local.md
 .coverage
 .coverage.*
 htmlcov/
