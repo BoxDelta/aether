@@ -25,6 +25,8 @@ MIB = 1024 * 1024
 # Charter target "leave at least 1.5 GB free", read as GiB (the stricter reading).
 MIN_FREE_VRAM_BYTES = 1536 * MIB
 NVIDIA_SMI_TIMEOUT_S = 2.0
+# The process llama-swap starts for the local model (ADR-040), matched by exact name.
+LOCAL_MODEL_PROCESS = "llama-server"
 MEMINFO_PATH = Path("/proc/meminfo")
 
 GpuSource = Literal["nvml", "nvidia-smi", "unknown"]
@@ -37,6 +39,9 @@ class GpuState:
     vram_free_bytes: int | None = None
     # 0-100, None when the driver does not report it.
     utilization_percent: int | None = None
+    # VRAM held by the local model's own process (``llama-server``, ADR-040), None
+    # when it is not loaded or NVML can't tell. Only NVML reports it.
+    local_model_bytes: int | None = None
 
 
 UNKNOWN_GPU = GpuState(source="unknown")
@@ -78,7 +83,7 @@ def _probe_nvml() -> GpuState | None:
             utilization: int | None = int(nvml.nvmlDeviceGetUtilizationRates(handle).gpu)
         except Exception:
             utilization = None  # some drivers/GPUs don't support it
-        return GpuState("nvml", total, free, utilization)
+        return GpuState("nvml", total, free, utilization, _local_model_bytes(nvml, handle))
     except Exception as exc:
         logger.debug("NVML query failed", extra={"reason": type(exc).__name__})
         return None
@@ -87,6 +92,26 @@ def _probe_nvml() -> GpuState | None:
             nvml.nvmlShutdown()
         except Exception:
             logger.debug("NVML shutdown failed")
+
+
+def _local_model_bytes(nvml: ModuleType, handle: object) -> int | None:
+    """VRAM used by processes named ``llama-server``, or None (not loaded, or NVML
+    can't list processes or names). Never raises. The name is the only link to the
+    model: another process with that name would only raise the room counted."""
+    try:
+        total = 0
+        for proc in nvml.nvmlDeviceGetComputeRunningProcesses(handle):
+            used = proc.usedGpuMemory
+            if not isinstance(used, int) or used <= 0:
+                continue  # NVML reports None/N/A inside some containers
+            raw = nvml.nvmlSystemGetProcessName(proc.pid)
+            name = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+            if name.rsplit("/", 1)[-1] == LOCAL_MODEL_PROCESS:
+                total += used
+        return total or None
+    except Exception as exc:
+        logger.debug("NVML process list failed", extra={"reason": type(exc).__name__})
+        return None
 
 
 def _parse_mib(field: str) -> int | None:
@@ -174,11 +199,19 @@ def has_local_headroom(
     Unknown GPU state counts as *no* headroom: the Charter puts desktop
     responsiveness before local throughput, so routing prefers cloud unless it
     has a reason (privacy, manual override) to go local anyway.
+
+    While the local model is loaded (ADR-040), its own allocation is counted as room
+    it already has: a request to it takes no new VRAM, so the model must not block
+    routing to itself. The room is free VRAM plus that allocation, which other GPU
+    users still shrink. Not loaded, or not reported: free VRAM alone, as before.
     """
     free = snapshot.gpu.vram_free_bytes
     if free is None:
         return Headroom(False, "GPU state unknown")
-    free_mib, need_mib = free // MIB, min_free_vram_bytes // MIB
-    if free < min_free_vram_bytes:
-        return Headroom(False, f"free VRAM {free_mib} MiB below reserve {need_mib} MiB")
-    return Headroom(True, f"free VRAM {free_mib} MiB meets reserve {need_mib} MiB")
+    own = snapshot.gpu.local_model_bytes or 0
+    room = free + own
+    room_mib, need_mib = room // MIB, min_free_vram_bytes // MIB
+    counted = f" (includes the local model's {own // MIB} MiB)" if own else ""
+    if room < min_free_vram_bytes:
+        return Headroom(False, f"free VRAM {room_mib} MiB{counted} below reserve {need_mib} MiB")
+    return Headroom(True, f"free VRAM {room_mib} MiB{counted} meets reserve {need_mib} MiB")

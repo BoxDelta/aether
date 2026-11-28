@@ -18,7 +18,8 @@ from router.contract import (
     PrivacyNotAllowed,
     ProviderBadResponse,
 )
-from router.ollama import OllamaProvider, classify_host
+from router.host_trust import classify_host
+from router.ollama import OllamaProvider
 from router.routing import NoRoute, RouteOptions, Router
 from tests.fakes import CHECK, snapshot
 

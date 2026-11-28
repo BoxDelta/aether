@@ -5,6 +5,7 @@ Sends each prompt in ``tests/identity/prompts.yaml`` through ``call_with_identit
 file for the owner to review. No Core, no events, no database.
 
 Run (fish), only with the owner's approval:
+    uv run python -m scripts.identity_continuity llama-swap   # needs LLAMA_SWAP_MODEL
     uv run python -m scripts.identity_continuity ollama
     uv run python -m scripts.identity_continuity claude   # needs ANTHROPIC_API_KEY
     uv run python -m scripts.identity_continuity claude --max-tokens 1024
@@ -14,8 +15,8 @@ never exceed AETHER_CLOUD_MAX_OUTPUT_TOKENS (default 4096) either way (#77). The
 summary line reports token totals and how many answers were cut off; counts only,
 never answer text.
 
-Reads configuration from the environment and ``.env`` (Ollama host and model,
-Claude key) like Core does. The key is never written to the results.
+Reads configuration from the environment and ``.env`` (llama-swap URL, model
+and key; Ollama host and model; Claude key) like Core does. The key is never written to the results.
 """
 
 import argparse
@@ -34,6 +35,7 @@ from core.log import Redactor, SecretCheck, secrets_from
 from router.claude import ClaudeProvider
 from router.contract import Message, ModelRequest, Provider, ProviderError
 from router.identity_call import call_with_identity
+from router.llama_swap import LlamaSwapProvider
 from router.ollama import OllamaProvider
 
 REPO = Path(__file__).resolve().parent.parent
@@ -48,6 +50,8 @@ def load_prompts(path: Path = PROMPTS) -> list[dict[str, Any]]:
 
 
 def make_provider(name: str, settings: Settings) -> Provider:
+    if name == "llama-swap":
+        return LlamaSwapProvider.from_settings(settings)
     if name == "ollama":
         return OllamaProvider.from_settings(settings)
     return ClaudeProvider.from_settings(settings)
@@ -120,7 +124,7 @@ def max_tokens_arg(raw: str) -> int:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("provider", choices=["ollama", "claude"])
+    parser.add_argument("provider", choices=["llama-swap", "ollama", "claude"])
     parser.add_argument(
         "--max-tokens",
         type=max_tokens_arg,

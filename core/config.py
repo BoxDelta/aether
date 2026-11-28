@@ -44,6 +44,14 @@ class Settings(BaseSettings):
     anthropic_api_key: SecretStr | None = None
     # Default cloud model (Claude API).
     anthropic_model: str = Field(default="claude-opus-5-5", min_length=1)
+    # llama-swap, the local model (ADR-040): an OpenAI-compatible server, reached
+    # directly and never through LiteLLM or Langfuse (they log full prompts). No
+    # model name means the provider is not built: the name is the llama-swap alias.
+    llama_swap_url: AnyHttpUrl = AnyHttpUrl("http://127.0.0.1:9292")
+    llama_swap_model: str | None = None
+    llama_swap_api_key: SecretStr | None = None
+    # Ollama stays as a fallback but is off unless switched on (ADR-040).
+    aether_ollama_enabled: bool = False
     ollama_host: AnyHttpUrl = AnyHttpUrl("http://localhost:11434")
     # Opt-in (#10, ADR-023): let Ollama receive Sensitive data on a host that is not
     # loopback or a private/link-local IP literal, e.g. a private overlay network.
@@ -108,6 +116,8 @@ class Settings(BaseSettings):
         "aether_api_token",
         "aether_cloud_max_output_tokens",
         "aether_backup_dir",
+        "llama_swap_api_key",
+        "llama_swap_model",
         mode="before",
     )
     @classmethod
@@ -118,10 +128,11 @@ class Settings(BaseSettings):
             return None
         return value
 
-    @field_validator("aether_ollama_trust_host", mode="before")
+    @field_validator("aether_ollama_trust_host", "aether_ollama_enabled", mode="before")
     @classmethod
     def _empty_flag_is_off(cls, value: object) -> object:
-        # `AETHER_OLLAMA_TRUST_HOST=` left empty (as in .env.example) means off.
+        # `AETHER_OLLAMA_TRUST_HOST=` or `AETHER_OLLAMA_ENABLED=` left empty (as in
+        # .env.example) means off.
         if isinstance(value, str) and not value.strip():
             return False
         return value

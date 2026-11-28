@@ -25,7 +25,7 @@ looks impressive.
   orchestration     orchestrator                            (ADR-005);
                                                             OpenClaw after v1
 
-  Local inference   llama-swap        Aether's and the      Proposed
+  Local inference   llama-swap        Aether's and the      Accepted
                     (llama.cpp),      dispatcher's local    (ADR-040); Ollama
                     Qwen3.6-35B-A3B   model                 stays, disabled by
                     Q4_K_M                                  default in Phase 3,
@@ -149,8 +149,8 @@ adapter exceptions into contract errors without copying their text.
 Not yet represented: non-text modalities, tool calls, context-window
 and capability metadata. Add them when a phase needs them.
 
-Adapters: `router/ollama.py` (local, #14) and `router/claude.py`
-(cloud, #15). A response's `finish_reason` is `stop`, `length`,
+Adapters: `router/llama_swap.py` (local, ADR-040), `router/ollama.py`
+(local fallback, off by default, #14) and `router/claude.py` (cloud, #15). A response's `finish_reason` is `stop`, `length`,
 `refusal` (the model declined; no text is returned) or `other`. The
 Claude adapter opts into Anthropic's server-side refusal fallback
 (`fallbacks: "default"`), so a declined request is retried on

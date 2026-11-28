@@ -143,7 +143,12 @@ def test_everything_up_is_ready(db_ok: list[Any]) -> None:
     assert r.status_code == 200
     assert r.json() == {
         "status": "ready",
-        "components": {"ollama": "ok", "claude": "configured", "database": "ok"},
+        "components": {
+            "ollama": "ok",
+            "llama_swap": "not_configured",
+            "claude": "configured",
+            "database": "ok",
+        },
     }
     assert_safe(r.text)
 
@@ -162,7 +167,12 @@ def test_no_database_is_degraded() -> None:
     assert r.status_code == 200
     assert r.json() == {
         "status": "degraded",
-        "components": {"ollama": "ok", "claude": "configured", "database": "not_configured"},
+        "components": {
+            "ollama": "ok",
+            "llama_swap": "not_configured",
+            "claude": "configured",
+            "database": "not_configured",
+        },
     }
 
 
@@ -202,6 +212,48 @@ def test_off_network_ollama_is_not_ready_for_default_requests(db_ok: list[Any]) 
 def test_overall_rules(ollama_s: str, claude_s: str, database_s: str, expected: str) -> None:
     components = Components(ollama=ollama_s, claude=claude_s, database=database_s)  # type: ignore[arg-type]
     assert overall(components) == expected
+
+
+# --- llama-swap (ADR-040) -------------------------------------------------------------
+
+
+def llama_swap(available: bool = True, **kw: Any) -> Checked:
+    return Checked("llama-swap", "local", available, **kw)
+
+
+def test_llama_swap_alone_is_ready_for_default_requests(db_ok: list[Any]) -> None:
+    r = make_client(llama_swap(), claude(), database_url=DB_URL).get("/ready")
+
+    assert r.status_code == 200 and r.json()["status"] == "ready"
+    assert r.json()["components"]["llama_swap"] == "ok"
+    assert r.json()["components"]["ollama"] == "not_configured"
+
+
+def test_llama_swap_down_with_ollama_up_is_still_ready(db_ok: list[Any]) -> None:
+    r = make_client(llama_swap(False), ollama(), claude(), database_url=DB_URL).get("/ready")
+
+    assert r.status_code == 200
+    assert r.json()["components"]["llama_swap"] == "unavailable"
+
+
+def test_no_local_provider_up_is_not_ready(db_ok: list[Any]) -> None:
+    r = make_client(llama_swap(False), claude(), database_url=DB_URL).get("/ready")
+
+    assert r.status_code == 503 and r.json()["status"] == "not_ready"
+
+
+def test_off_network_llama_swap_is_not_ready_for_default_requests(db_ok: list[Any]) -> None:
+    r = make_client(llama_swap(off_network=True), claude(), database_url=DB_URL).get("/ready")
+
+    assert r.status_code == 503
+    assert r.json()["components"]["llama_swap"] == "off_network"
+
+
+def test_ready_check_never_asks_llama_swap_to_generate() -> None:
+    # check_available() is the only call /ready makes; _generate would raise here.
+    r = make_client(llama_swap(), claude()).get("/ready")
+
+    assert r.json()["components"]["llama_swap"] == "ok"
 
 
 # --- database states --------------------------------------------------------------------
@@ -254,7 +306,12 @@ def test_hanging_checks_time_out(monkeypatch: pytest.MonkeyPatch, db_ok: list[An
 
     assert elapsed < 2.0  # checks run concurrently, each bounded
     assert r.status_code == 503
-    assert r.json()["components"] == {"ollama": "timeout", "claude": "timeout", "database": "ok"}
+    assert r.json()["components"] == {
+        "ollama": "timeout",
+        "llama_swap": "not_configured",
+        "claude": "timeout",
+        "database": "ok",
+    }
 
 
 def test_check_exception_is_error_with_type_only(capsys: pytest.CaptureFixture[str]) -> None:
@@ -283,7 +340,12 @@ def test_response_model_admits_only_status_words() -> None:
         ReadyResponse.model_validate(
             {
                 "status": "ready",
-                "components": {"ollama": "ok", "claude": "configured", "database": "ok"},
+                "components": {
+                    "ollama": "ok",
+                    "llama_swap": "not_configured",
+                    "claude": "configured",
+                    "database": "ok",
+                },
                 "detail": DB_URL,
             }
         )

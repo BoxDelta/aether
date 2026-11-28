@@ -145,7 +145,7 @@ confidence is not a substitute for authorization.
     (`UnhandledRequestError`, type name only), so its own log has no
     message either (`core/request_context.py`, #124).
 -   Logs redact configured secrets by value (`ANTHROPIC_API_KEY`,
-    `AETHER_API_TOKEN`, and the `DATABASE_URL` and
+    `LLAMA_SWAP_API_KEY`, `AETHER_API_TOKEN`, and the `DATABASE_URL` and
     `DATABASE_MIGRATION_URL` passwords as written and percent-decoded), Anthropic-key-shaped strings, `Bearer <credential>`
     values, and the password in any `scheme://user:password@host` URL,
     configured or not (`core/log.py`; its module docstring is the full
@@ -274,9 +274,11 @@ for the highest level present.
                                               `allow_cloud` (no
                                               allowlist, #120)
 
-  Sensitive     Health, finances, private     A trusted Ollama host only
-                messages, other people's      (loopback or private
-                details                       address, or opted in with
+  Sensitive     Health, finances, private     A trusted local host only
+                messages, other people's      (llama-swap or Ollama on
+                details                       loopback or a private
+                                              address; Ollama also
+                                              opted in with
                                               `AETHER_OLLAMA_TRUST_HOST`);
                                               as memory, only with the
                                               request's
@@ -446,7 +448,7 @@ same things the log redactor masks, defined once (`SECRET_FORMATS` and
     refused). The word is also found inside a longer one, so
     "standard-bearer organisation" is refused: the safe direction;
 -   a password in a `scheme://user:password@host` URL;
--   the configured secret values (`ANTHROPIC_API_KEY`,
+-   the configured secret values (`ANTHROPIC_API_KEY`, `LLAMA_SWAP_API_KEY`,
     `AETHER_API_TOKEN`, the database passwords), only when at least 8
     characters long, so a short value can't match ordinary text.
 
@@ -474,7 +476,8 @@ attempt, its error type and the `request.failed` event are recorded,
 metadata only. A manual override to the cloud and a failover from local
 to the cloud are refused the same way. Any provider kind other than
 `local` is checked, so a new kind fails closed, and so is an untrusted
-`OLLAMA_HOST` (off-network, ADR-032). Sends to a trusted Ollama host are
+`OLLAMA_HOST` or `LLAMA_SWAP_URL` (off-network, ADR-032, ADR-040). Sends to a
+trusted Ollama or llama-swap host are
 not checked, including one trusted with `AETHER_OLLAMA_TRUST_HOST`, which
 may be on another machine: the opt-in is the owner's statement of trust. `Router` and `call_with_identity`
 require a `SecretCheck` (type-checked); `Router.from_settings` builds it
@@ -525,6 +528,47 @@ proxy environment variables, so it only talks to the host it checked:
     trusted, because the client ignores `SSL_CERT_FILE`/`SSL_CERT_DIR`
     and verifies against the certifi bundle, not the system trust store
     (#24).
+
+**Trust boundary: `LLAMA_SWAP_URL` (ADR-040).** The llama-swap adapter
+(`router/llama_swap.py`, `kind="local"`) follows the same rules as Ollama,
+using the same host classification (`router/host_trust.py`), with these
+differences:
+
+-   Direct only. Core calls llama-swap's `/v1/chat/completions` itself and
+    never through LiteLLM or Langfuse, which log full prompts and answers
+    on this PC. A URL on port 4000 (LiteLLM's usual port) gets a fixed-text
+    startup warning; it stays a warning, not a block. The URL's path, query
+    and fragment are dropped, and a URL with a username or password stops
+    Core at startup.
+-   Trusted host (loopback, private or link-local literal, or `localhost`):
+    `sensitive`, memory up to `sensitive` (Sensitive memory only with the
+    request's `include_sensitive`). Any other host is off-network: up to
+    `personal`, only with `allow_cloud`, memory up to Personal only with
+    `allow_cloud`, the content tripwire (#8), the
+    "[off-network host: data leaves this network]" route mark and one
+    fixed-text startup warning. **There is no trust opt-in** (no
+    `AETHER_OLLAMA_TRUST_HOST` equivalent).
+-   The client follows no redirects and ignores proxy environment
+    variables, so the API key and the prompt only go to the host that was
+    checked.
+-   `LLAMA_SWAP_API_KEY` is redacted from logs by value and refused by
+    `SecretCheck` as memory content. Bearer auth over plain HTTP to a
+    private-LAN host has the same limit as Ollama: anyone on that network
+    can read it.
+-   Every request sets `chat_template_kwargs.enable_thinking=false`; a reply
+    with empty content is a provider error, never an empty answer. One
+    request at a time. `/ready` lists models (`GET /v1/models`) and never
+    loads the model.
+-   Nothing in Core logs the URL, key, prompt or reply. llama-swap's and
+    llama-server's own logs are outside Core: keep verbose request logging
+    off (see the llama-swap runbook).
+-   Ollama is off unless `AETHER_OLLAMA_ENABLED=true`; llama-swap is on only
+    when `LLAMA_SWAP_MODEL` is set. With neither, only the cloud provider
+    exists, so a default (local-only) request has no route.
+-   Known limitations: the same as Ollama's (a private-range address is
+    trusted even on a network the owner doesn't control; `allow_cloud` also
+    covers an off-network llama-swap host, which its name doesn't say); the
+    GPU probe matches the model's process by its name (`llama-server`) only.
 
 ## 8. Execution isolation
 

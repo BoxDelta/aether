@@ -111,6 +111,13 @@ provider and routing reason.
 Routing must be explainable and configurable. Do not send sensitive
 context to a cloud provider merely because it is cheaper or faster.
 
+Local inference is llama-swap (ADR-040), an OpenAI-compatible server that
+Nexus calls directly on loopback, never through LiteLLM or Langfuse, with
+thinking off on every request. The Ollama adapter stays but is disabled
+by default. While the local model is loaded, the GPU probe counts the
+model's own VRAM as room it already has, so a warm model never blocks
+routing to itself. Host trust and privacy rules: docs/05 §7.1.
+
 ### 4.4 AETHER Automata --- tools and execution
 
 Responsibilities: - Provide typed, permission-checked tool adapters. -

@@ -16,10 +16,9 @@ is never logged.
 """
 
 import asyncio
-import ipaddress
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Any, Literal
+from typing import Any
 
 import httpx
 from ollama import AsyncClient, ChatResponse, ResponseError
@@ -36,6 +35,7 @@ from router.contract import (
     ProviderUnavailable,
     Usage,
 )
+from router.host_trust import TRUSTED_CATEGORIES, HostCategory, classify_host
 
 logger = logging.getLogger("aether.router.ollama")
 
@@ -47,39 +47,6 @@ CONNECT_TIMEOUT_S = 5.0
 AVAILABILITY_TIMEOUT_S = 2.0
 
 _FINISH_REASONS: dict[str, FinishReason] = {"stop": "stop", "length": "length"}
-
-HostCategory = Literal["loopback", "private", "link_local", "hostname", "other_ip"]
-
-_TRUSTED_NETWORKS: dict[HostCategory, tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]] = {
-    "loopback": (ipaddress.ip_network("127.0.0.0/8"), ipaddress.ip_network("::1/128")),
-    "private": (
-        ipaddress.ip_network("10.0.0.0/8"),
-        ipaddress.ip_network("172.16.0.0/12"),
-        ipaddress.ip_network("192.168.0.0/16"),
-    ),
-    "link_local": (ipaddress.ip_network("169.254.0.0/16"), ipaddress.ip_network("fe80::/10")),
-}
-TRUSTED_CATEGORIES: frozenset[HostCategory] = frozenset(_TRUSTED_NETWORKS)
-
-
-def classify_host(host_url: str) -> HostCategory:
-    """Category of the host in an Ollama URL, from its text only (no DNS lookup).
-
-    Only the exact name ``localhost`` counts as trusted (not ``localhost.``); every
-    other name is ``hostname``. ``localhost`` is still resolved by the OS on connect.
-    IPv4-mapped IPv6 and other forms outside the listed ranges are ``other_ip``.
-    """
-    host = httpx.URL(host_url).host.lower()
-    if host == "localhost":
-        return "loopback"
-    try:
-        address = ipaddress.ip_address(host.split("%", 1)[0])  # drop an IPv6 zone id
-    except ValueError:
-        return "hostname"
-    for category, networks in _TRUSTED_NETWORKS.items():
-        if any(address.version == n.version and address in n for n in networks):
-            return category
-    return "other_ip"
 
 
 class OllamaProvider(Provider):

@@ -1,6 +1,7 @@
 """GPU/RAM probe (#17): NVML mocked, nvidia-smi mocked, both missing."""
 
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -304,3 +305,80 @@ def test_nvidia_smi_fallback_is_probed_on_every_call(monkeypatch: pytest.MonkeyP
     for _ in range(3):
         assert probe_gpu().source == "nvidia-smi"
     assert len(seen) == 3
+
+
+# --- the local model's own allocation (ADR-040) --------------------------------------
+
+
+def nvml_with_processes(
+    procs: Sequence[tuple[int, int | None, str | bytes]], **kw: Any
+) -> ModuleType:
+    mod, _ = fake_nvml(**kw)
+    names = {pid: name for pid, _, name in procs}
+    mod.nvmlDeviceGetComputeRunningProcesses = lambda _h: [  # type: ignore[attr-defined]
+        SimpleNamespace(pid=pid, usedGpuMemory=used) for pid, used, _ in procs
+    ]
+    mod.nvmlSystemGetProcessName = lambda pid: names[pid]  # type: ignore[attr-defined]
+    return mod
+
+
+def test_nvml_counts_the_llama_server_allocation(monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = nvml_with_processes(
+        [
+            (10, 6006 * MIB, b"/app/llama-server"),
+            (11, 300 * MIB, "/usr/lib/Xorg"),
+            (12, None, b"/app/llama-server"),  # N/A inside some containers: skipped
+        ],
+        free=1131 * MIB,
+    )
+    use_nvml(monkeypatch, mod)
+
+    assert probe_gpu().local_model_bytes == 6006 * MIB
+
+
+@pytest.mark.parametrize(
+    "procs",
+    [[], [(11, 300 * MIB, "/usr/lib/Xorg")], [(12, 5 * MIB, "/opt/not-llama-server-x")]],
+)
+def test_no_llama_server_means_no_allocation(
+    monkeypatch: pytest.MonkeyPatch, procs: Sequence[tuple[int, int | None, str]]
+) -> None:
+    use_nvml(monkeypatch, nvml_with_processes(procs))
+
+    assert probe_gpu().local_model_bytes is None
+
+
+def test_a_failing_process_list_keeps_the_memory_numbers(monkeypatch: pytest.MonkeyPatch) -> None:
+    mod, _ = fake_nvml(free=2 * GIB)  # fake_nvml has no process functions at all
+    use_nvml(monkeypatch, mod)
+
+    state = probe_gpu()
+
+    assert state.vram_free_bytes == 2 * GIB and state.local_model_bytes is None
+
+
+def loaded(free_mib: int, model_mib: int | None) -> HardwareSnapshot:
+    gpu = GpuState("nvml", 8 * GIB, free_mib * MIB, 5, model_mib * MIB if model_mib else None)
+    return HardwareSnapshot(gpu=gpu, ram_available_bytes=16 * GIB)
+
+
+def test_the_loaded_model_does_not_block_local_routing() -> None:
+    # ADR-040 / tests/local-model/README.md §2.3: 1,131 MiB free with Qwen loaded.
+    assert not has_local_headroom(loaded(1131, None)).ok  # not counted: blocked, as before
+    result = has_local_headroom(loaded(1131, 6006))
+    assert result.ok
+    assert result.reason == (
+        "free VRAM 7137 MiB (includes the local model's 6006 MiB) meets reserve 1536 MiB"
+    )
+
+
+def test_other_gpu_users_still_count_while_the_model_is_loaded() -> None:
+    # Another program holds nearly everything the model does not: no room.
+    result = has_local_headroom(loaded(0, 1000))
+    assert not result.ok and "below reserve 1536 MiB" in result.reason
+
+
+def test_not_loaded_is_unchanged() -> None:
+    assert has_local_headroom(loaded(1536, None)).ok
+    assert not has_local_headroom(loaded(1535, None)).ok
+    assert has_local_headroom(snapshot(None)).reason == "GPU state unknown"

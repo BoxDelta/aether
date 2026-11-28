@@ -1,7 +1,8 @@
 # Local model measurements: Qwen3.6-35B-A3B under llama-swap
 
-Evidence for ADR-040 (local model via llama-swap). Measurement only: Aether
-has no llama-swap adapter yet. There are no automated tests in this folder.
+Evidence for ADR-040 (local model via llama-swap). Measurement only, taken before
+the adapter (`router/llama_swap.py`) existed. There are no automated tests in
+this folder.
 
 **Model:** `Qwen3.6-35B-A3B-Q4_K_M.gguf` (19,592 MiB file), served by
 llama-swap (`ghcr.io/mostlygeek/llama-swap:unified-cuda13`, Docker, on

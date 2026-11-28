@@ -10,14 +10,17 @@ because it reveals what is configured.
 
 Overall status:
 
-- ``ready`` (200): Ollama answers with the default model pulled, a Claude key
-  is configured, and Postgres is reachable and migrated to head.
-- ``degraded`` (200): Ollama is fine, so default (local-only) requests work,
-  but cloud isn't configured or the database (events) is down.
-- ``not_ready`` (503): Ollama isn't usable for default requests. Default
-  requests have ``allow_cloud=false``, so they would fail. That includes an
-  Ollama host that is up but off-network (``ollama: "off_network"``, ADR-032):
-  it answers only requests with ``allow_cloud``.
+A local provider is llama-swap (ADR-040) or, when switched on, Ollama. The
+llama-swap check lists models and never loads the model.
+
+- ``ready`` (200): a local provider answers with its model available, a Claude
+  key is configured, and Postgres is reachable and migrated to head.
+- ``degraded`` (200): a local provider is fine, so default (local-only) requests
+  work, but cloud isn't configured or the database (events) is down.
+- ``not_ready`` (503): no local provider is usable for default requests. Default
+  requests have ``allow_cloud=false``, so they would fail. A local host that is
+  up but off-network (``"off_network"``, ADR-032) doesn't count: it answers only
+  requests with ``allow_cloud``.
 
 Every check runs concurrently under ``CHECK_TIMEOUT_S``, so ``/ready`` answers
 within about that time even if something hangs.
@@ -50,7 +53,8 @@ CHECK_TIMEOUT_S = 3.0
 ALEMBIC_INI = Path(__file__).resolve().parent.parent / "alembic.ini"
 
 CheckFailure = Literal["timeout", "error"]
-OllamaStatus = Literal["ok", "off_network", "unavailable", "not_configured"] | CheckFailure
+LocalStatus = Literal["ok", "off_network", "unavailable", "not_configured"] | CheckFailure
+OllamaStatus = LocalStatus
 # No network call: "configured" means a key is set, not that the API accepted it.
 ClaudeStatus = Literal["configured", "not_configured"] | CheckFailure
 DatabaseStatus = Problem | Literal["not_migrated"] | CheckFailure
@@ -61,6 +65,8 @@ class Components(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     ollama: OllamaStatus
+    # Default "not_configured": the llama-swap provider needs LLAMA_SWAP_MODEL (ADR-040).
+    llama_swap: LocalStatus = "not_configured"
     claude: ClaudeStatus
     database: DatabaseStatus
 
@@ -92,7 +98,7 @@ async def _bounded[T](name: str, check: Awaitable[T], timeout_s: float) -> T | C
         return "error"
 
 
-async def _ollama(provider: Provider | None) -> OllamaStatus:
+async def _local(provider: Provider | None) -> LocalStatus:
     if provider is None:
         return "not_configured"
     if not await provider.check_available():
@@ -126,7 +132,7 @@ async def _database(settings: Settings, engine: AsyncEngine | None) -> DatabaseS
 
 
 def overall(components: Components) -> Overall:
-    if components.ollama != "ok":
+    if "ok" not in (components.ollama, components.llama_swap):
         return "not_ready"
     if components.claude == "configured" and components.database == "ok":
         return "ready"
@@ -139,12 +145,13 @@ async def check_ready(
     engine: AsyncEngine | None,
     timeout_s: float = CHECK_TIMEOUT_S,
 ) -> ReadyResponse:
-    ollama, claude, database = await asyncio.gather(
-        _bounded("ollama", _ollama(router.provider("ollama")), timeout_s),
+    ollama, llama_swap, claude, database = await asyncio.gather(
+        _bounded("ollama", _local(router.provider("ollama")), timeout_s),
+        _bounded("llama_swap", _local(router.provider("llama-swap")), timeout_s),
         _bounded("claude", _claude(router.provider("claude")), timeout_s),
         _bounded("database", _database(settings, engine), timeout_s),
     )
-    components = Components(ollama=ollama, claude=claude, database=database)
+    components = Components(ollama=ollama, llama_swap=llama_swap, claude=claude, database=database)
     return ReadyResponse(status=overall(components), components=components)
 
 
@@ -154,7 +161,7 @@ ready_router = APIRouter()
 @ready_router.get(
     READY_PATH,
     response_model=ReadyResponse,
-    responses={503: {"model": ReadyResponse, "description": "Ollama is not usable"}},
+    responses={503: {"model": ReadyResponse, "description": "No local provider is usable"}},
     tags=["system"],
 )
 async def ready(request: Request) -> JSONResponse:

@@ -557,13 +557,32 @@ def test_duplicate_provider_names_rejected(identity: Identity) -> None:
         )
 
 
-def test_from_settings_builds_local_then_cloud(identity: Identity) -> None:
+def test_from_settings_defaults_to_cloud_only(identity: Identity) -> None:
+    # No LLAMA_SWAP_MODEL and Ollama off (ADR-040): only the cloud provider exists.
     settings = Settings(_env_file=None, anthropic_api_key=SecretStr("not-a-real-key"))
     router = Router.from_settings(settings, identity)
+    assert [(p.name, p.info.kind) for p in router._providers] == [("claude", "cloud")]
+
+
+def test_from_settings_prefers_llama_swap_then_ollama_then_cloud(identity: Identity) -> None:
+    settings = Settings(
+        _env_file=None,
+        anthropic_api_key=SecretStr("not-a-real-key"),
+        llama_swap_model="qwen-test",
+        aether_ollama_enabled=True,
+    )
+    router = Router.from_settings(settings, identity)
     assert [(p.name, p.info.kind) for p in router._providers] == [
+        ("llama-swap", "local"),
         ("ollama", "local"),
         ("claude", "cloud"),
     ]
+
+
+def test_from_settings_with_llama_swap_only(identity: Identity) -> None:
+    settings = Settings(_env_file=None, llama_swap_model="qwen-test")
+    router = Router.from_settings(settings, identity)
+    assert [p.name for p in router._providers] == ["llama-swap", "claude"]
 
 
 # --- #121: override checks only itself; cancellation; one log line on no failover ----

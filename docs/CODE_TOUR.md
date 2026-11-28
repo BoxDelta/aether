@@ -26,7 +26,9 @@ the design, follow the ADR numbers into `docs/adr/`.
     failover (`routing.py`), the GPU/RAM probe (`hardware.py`), the one
     function every model call goes through (`identity_call.py`, which also
     refuses a cloud send whose text looks like a secret, #8), and the two
-    adapters: `ollama.py` (local) and `claude.py` (cloud).
+    adapters: `llama_swap.py` and `ollama.py` (local; Ollama is off by
+    default, ADR-040) and `claude.py` (cloud). `host_trust.py` decides
+    which hosts count as this machine or network, for both local ones.
 -   `identity/`: `aether.yaml`, the single AETHER identity (name, voice,
     rules) that is applied to every model call (docs/07).
 -   `migrations/`: Alembic migrations for Postgres, run as the owner role

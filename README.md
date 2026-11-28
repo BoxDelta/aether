@@ -175,8 +175,9 @@ Core at startup. A cut-off answer comes back with `"finish_reason": "length"`,
 sometimes with empty text if thinking used the whole budget.
 
 Approved memory is added to each model call within that provider's limit:
-Public and Personal on a trusted Ollama host (loopback, a private address,
-or any host with `AETHER_OLLAMA_TRUST_HOST=true`), Public and Personal for
+Public and Personal on a trusted local host (llama-swap or Ollama on loopback
+or a private address; for Ollama also any host with
+`AETHER_OLLAMA_TRUST_HOST=true`), Public and Personal for
 Claude and for an untrusted Ollama host (only when the request sets
 `"allow_cloud": true`). An untrusted Ollama host is treated like the cloud
 (ADR-032): it takes only requests with `allow_cloud`, and its sends get the
@@ -198,7 +199,7 @@ curl -s http://127.0.0.1:8000/chat -H "authorization: Bearer $token" \
 ```
 
 Check whether Core can answer: `/ready` reports one status word per
-component (`ollama`, `claude`, `database`) and an overall `ready`,
+component (`llama_swap`, `ollama`, `claude`, `database`) and an overall `ready`,
 `degraded` or `not_ready` (503). See docs/02 for the meanings. It needs
 the token; `/health` doesn't.
 
@@ -217,11 +218,27 @@ to the cloud),
 metadata-only events after the response is sent. If the event write fails,
 the answer is unaffected and one warning is logged.
 
-### Local inference (Ollama)
+### Local inference (llama-swap)
 
-Local inference uses [Ollama](https://ollama.com). It's optional for
-development (tests mock it), but needed to route to the local model. On
-Arch / GNOME with an NVIDIA GPU:
+The local model is served by llama-swap (ADR-040), which runs outside this
+repository (the dispatcher stack). It's optional for development (tests
+mock it), but needed to route to the local model. In `.env`:
+
+```
+LLAMA_SWAP_URL=http://127.0.0.1:9292
+LLAMA_SWAP_MODEL=<the llama-swap model name>
+LLAMA_SWAP_API_KEY=<its key>
+```
+
+Point the URL straight at llama-swap, never at LiteLLM or Langfuse (they
+log full prompts). Without `LLAMA_SWAP_MODEL` the provider is off. Setup
+notes and checks: `docs/runbooks/llama-swap.md`.
+
+### Local inference (Ollama, fallback)
+
+Ollama is off by default (ADR-040). To use it as a fallback, set
+`AETHER_OLLAMA_ENABLED=true` in `.env`. It uses [Ollama](https://ollama.com).
+On Arch / GNOME with an NVIDIA GPU:
 
 ```fish
 sudo pacman -S ollama-cuda

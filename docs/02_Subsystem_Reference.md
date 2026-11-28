@@ -99,8 +99,13 @@ storage, or direct unmediated host execution.
 
 -   `GET /health` is liveness only, and the one route without the API
     token (ADR-021).
--   `GET /ready` (#59, token required) runs three checks concurrently,
+-   `GET /ready` (#59, token required) runs four checks concurrently,
     each limited to 3 s, and returns one status word per component:
+    -   `llama_swap` (ADR-040): `ok` when llama-swap lists the default
+        model (`GET /v1/models`; this never loads the model);
+        `off_network` when the host is untrusted; otherwise
+        `unavailable`, `not_configured` (no `LLAMA_SWAP_MODEL`),
+        `timeout` or `error`.
     -   `ollama`: `ok` when Ollama answers and the default model is
         pulled; `off_network` when it does but the host is untrusted, so
         it takes only requests with `allow_cloud` (ADR-032); otherwise
@@ -227,7 +232,8 @@ with `ast` and reports each violation as file:line. It allows `.generate`
 only in `router/identity_call.py`. It allows `._generate` only in
 `router/contract.py`, because calling it directly skips the privacy check,
 timeout and error scrubbing. It allows `anthropic` imports only in
-`router/claude.py` and `ollama` imports only in `router/ollama.py`.
+`router/claude.py` and `ollama` imports only in `router/ollama.py`. The
+llama-swap adapter uses `httpx` only, so it needs no such rule.
 Sensitive data never goes to cloud. Per-request owner approval for
 Sensitive → cloud (docs/05 §7.1) isn't implemented yet.
 

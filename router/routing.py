@@ -79,6 +79,7 @@ from router.contract import (
 )
 from router.hardware import MIN_FREE_VRAM_BYTES, HardwareSnapshot, Headroom, has_local_headroom
 from router.identity_call import call_with_identity
+from router.llama_swap import LlamaSwapProvider
 from router.memory_context import (
     MemoryContext,
     MemorySource,
@@ -326,9 +327,17 @@ class Router:
     def from_settings(
         cls, settings: Settings, identity: Identity, *, memory: MemorySource | None = None
     ) -> "Router":
-        # Local first: on equal footing, the local provider is preferred.
+        # Local first: on equal footing, the local provider is preferred, and
+        # llama-swap before Ollama (ADR-040). llama-swap needs a model name; Ollama
+        # is off unless AETHER_OLLAMA_ENABLED is set.
+        providers: list[Provider] = []
+        if settings.llama_swap_model is not None:
+            providers.append(LlamaSwapProvider.from_settings(settings))
+        if settings.aether_ollama_enabled:
+            providers.append(OllamaProvider.from_settings(settings))
+        providers.append(ClaudeProvider.from_settings(settings))
         return cls(
-            [OllamaProvider.from_settings(settings), ClaudeProvider.from_settings(settings)],
+            providers,
             identity,
             secret_check=SecretCheck.from_settings(settings),
             memory=memory,
