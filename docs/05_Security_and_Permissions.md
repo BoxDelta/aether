@@ -596,7 +596,8 @@ them and the owner checks:
     commit it checked. When given the reviewed hash
     (`safemerge <PR> <hash>`, the normal practice), it refuses to merge
     unless the PR head matches it. It merges with `--admin` only when
-    the PR author is `BoxDelta`; for any other author (the dispatcher's
+    the PR author is `BoxDelta` (then the reviewed hash is required and
+    Sentinel's `checks` and `secrets` must both have succeeded); for any other author (the dispatcher's
     `boxdelta-dispatch`) it refuses unless the owner's latest review is
     an approval of that exact head commit (ADR-041, #214). The
     live function stays in the owner's fish config. A backup and

@@ -36,11 +36,20 @@ case "$1 $2" in
       *"--json reviews"*)
         # Run the function's real jq filter (last arg) over the fixture, as gh would.
         for last; do :; done
-        printf '%s' "$STUB_REVIEWS" | jq -r "$last"; exit $? ;;
+        data="$STUB_REVIEWS"
+        if [ -n "$STUB_REVIEWS_AFTER" ] && grep -q "^gh pr checks" "$STUB_LOG"; then
+          data="$STUB_REVIEWS_AFTER"
+        fi
+        printf '%s' "$data" | jq -r "$last"; exit $? ;;
     esac
     if [ -n "$STUB_VIEW_FAIL" ]; then echo "GraphQL: Could not resolve" >&2; exit 1; fi
     printf '%s\\n' "$STUB_SHA"; exit 0 ;;
   "pr checks")
+    case "$*" in
+      *"--json"*)
+        for last; do :; done
+        printf '%s' "$STUB_CHECKS_JSON" | jq -r "$last"; exit $? ;;
+    esac
     if [ -n "$STUB_NO_CHECKS" ]; then
       # Real gh 2.104.0, observed on a PR with no checks (plain and --watch --fail-fast).
       echo "no checks reported on the 'feature' branch" >&2; exit 1
@@ -79,6 +88,8 @@ def run(
     author: str = OWNER,
     reviews: list[dict[str, object]] | None = None,
     author_fail: bool = False,
+    sentinel: tuple[str, str] = ("SUCCESS", "SUCCESS"),
+    later_reviews: list[dict[str, object]] | None = None,
 ) -> tuple[int, str, list[str]]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -97,7 +108,12 @@ def run(
         "STUB_ORIGIN": origin,
         "STUB_AUTHOR": author,
         "STUB_REVIEWS": json.dumps({"reviews": reviews or []}),
+        "STUB_CHECKS_JSON": json.dumps(
+            [{"name": "checks", "state": sentinel[0]}, {"name": "secrets", "state": sentinel[1]}]
+        ),
     }
+    if later_reviews is not None:
+        env["STUB_REVIEWS_AFTER"] = json.dumps({"reviews": later_reviews})
     if author_fail:
         env["STUB_AUTHOR_FAIL"] = "1"
     if no_checks:
@@ -117,6 +133,7 @@ def run(
     return proc.returncode, proc.stdout + proc.stderr, log.read_text().splitlines()
 
 
+SENTINEL = "gh pr checks 55 --repo BoxDelta/aether --json name,state --jq"
 AUTHOR = "gh pr view 55 --repo BoxDelta/aether --json author --jq .author.login"
 
 
@@ -135,10 +152,12 @@ def test_reviewed_commit_matches_merges_that_exact_head(tmp_path: Path) -> None:
     code, _, calls = run(tmp_path, "55", HEAD[:12])
 
     assert code == 0
+    calls = [SENTINEL if c.startswith(SENTINEL) else c for c in calls]
     assert calls == [
         "gh pr view 55 --repo BoxDelta/aether --json headRefOid --jq .headRefOid",
         AUTHOR,
         "gh pr checks 55 --repo BoxDelta/aether --watch --fail-fast",
+        SENTINEL,
         f"gh pr merge 55 --repo BoxDelta/aether --merge --delete-branch "
         f"--match-head-commit {HEAD} --admin",
         "git remote get-url origin",
@@ -183,11 +202,21 @@ def test_gh_view_failure_does_not_merge(tmp_path: Path) -> None:
     assert calls == ["gh pr view 55 --repo BoxDelta/aether --json headRefOid --jq .headRefOid"]
 
 
-def test_without_reviewed_commit_still_pins_the_viewed_head(tmp_path: Path) -> None:
-    code, _, calls = run(tmp_path, "55")
+def test_owner_pr_without_a_reviewed_commit_is_refused(tmp_path: Path) -> None:
+    code, out, calls = run(tmp_path, "55")
+
+    assert code == 1
+    assert "pass the reviewed commit" in out
+    assert not merged(calls)
+    assert not any(c.startswith("gh pr checks") for c in calls)
+
+
+@needs_jq
+def test_bot_pr_without_a_reviewed_commit_still_pins_the_viewed_head(tmp_path: Path) -> None:
+    code, _, calls = run(tmp_path, "55", author=BOT, reviews=[_review("APPROVED")])
 
     assert code == 0
-    assert f"--match-head-commit {HEAD}" in calls[3]
+    assert f"--match-head-commit {HEAD}" in merge_call(calls)
 
 
 # --- hardened reviewed-commit and head checks (#60 review) ---------------------------
@@ -326,6 +355,38 @@ def test_owner_approval_after_changes_requested_counts(tmp_path: Path) -> None:
     reviews = [_review("CHANGES_REQUESTED"), _review("APPROVED")]
     code, _, calls = run(tmp_path, "55", HEAD[:7], author=BOT, reviews=reviews)
     assert code == 0 and merged(calls)
+
+
+@pytest.mark.parametrize(
+    "sentinel",
+    [("SUCCESS", "FAILURE"), ("PENDING", "SUCCESS"), ("SUCCESS", "SKIPPING")],
+    ids=["secrets-failed", "checks-pending", "secrets-skipped"],
+)
+@needs_jq
+def test_admin_merge_needs_both_sentinel_jobs_to_have_succeeded(
+    tmp_path: Path, sentinel: tuple[str, str]
+) -> None:
+    code, out, calls = run(tmp_path, "55", HEAD[:7], sentinel=sentinel)
+
+    assert code == 1
+    assert "'checks' and 'secrets' have not both succeeded; not merging" in out
+    assert not merged(calls)
+
+
+@needs_jq
+def test_bot_approval_withdrawn_while_checks_ran_does_not_merge(tmp_path: Path) -> None:
+    code, out, calls = run(
+        tmp_path,
+        "55",
+        HEAD[:7],
+        author=BOT,
+        reviews=[_review("APPROVED")],
+        later_reviews=[_review("APPROVED"), _review("CHANGES_REQUESTED")],
+    )
+
+    assert code == 1
+    assert f"BoxDelta's approval of {HEAD} is gone; not merging" in out
+    assert not merged(calls)
 
 
 def test_unknown_author_is_treated_like_the_bot(tmp_path: Path) -> None:
