@@ -96,6 +96,15 @@ Option 3, within the limits below.
 
 ### Trust
 
+> **Amended by ADR-042 (Accepted 2026-11-28):** an issue opened by the Discord
+> bot (`boxdelta-dispatch`) also counts as the owner's, but only with a valid
+> Ed25519 signature bound to that issue; the signature then stands in for
+> `dispatch:auto` and `dispatch:claude-only`, for the `claude` route only.
+> Everything below still applies to every other issue. The bot, a separate
+> program, adds those two labels; "the dispatcher never adds" (Local path)
+> still holds for the dispatcher. This takes effect when the bot and `verify`
+> are built; until then only the owner's issues count.
+
 -   The dispatcher acts on an issue only when **both** are true: the
     issue was opened by `BoxDelta` **and** the `dispatch:auto` label was
     added by `BoxDelta`. It checks who added the label in the issue's event history, not
@@ -354,6 +363,11 @@ each sorted issue.
 
 ### Credentials
 
+> **Amended by ADR-042 (Accepted 2026-11-28):** the Discord bot token is not in
+> `dispatch.env`. The bot runs as its own Linux user and keeps its Discord
+> token, its own GitHub token and its signing key in `/etc/aether-bot/`, which
+> the dispatcher and the owner's user do not read.
+
 -   GitHub (amended by ADR-041, Accepted; until the cut-over the owner's
     fine-grained token is used): a classic token of the machine user
     `boxdelta-dispatch`, scope `public_repo` only, 90-day expiry. The
@@ -369,7 +383,7 @@ each sorted issue.
 -   Dispatcher secrets live outside the repository in
     `~/.config/aether-dispatch/`, split per service, each file mode 600:
     `dispatch.env` (the dispatcher's own: GitHub token, LiteLLM key,
-    later the Discord bot token and webhook URL), `litellm.env`,
+    later the webhook URL), `litellm.env`,
     `llama-swap.env`, `langfuse.env` and `arcane.env`. Each service
     reads only its own file; the dispatcher reads only `dispatch.env`
     and refuses it if group or others can read it. Only the variable
