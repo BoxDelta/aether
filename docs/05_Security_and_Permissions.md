@@ -514,19 +514,29 @@ unattended, so it is the main case for this section:
 
 -   Aider runs in bubblewrap with only `/usr` and `/etc` from the host
     (read-only), an empty home, no `/run` (no Docker socket, D-Bus or
-    agent sockets), the repository's git dir read-only, and only the
-    local model's LiteLLM key in its environment. The host checks
-    afterwards that nothing in the git dir changed.
--   Known limit: Aider shares the host network, because the local model
-    is on loopback. It can reach other loopback services and the
-    internet. Aider runs no shell commands and fetches no URLs (both
-    off), so this matters only if Aider itself is compromised.
+    agent sockets), the repository's git dir read-only, and no
+    credential: its LiteLLM key is a dummy. The host checks afterwards
+    that nothing in the git dir changed.
+-   The sandbox has no network (#202). Aider reaches the local model only
+    through a Unix socket bound into the sandbox. The bridge behind it
+    forwards only `POST /v1/chat/completions` with model `local` and the
+    body keys Aider sends, adds the real key outside the sandbox, and
+    refuses every other route or body param (403), so LiteLLM's admin
+    routes and per-request `api_base`/`user_config` style overrides
+    can't be used (#210). Other loopback
+    services (Postgres, n8n, Plane) and
+    the internet are unreachable. A test runs the real sandbox and
+    checks this on the owner's PC; Sentinel's runner has no
+    `/usr/bin/python3` for the sandbox, so there it is skipped and only
+    the sandbox arguments and the bridge are checked.
 -   Tests run in Docker with `--network none`, read-only, no
     capabilities, CPU, memory and process limits, and a hard timeout,
     on an export of exactly the checked index.
 -   Host git ignores the owner's global config and runs no hooks.
 -   A fixed path check blocks anything on the always-Claude list before
-    a pull request opens; the owner still reviews and merges.
+    a pull request opens, and gitleaks scans exactly what would be
+    pushed before the tests and any push; a finding of either turns the try into a Claude brief. The
+    owner still reviews and merges.
 
 ## 9. Audit and observability
 
@@ -645,7 +655,11 @@ Sentinel's dependency layer is GitHub Dependabot (#34):
     `docker-compose.yml` (`docker-compose` ecosystem, #52) gets digest
     and 18.x updates only. Major versions are ignored, because they need
     an upgrade plan (ADR-020). Sentinel tests each update against a live
-    database.
+    database. The dispatcher's test image (`docker` ecosystem,
+    `dispatch/test-image`, #204) gets digest and patch updates only.
+    Sentinel does not build that image, so the first build of a bump is
+    on the owner's PC, the next time the dispatcher tests a diff; the
+    owner checks those PRs by hand.
 -   **Cooldown:** version updates wait 7 days after a release before
     being proposed, so a compromised or broken release has time to be
     noticed and pulled. Security updates are not delayed.
