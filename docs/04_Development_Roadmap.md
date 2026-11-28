@@ -30,7 +30,7 @@ Deliverables:
 -   Branch protection on `main` (checks must pass) once Phase 1 adds
     tests. It could not be enforced on GitHub Free while the repository
     was private; since the public flip (2026-11-14, ADR-022) the
-    `protect-main` ruleset enforces it (docs/05 §10.1). The owner still
+    `protect-main` ruleset enforces it (docs/05 §10.1; now the `checks` and `review` rulesets, ADR-041). The owner still
     merges with the `safemerge` function, which waits for checks
     (ADR-018, #10).
 

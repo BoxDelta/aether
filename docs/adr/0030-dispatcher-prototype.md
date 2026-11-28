@@ -354,13 +354,15 @@ each sorted issue.
 
 ### Credentials
 
--   GitHub (to be superseded by ADR-041 once accepted): a classic token of the machine user
+-   GitHub (amended by ADR-041, Proposed; until the cut-over the owner's
+    fine-grained token is used): a classic token of the machine user
     `boxdelta-dispatch`, scope `public_repo` only, 90-day expiry. The
     account is a collaborator on `BoxDelta/aether` only. The `review`
     ruleset requires one code-owner approval (only the owner's counts),
     with stale approvals dismissed and the most recent push approved; only
     the owner (admin) can bypass it, and the `checks` ruleset has no
-    bypass at all (ADR-041), so the dispatcher can't merge its own pull requests; its code also has
+    bypass at all (ADR-041), so the dispatcher can't merge its own pull requests without the owner's
+    approval of the latest push; its code also has
     no merge call, and a test checks it never calls GitHub's merge
     endpoint. Until the owner swaps the token, the earlier fine-grained
     owner token stays, and the local path is skipped.

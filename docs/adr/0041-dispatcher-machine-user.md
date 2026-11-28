@@ -44,14 +44,15 @@ of step 4b).
         **bypass list is empty**: nobody skips it, not even the owner.
     -   **`review`**: a pull request is required (nobody pushes to `main`
         directly), one approving review **from a code owner** (`* @BoxDelta`
-        is the first rule in `.github/CODEOWNERS`, so only the owner's
-        approval counts), stale approvals dismissed when new commits are
+        is the first rule in `.github/CODEOWNERS`, added by #215; it must be
+        merged before the cut-over, since a file with no code owner takes
+        an approval from any writer, so only the owner's approval counts), stale approvals dismissed when new commits are
         pushed, and the most recent push approved by someone other than its
         pusher. The **only bypass is the repository admin role**, for pull
         requests only, so the owner can merge their own pull requests but
         can't push to `main` directly.
 
-    Then the machine user can't merge, even though `public_repo` with
+    Then the machine user can't merge without the owner's code-owner approval of the latest push, even though `public_repo` with
     write access could call the merge endpoint. The dispatcher's code
     still has no merge call and a test checks it. The owner merges their
     own pull requests with the bypass (`safemerge`, which uses `--admin`
@@ -110,8 +111,8 @@ of step 4b).
     path only reads, so it keeps working with either token.
 -   A stolen token can push branches, open and comment on pull requests and
     issues, edit issue text, and add or remove labels on this repository
-    until it is deleted. It can't merge or push to `main` (`protect-main`
-    with the rules in decision 3), can't change workflows (no `workflow`
+    until it is deleted. It can't push to `main` or merge without the owner's code-owner
+    approval of the latest push (the `checks` and `review` rulesets, decision 3), can't change workflows (no `workflow`
     scope), and its labels never pass the trust checks.
 -   It could edit the body of an owner's issue after the owner labelled it,
     so the local model and the brief would read text the owner didn't
@@ -139,9 +140,11 @@ of step 4b).
     owner's token, so its pull requests show `BoxDelta` as author and
     `safemerge` treats them as the owner's own: the reviewed hash is the
     check. After the swap they show `boxdelta-dispatch`.
--   The owner's own credentials (the gh CLI, Claude Code sessions) are
-    admin: they can use the `review` bypass or edit the rulesets. That is
-    held by rules (`CLAUDE.md` rule 5, the `gh pr merge` deny rule), not by
-    GitHub. Nothing the machine user holds can do it.
+-   The owner's own credentials (the gh CLI, Claude Code sessions, and the
+    dispatcher until the cut-over) are admin: they can use the `review`
+    bypass or edit the rulesets. That is held by rules (`CLAUDE.md` rule 5;
+    the `gh pr merge` deny rule covers only that command, not `gh api`)
+    and, for the dispatcher, by its code having no merge call (a test
+    checks it), not by GitHub. The machine user's token can't do it.
 -   If the repository becomes private, `public_repo` stops working and this
     ADR needs revisiting (the `repo` scope is much wider).

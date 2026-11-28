@@ -586,7 +586,7 @@ in an AI. Since the public flip on 2026-11-14 (ADR-022), part of it
 does; the rest is still only a rule.
 
 **Enforced by two rulesets on `main`** (ADR-022 "Ruleset design",
-amended by ADR-041, #215):
+to be amended by ADR-041, Proposed; owner decision, #215):
 
 -   **`checks`**, with an **empty bypass list** (nobody skips it, not even
     the owner):
@@ -599,9 +599,10 @@ amended by ADR-041, #215):
     bypass, for pull requests only:
     -   a pull request is required; nobody can push directly to `main`;
     -   one approving review from a **code owner** is required.
-        `.github/CODEOWNERS` has `* @BoxDelta` as its first rule, so only
-        the owner's approval counts, not one from the dispatcher's machine
-        user;
+        `.github/CODEOWNERS` has `* @BoxDelta` as its first rule (added by
+        #215; merge it before the token cut-over, because a file with no
+        owner takes an approval from any writer), so only the owner's
+        approval counts, not one from the dispatcher's machine user;
     -   stale approvals are dismissed when new commits are pushed, and the
         most recent push must be approved by someone other than its
         pusher.
