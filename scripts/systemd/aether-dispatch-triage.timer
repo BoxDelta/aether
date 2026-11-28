@@ -1,7 +1,7 @@
 # Template (ADR-030, #135): runs aether-dispatch-triage.service every 15 minutes.
 # Not installed by the repo. Install steps: dispatch/README.md.
 [Unit]
-Description=AETHER dispatcher dry-run triage every 15 minutes
+Description=AETHER dispatcher run every 15 minutes
 
 [Timer]
 OnCalendar=*:0/15

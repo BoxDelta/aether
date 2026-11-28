@@ -86,7 +86,7 @@ def test_payload_shape() -> None:
     assert payload["temperature"] == 0
     assert payload["max_tokens"] == 200
     assert payload["chat_template_kwargs"] == {"enable_thinking": False}
-    assert payload["metadata"] == {"trace_name": "dispatch-triage", "tags": ["dry-run", "issue-7"]}
+    assert payload["metadata"] == {"trace_name": "dispatch-triage", "tags": ["triage", "issue-7"]}
 
 
 def test_issue_text_is_delimited_json_data() -> None:
