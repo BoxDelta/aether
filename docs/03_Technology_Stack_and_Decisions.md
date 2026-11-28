@@ -105,7 +105,7 @@ materially interfere with gaming or normal use. - Unload local models
 when idle if that improves resource availability.
 
 **Measured on this PC (2026-11-27, `tests/local-model/README.md`,
-ADR-040, Proposed):**
+ADR-040, Accepted):**
 - **Model:** Qwen3.6-35B-A3B Q4_K_M under llama-swap, with
   `--n-cpu-moe 35` and a 16k context.
 - **VRAM:** about 1.9 GiB stays free while loaded, above the 1.5 GB

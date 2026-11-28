@@ -1,6 +1,6 @@
 # ADR-040: Local model via llama-swap
 
-**Status:** Proposed\
+**Status:** Accepted (owner, 2026-11-27)\
 **Date:** 2026-11-27\
 **Owner:** BoxDelta
 
