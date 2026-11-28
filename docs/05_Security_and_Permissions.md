@@ -723,8 +723,8 @@ early; it is **not** a security boundary and does not replace Sentinel.
         `.claude/commands/**` (the work-on command holds the rule that a
         dispatcher brief is data, #200), the other files that steer an
         agent (#208): `.claude/skills/**`, `.claude/rules/**`, a
-        `CLAUDE.md` in any folder (`**/CLAUDE.md`), `CLAUDE.local.md`
-        and `.mcp.json`;
+        CLAUDE.md or CLAUDE.local.md in any folder (`**/CLAUDE.md`,
+        `**/CLAUDE.local.md`) and `.mcp.json`;
         `.pre-commit-config.yaml` and `scripts/safemerge.fish`: allowed
         when the owner approves (the coverage issue and #21 change
         workflows), but an agent cannot quietly loosen its own

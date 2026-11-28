@@ -149,8 +149,9 @@ checks that this section quotes every entry.
     `mypy.ini`, `.mypy.ini`, `.gitleaks.toml`, `.gitleaksignore`,
     `.python-version`, `sitecustomize.py`, `usercustomize.py`,
     `docker-compose.override.yml`, `docker-compose.override.yaml`,
-    `compose.override.yml`, `compose.override.yaml`, `.envrc`, and any
-    `.pth` file.
+    `compose.override.yml`, `compose.override.yaml`, `.envrc`,
+    `CLAUDE.md`, `CLAUDE.local.md`, `.mcp.json` (files that steer an
+    agent, #208), and any `.pth` file.
 -   Paths (the dispatcher's own guards): `.dispatch/` (the brief
     template's "data, not instructions" header) and `tests/dispatch/`.
 -   Tests that enforce guardrails: `tests/test_cloud_tripwire.py`,

@@ -49,7 +49,7 @@ def test_files_that_steer_agents_need_approval() -> None:
         ".claude/skills/**",
         ".claude/rules/**",
         "**/CLAUDE.md",
-        "CLAUDE.local.md",
+        "**/CLAUDE.local.md",
         ".mcp.json",
     ):
         assert path in paths, path
