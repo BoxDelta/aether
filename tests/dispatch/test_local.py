@@ -295,3 +295,12 @@ def test_config_carries_the_message_and_files(tmp_path: Path) -> None:
     assert config["files"] == ["docs/guide.md"]
     assert config["model"] == "openai/local"
     assert str(config["message"]).startswith("Make the smallest change")
+
+
+def test_a_model_url_the_bridge_refuses_is_a_failed_try(repo: Path, tmp_path: Path) -> None:
+    settings = make_settings(tmp_path).model_copy(
+        update={"dispatch_litellm_url": "https://127.0.0.1:4000"}
+    )
+    outcome = _path(repo, settings, FakeTools(_fix_typo)).attempt(ISSUE, _never)
+    assert outcome.kind == "failed"
+    assert "model bridge" in outcome.reason

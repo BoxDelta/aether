@@ -61,7 +61,9 @@ updates:
       prefix: "docker"
 
   # The dispatcher's test image (ADR-030 step 4b, #204). The base is pinned by
-  # digest; these PRs bump it, and Sentinel runs the suite as usual.
+  # digest. Digest and patch bumps only: the Python minor must match
+  # .python-version. Sentinel does not build this image, so the owner checks
+  # these PRs by hand; the dispatcher rebuilds it on the next local try.
   - package-ecosystem: "docker"
     directory: "/dispatch/test-image"
     schedule:
@@ -69,5 +71,8 @@ updates:
       day: "monday"
     cooldown:
       default-days: 7
+    ignore:
+      - dependency-name: "python"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
     commit-message:
       prefix: "docker"

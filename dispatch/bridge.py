@@ -22,6 +22,8 @@ from urllib.parse import urlsplit
 CHUNK = 65536
 BACKLOG = 8
 CONNECT_TIMEOUT_S = 10.0
+IDLE_TIMEOUT_S = 300.0  # longer than the slowest local-model reply (stream off)
+MAX_CONNECTIONS = 16  # Aider uses one or two; more are closed at once
 
 
 def target(url: str) -> tuple[str, int]:
@@ -50,24 +52,58 @@ def pump(source: socket.socket, sink: socket.socket) -> None:
             sink.shutdown(socket.SHUT_WR)
 
 
-def _serve_one(client: socket.socket, host: str, port: int) -> None:
-    with client:
-        try:
-            upstream = socket.create_connection((host, port), timeout=CONNECT_TIMEOUT_S)
-        except OSError:
-            return
-        with upstream:
-            upstream.settimeout(None)
-            back = threading.Thread(target=pump, args=(upstream, client), daemon=True)
-            back.start()
-            pump(client, upstream)
-            back.join()
+class _Open:
+    """The bridge's open sockets, so all of them close when the try ends."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.sockets: set[socket.socket] = set()
+        self.slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
+
+    def add(self, sock: socket.socket) -> None:
+        with self.lock:
+            self.sockets.add(sock)
+
+    def discard(self, sock: socket.socket) -> None:
+        with self.lock:
+            self.sockets.discard(sock)
+
+    def close_all(self) -> None:
+        with self.lock:
+            open_now = list(self.sockets)
+        for sock in open_now:
+            with contextlib.suppress(OSError):
+                sock.shutdown(socket.SHUT_RDWR)
+
+
+def _serve_one(client: socket.socket, host: str, port: int, opened: _Open) -> None:
+    opened.add(client)
+    try:
+        with client:
+            client.settimeout(IDLE_TIMEOUT_S)
+            try:
+                upstream = socket.create_connection((host, port), timeout=CONNECT_TIMEOUT_S)
+            except OSError:
+                return
+            opened.add(upstream)
+            with upstream:
+                upstream.settimeout(IDLE_TIMEOUT_S)
+                back = threading.Thread(target=pump, args=(upstream, client), daemon=True)
+                back.start()
+                pump(client, upstream)
+                back.join()
+            opened.discard(upstream)
+    finally:
+        opened.discard(client)
+        opened.slots.release()
 
 
 @contextlib.contextmanager
 def unix_bridge(path: Path, url: str) -> Iterator[Path]:
-    """Listen on ``path`` (mode 600) and forward every connection to ``url``."""
+    """Listen on ``path`` (mode 600) and forward each connection to ``url``: at most
+    ``MAX_CONNECTIONS`` at once, idle ones dropped, all closed on exit."""
     host, port = target(url)
+    opened = _Open()
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     old = os.umask(0o177)
@@ -84,7 +120,12 @@ def unix_bridge(path: Path, url: str) -> Iterator[Path]:
                 client, _ = server.accept()
             except OSError:
                 return
-            threading.Thread(target=_serve_one, args=(client, host, port), daemon=True).start()
+            if not opened.slots.acquire(blocking=False):
+                client.close()  # over the limit
+                continue
+            threading.Thread(
+                target=_serve_one, args=(client, host, port, opened), daemon=True
+            ).start()
 
     thread = threading.Thread(target=accept, daemon=True)
     thread.start()
@@ -96,4 +137,5 @@ def unix_bridge(path: Path, url: str) -> Iterator[Path]:
             server.shutdown(socket.SHUT_RDWR)
         server.close()
         thread.join(timeout=5)
+        opened.close_all()
         path.unlink(missing_ok=True)

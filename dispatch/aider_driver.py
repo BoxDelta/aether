@@ -26,6 +26,9 @@ import threading
 from pathlib import Path
 
 CHUNK = 65536
+IDLE_TIMEOUT_S = 300.0
+MAX_CONNECTIONS = 16
+_slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
 
 
 def _pump(source: socket.socket, sink: socket.socket) -> None:
@@ -40,15 +43,20 @@ def _pump(source: socket.socket, sink: socket.socket) -> None:
 
 
 def _serve(client: socket.socket, socket_path: str) -> None:
-    with client, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as upstream:
-        try:
-            upstream.connect(socket_path)
-        except OSError:
-            return
-        back = threading.Thread(target=_pump, args=(upstream, client), daemon=True)
-        back.start()
-        _pump(client, upstream)
-        back.join()
+    try:
+        with client, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as upstream:
+            client.settimeout(IDLE_TIMEOUT_S)
+            upstream.settimeout(IDLE_TIMEOUT_S)
+            try:
+                upstream.connect(socket_path)
+            except OSError:
+                return
+            back = threading.Thread(target=_pump, args=(upstream, client), daemon=True)
+            back.start()
+            _pump(client, upstream)
+            back.join()
+    finally:
+        _slots.release()
 
 
 def start_forwarder(socket_path: str) -> int:
@@ -60,6 +68,9 @@ def start_forwarder(socket_path: str) -> int:
     def accept() -> None:
         while True:
             client, _ = server.accept()
+            if not _slots.acquire(blocking=False):
+                client.close()
+                continue
             threading.Thread(target=_serve, args=(client, socket_path), daemon=True).start()
 
     threading.Thread(target=accept, daemon=True).start()

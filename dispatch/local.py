@@ -346,8 +346,13 @@ class LocalPath:
         (scratch / "config.json").write_text(json.dumps(config), "utf-8")
         args = [*sandbox_args(self.root, work, scratch, gitdir), *aider_args(scratch)]
         # No network in the sandbox (#202): the model only through this socket.
-        with bridge.unix_bridge(scratch / "sock" / "llm.sock", self.settings.dispatch_litellm_url):
-            result = self.run(args, sandbox_env(self.settings), work, AIDER_TIMEOUT_S)
+        try:
+            with bridge.unix_bridge(
+                scratch / "sock" / "llm.sock", self.settings.dispatch_litellm_url
+            ):
+                result = self.run(args, sandbox_env(self.settings), work, AIDER_TIMEOUT_S)
+        except (ValueError, OSError) as error:  # a failed try, not a crashed run
+            raise LocalError(f"model bridge: {type(error).__name__}") from None
         if result.returncode != 0:
             raise LocalError(f"aider failed: {tail(result.stderr or result.stdout)}")
 

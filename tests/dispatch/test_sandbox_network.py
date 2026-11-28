@@ -129,3 +129,23 @@ def test_model_socket_is_private(tmp_path: Path, fake_litellm: int) -> None:
         assert sock.stat().st_mode & 0o077 == 0
         assert (sock.parent.stat().st_mode & 0o777) == 0o700
     assert not sock.exists()
+
+
+def test_bridge_caps_connections_and_closes_them_on_exit(
+    tmp_path: Path, fake_litellm: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(bridge, "MAX_CONNECTIONS", 2)
+    sock = tmp_path / "sock" / "llm.sock"
+    held: list[socket.socket] = []
+    with bridge.unix_bridge(sock, f"http://127.0.0.1:{fake_litellm}"):
+        for _ in range(3):
+            client = socket.socket(socket.AF_UNIX)
+            client.settimeout(5)
+            client.connect(str(sock))
+            held.append(client)
+        assert held[2].recv(10) == b""  # the third is closed at once
+        held[0].sendall(b"ping")
+        assert held[0].recv(10) == b"pong"
+    assert held[1].recv(10) == b""  # still open at exit: closed by the bridge
+    for client in held:
+        client.close()

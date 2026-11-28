@@ -520,7 +520,9 @@ unattended, so it is the main case for this section:
 -   The sandbox has no network (#202). Aider reaches the local model only
     through a Unix socket bound into the sandbox that forwards to LiteLLM
     and nowhere else; other loopback services (Postgres, n8n, Plane) and
-    the internet are unreachable (tested with the real sandbox).
+    the internet are unreachable. A test runs the real sandbox and
+    checks this on the owner's PC; Sentinel has no bubblewrap, so there
+    it is skipped and only the sandbox arguments are checked.
 -   Tests run in Docker with `--network none`, read-only, no
     capabilities, CPU, memory and process limits, and a hard timeout,
     on an export of exactly the checked index.
@@ -641,7 +643,11 @@ Sentinel's dependency layer is GitHub Dependabot (#34):
     `docker-compose.yml` (`docker-compose` ecosystem, #52) gets digest
     and 18.x updates only. Major versions are ignored, because they need
     an upgrade plan (ADR-020). Sentinel tests each update against a live
-    database.
+    database. The dispatcher's test image (`docker` ecosystem,
+    `dispatch/test-image`, #204) gets digest and patch updates only.
+    Sentinel does not build that image, so the first build of a bump is
+    on the owner's PC, the next time the dispatcher tests a diff; the
+    owner checks those PRs by hand.
 -   **Cooldown:** version updates wait 7 days after a release before
     being proposed, so a compromised or broken release has time to be
     noticed and pulled. Security updates are not delayed.

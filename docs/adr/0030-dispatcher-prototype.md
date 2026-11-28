@@ -209,9 +209,14 @@ one issue sorted `local` per run.
     (`dispatch/bridge.py`, standard library, no socat), which forwards to
     the LiteLLM URL from the settings and nothing else; inside, the
     driver listens on the sandbox's own loopback and forwards to that
-    socket. A test runs the real sandbox and checks that Postgres, n8n,
-    Plane, Langfuse, LiteLLM and llama-swap ports and the internet are
-    unreachable, and that the socket works.
+    socket. The bridge allows at most 16 connections, drops idle ones
+    after 300 s, and closes them all when the try ends. A test runs the
+    real sandbox and checks that Postgres, n8n, Plane, Langfuse, LiteLLM
+    and llama-swap ports and the internet are unreachable, and that the
+    socket works; it runs on the owner's PC and is skipped in Sentinel
+    (no bubblewrap there). The bridge forwards any LiteLLM path, so the
+    dispatcher's LiteLLM key must be a virtual key limited to the model
+    `local`, never the master key (#210).
 -   **After Aider**, the host checks that the worktree's `.git` file, the
     git dir's files (`commondir`, `gitdir`, `HEAD`, no new ones) and
     HEAD's branch and commit are unchanged, then rebuilds the index from
