@@ -144,10 +144,10 @@ Option 4.
         Charter reserve;
     -   generation about 41 tok/s, prompt reading about 314 tok/s;
     -   `ttl` raised to 900 s.
--   **D2. Desktop feel: open.** The owner checks by hand that the
-    desktop stays usable while a long reply (about 2 minutes) is
-    generating, with the services running. The result is recorded here
-    and in `tests/local-model/README.md`. If it isn't usable, use a
+-   **D2. Desktop feel: passed.** A 5,000-token reply (about 2 minutes,
+    40.0 tok/s) ran with the services running. The owner used the
+    desktop normally and reported no problems (2026-11-27). Details in
+    `tests/local-model/README.md` §3. If this changes later, use a
     higher `--n-cpu-moe` or a smaller context.
 
 ## Consequences

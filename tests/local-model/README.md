@@ -163,4 +163,6 @@ through llama-swap directly after restarting the container.
 - **Prompt reading:** 314 tok/s on a 2,118-token prompt. Short prompts
   read slower (28–47 tok/s), as before.
 - **System RAM while loaded:** 22.4 GB available (`free -m`).
-- **Desktop feel (ADR-040 D2):** not yet reported by the owner.
+- **Desktop feel (ADR-040 D2):** a 5,000-token reply ran for about 2
+  minutes 5 s at 40.0 tok/s (03:05:57 to 03:08:02 UTC). The owner used
+  the desktop normally meanwhile and reported no problems.
