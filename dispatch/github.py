@@ -22,9 +22,9 @@ LOCAL_OK_LABEL = "dispatch:local-ok"
 LOCAL_PR_LABEL = "dispatch:local"
 CLAUDE_LABEL = "dispatch:claude"
 READ_METHODS = frozenset({"GET"})
-# Step 4b writes. Anything else is refused before it is sent. The label body is
-# checked too: the dispatcher's fine-grained token acts as the owner, so GitHub's
-# event history can't tell its labels from the owner's (ADR-030 §Trust).
+# Step 4b writes. Anything else is refused before it is sent, label bodies too.
+# The token belongs to the machine user (ADR-041), so its labels show as the bot
+# and the trust checks below never count them.
 ALLOWED_LABEL_BODIES = (b'{"labels":["dispatch:local"]}', b'{"labels":["dispatch:claude"]}')
 TIMEOUT_S = 20.0
 MAX_PAGES = 20
@@ -178,16 +178,59 @@ def check_author(issue: Issue, settings: DispatchSettings) -> TrustCheck:
     return TrustCheck(True, "opened by the owner")
 
 
+@dataclass(frozen=True, slots=True)
+class Actor:
+    login: str
+    kind: str  # GitHub's account type: "User", "Bot", "Organization"
+
+
 def label_adder(
     client: httpx.Client, settings: DispatchSettings, number: int, name: str = AUTO_LABEL
-) -> str | None:
-    """Who added label ``name`` last, from the issue's event history."""
-    adder: str | None = None
-    for event in _pages(client, f"{_repo_path(settings)}/issues/{number}/events", {}):
+) -> Actor | None:
+    """Who added label ``name`` last, from the issue's timeline events (ADR-041)."""
+    adder: Actor | None = None
+    for event in _pages(client, f"{_repo_path(settings)}/issues/{number}/timeline", {}):
         label = event.get("label") or {}
         if event.get("event") == "labeled" and label.get("name") == name:
-            adder = str((event.get("actor") or {}).get("login") or "")
+            actor = event.get("actor") or {}
+            adder = Actor(str(actor.get("login") or ""), str(actor.get("type") or ""))
     return adder
+
+
+def is_owner(actor: Actor | None, settings: DispatchSettings) -> bool:
+    """The owner's own account: the login matches and it is a person, never the
+    dispatcher's machine user or an app."""
+    return (
+        actor is not None
+        and actor.login == settings.dispatch_owner
+        and actor.kind == "User"
+        and actor.login != settings.dispatch_bot_login
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class TokenIdentity:
+    ok: bool
+    reason: str
+    expires: str | None = None
+
+
+def check_token_identity(client: httpx.Client, settings: DispatchSettings) -> TokenIdentity:
+    """The token is the machine user's (ADR-041): its login is ``dispatch_bot_login``,
+    never the owner's, and its only scope is ``public_repo``. The local path writes
+    only after this passes."""
+    response = _get(client, "/user")
+    data = response.json()
+    login = str(data.get("login") or "") if isinstance(data, dict) else ""
+    if login == settings.dispatch_owner:
+        return TokenIdentity(False, "the token is the owner's, not the machine user's")
+    if login != settings.dispatch_bot_login:
+        return TokenIdentity(False, "the token is not the machine user's")
+    scopes = {s.strip() for s in response.headers.get("x-oauth-scopes", "").split(",")}
+    if scopes != {"public_repo"}:
+        return TokenIdentity(False, "the token's scopes are not exactly public_repo")
+    expires = response.headers.get("github-authentication-token-expiration")
+    return TokenIdentity(True, "machine user token", expires)
 
 
 def check_trust(client: httpx.Client, settings: DispatchSettings, issue: Issue) -> TrustCheck:
@@ -200,7 +243,7 @@ def check_trust(client: httpx.Client, settings: DispatchSettings, issue: Issue) 
     adder = label_adder(client, settings, issue.number)
     if adder is None:
         return TrustCheck(False, f"no {AUTO_LABEL} label event")
-    if adder != settings.dispatch_owner:
+    if not is_owner(adder, settings):
         return TrustCheck(False, f"{AUTO_LABEL} not added by the owner")
     return TrustCheck(True, "opened and labelled by the owner")
 
@@ -210,7 +253,7 @@ def check_local_ok(client: httpx.Client, settings: DispatchSettings, issue: Issu
     if LOCAL_OK_LABEL not in issue.labels:
         return TrustCheck(False, f"no {LOCAL_OK_LABEL} label")
     adder = label_adder(client, settings, issue.number, LOCAL_OK_LABEL)
-    if adder != settings.dispatch_owner:
+    if not is_owner(adder, settings):
         return TrustCheck(False, f"{LOCAL_OK_LABEL} not added by the owner")
     return TrustCheck(True, f"{LOCAL_OK_LABEL} added by the owner")
 

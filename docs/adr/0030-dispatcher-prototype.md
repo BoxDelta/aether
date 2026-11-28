@@ -136,6 +136,7 @@ checks that this section quotes every entry.
     `.env.*`), `.gitignore`, `.gitattributes`, `.gitmodules`, `CONTRIBUTING.md`, `docker-compose.yml`,
     `compose.vault.yaml`, `scripts/systemd/`, `scripts/restore_check.sql`,
     `scripts/aether-vault.fish`, `scripts/identity_continuity.py`,
+    `scripts/dispatch_set_token.py`,
     `tests/test_workflow_pins.py`, `docs/runbooks/db-app-role.md`,
     `docs/runbooks/db-backup-restore.md`,
     `docs/runbooks/encrypted-volume.md`.
@@ -252,12 +253,14 @@ one issue sorted `local` per run.
     write client allows exactly two calls on this repository (open a
     pull request, add `dispatch:local` or `dispatch:claude`, checked in
     the request body) and refuses anything else before it is sent.
--   **Known limit (trust):** the token is a fine-grained personal access
-    token, so GitHub records its actions as the owner's. The label
-    history can't tell a label the dispatcher added from one the owner
-    added; only the write client's checks stop it adding
-    `dispatch:auto` or `dispatch:local-ok`. A separate machine user or
-    GitHub App would fix that.
+-   **Identity (ADR-041):** the token belongs to the machine user
+    `boxdelta-dispatch`, so its pull requests and labels show as that
+    account. The trust checks read the issue's timeline and count a
+    `dispatch:auto` or `dispatch:local-ok` label only if its last
+    `labeled` event was by the owner's own account (login `BoxDelta`,
+    type `User`). Before any local try, the run checks that the token is
+    the machine user's, never the owner's, with exactly `public_repo`;
+    otherwise the local path is skipped.
     Review is unchanged: Sentinel, `reviewer`, `security-reviewer` where
     `CLAUDE.md` asks, Codex on risky PRs, and the owner merges with
     `safemerge`.
@@ -307,15 +310,14 @@ each sorted issue.
 
 ### Credentials
 
--   GitHub: a fine-grained token for `BoxDelta/aether` only, with
-    Contents, Issues and Pull requests read/write, and Metadata read.
-    No Workflows, Administration, Actions or Secrets access. It expires
-    after 90 days. It has no admin rights, so `protect-main` fully
-    binds it: no direct push to `main`, no edits to `.github/workflows`.
--   It could still merge a pull request whose checks pass, because the
-    ruleset needs no approvals. That is only a rule: the dispatcher's
-    code has no merge call, and a test checks it never calls GitHub's
-    merge endpoint.
+-   GitHub (superseded by ADR-041): a classic token of the machine user
+    `boxdelta-dispatch`, scope `public_repo` only, 90-day expiry. The
+    account is a collaborator on `BoxDelta/aether` only. `protect-main`
+    requires one approval, with only the owner on the bypass list, so
+    the dispatcher can't merge its own pull requests; its code also has
+    no merge call, and a test checks it never calls GitHub's merge
+    endpoint. Until the owner swaps the token, the earlier fine-grained
+    owner token stays, and the local path is skipped.
 -   Dispatcher secrets live outside the repository in
     `~/.config/aether-dispatch/`, split per service, each file mode 600:
     `dispatch.env` (the dispatcher's own: GitHub token, LiteLLM key,

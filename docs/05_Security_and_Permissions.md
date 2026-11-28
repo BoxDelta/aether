@@ -36,9 +36,14 @@ are written by the local model from issue text, stored on the PC
 `CLAUDE.md` wins (§6). The local path (step 4b) also uses the
 dispatcher's GitHub token to push `dispatch/` branches, open pull
 requests and add two labels; it can't merge (§8, ADR-030). The token is
-a fine-grained personal access token, so GitHub shows its actions as the
-owner's: the trust check can't tell its labels from the owner's, and the
-write client refuses any other label. The dispatcher's timer runs from a main-only clone
+a classic token of the machine user `boxdelta-dispatch` (scope
+`public_repo` only, 90 days, ADR-041), so GitHub shows its actions as
+that account. The trust checks count a dispatcher label only when the
+owner's own account added it, and the local path runs only when the
+token is the machine user's. `protect-main` requires one approval with
+only the owner on the bypass list, so the machine user can't merge. The
+token is set with `scripts/dispatch_set_token.py`, which reads it from
+standard input and never prints it. The dispatcher's timer runs from a main-only clone
 (`~/Projects/aether-dispatch`), so only merged, reviewed code runs with
 the dispatcher's credentials.
 Discord is not end-to-end encrypted. The webhook URL

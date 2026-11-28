@@ -71,7 +71,7 @@ def test_eval_skips_label_check_not_author_check(tmp_path: Path) -> None:
     assert "MATCH" in lines[0]
     assert "skipped (not opened by the owner)" in lines[1]
     assert lines[-1] == "matches: 1/2"
-    assert not any(req.url.path.endswith("/events") for req in fake.requests)
+    assert not any(req.url.path.endswith("/timeline") for req in fake.requests)
 
 
 def test_fixture_is_valid() -> None:

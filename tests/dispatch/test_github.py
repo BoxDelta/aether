@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from dispatch import github
-from tests.dispatch.helpers import OWNER, FakeGitHub, issue_json, labeled, make_settings
+from tests.dispatch.helpers import BOT, OWNER, FakeGitHub, issue_json, labeled, make_settings
 
 
 def _issue(**kwargs: object) -> github.Issue:
@@ -93,11 +93,11 @@ def test_pagination_follows_next_link_on_github_only(tmp_path: Path) -> None:
         seen.append(str(request.url))
         if "page=2" in str(request.url):
             return httpx.Response(200, json=[labeled("mallory")])
-        nxt = f'<{github.API_URL}/repos/{OWNER}/aether/issues/7/events?page=2>; rel="next"'
+        nxt = f'<{github.API_URL}/repos/{OWNER}/aether/issues/7/timeline?page=2>; rel="next"'
         return httpx.Response(200, json=[labeled(OWNER)], headers={"Link": nxt})
 
     with github.make_client(settings, httpx.MockTransport(handler)) as client:
-        assert github.label_adder(client, settings, 7) == "mallory"
+        assert github.label_adder(client, settings, 7) == github.Actor("mallory", "User")
     assert len(seen) == 2
 
 
@@ -242,3 +242,50 @@ def test_write_guard_checks_label_bodies_and_the_repo(
     with client, pytest.raises(github.GitHubError, match="not an allowed"):
         client.post(path, json=body)
     assert seen == []
+
+
+@pytest.mark.parametrize(
+    ("event", "ok"),
+    [
+        (labeled(OWNER, github.LOCAL_OK_LABEL), True),
+        (labeled(BOT, github.LOCAL_OK_LABEL), False),  # the dispatcher's machine user
+        (labeled(OWNER, github.LOCAL_OK_LABEL, kind="Bot"), False),  # an app, owner's name
+        (labeled(BOT, github.LOCAL_OK_LABEL, kind="Bot"), False),
+    ],
+    ids=["owner", "machine-user", "bot-with-owner-login", "bot"],
+)
+def test_local_ok_counts_only_the_owner_from_the_timeline(
+    tmp_path: Path, event: dict[str, object], ok: bool
+) -> None:
+    settings = make_settings(tmp_path)
+    fake = FakeGitHub(events={7: [event]})
+    with fake.client(settings) as client:
+        assert github.check_local_ok(client, settings, _issue()).ok is ok
+    assert all(r.url.path.endswith("/issues/7/timeline") for r in fake.requests)
+
+
+def test_bot_label_after_the_owner_wins(tmp_path: Path) -> None:
+    # The last labeled event counts: if the bot re-adds it, the owner must add it again.
+    settings = make_settings(tmp_path)
+    events = [labeled(OWNER, github.LOCAL_OK_LABEL), labeled(BOT, github.LOCAL_OK_LABEL)]
+    with FakeGitHub(events={7: events}).client(settings) as client:
+        assert not github.check_local_ok(client, settings, _issue()).ok
+
+
+@pytest.mark.parametrize(
+    ("login", "scopes", "ok", "reason"),
+    [
+        (BOT, "public_repo", True, "machine user token"),
+        (OWNER, "public_repo", False, "the owner's"),
+        ("someone", "public_repo", False, "not the machine user's"),
+        (BOT, "public_repo, repo", False, "exactly public_repo"),
+        (BOT, "repo", False, "exactly public_repo"),
+        (BOT, "", False, "exactly public_repo"),
+    ],
+)
+def test_token_identity(tmp_path: Path, login: str, scopes: str, ok: bool, reason: str) -> None:
+    settings = make_settings(tmp_path)
+    fake = FakeGitHub(token_login=login, token_scopes=scopes)
+    with fake.client(settings) as client:
+        identity = github.check_token_identity(client, settings)
+    assert identity.ok is ok and reason in identity.reason

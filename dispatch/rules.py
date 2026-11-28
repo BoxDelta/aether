@@ -46,6 +46,7 @@ ALWAYS_CLAUDE_PATHS: tuple[str, ...] = (
     "scripts/restore_check.sql",
     "scripts/aether-vault.fish",
     "scripts/identity_continuity.py",
+    "scripts/dispatch_set_token.py",
     "tests/test_workflow_pins.py",
     "docs/runbooks/db-app-role.md",
     "docs/runbooks/db-backup-restore.md",
