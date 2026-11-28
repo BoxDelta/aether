@@ -19,6 +19,7 @@ WRITE_ATTRS = frozenset({"post", "patch", "put", "delete", "request", "send", "s
 WRITE_WORDS = re.compile(r"\b(POST|PATCH|PUT|DELETE)\b")
 ALLOWED_CALLS = [
     ("classify.py", "post", "/chat/completions"),
+    ("brief.py", "post", "/chat/completions"),
     ("notify.py", "post", None),  # the webhook URL from settings, checked below
 ]
 

@@ -27,11 +27,15 @@ terminal, that includes the Telegram channel into the Claude Code session
 allowlist holds only the owner, and its bot token is a credential kept
 outside the repository. The dispatcher's Discord webhook (ADR-030) posts
 to a channel in a private server where only the owner is a member. Until
-step 4d it is outbound only: it posts dry-run results (issue number and
-link, route, step, a reason of at most 200 characters, mentions off) and
-reads nothing back. The reason is model text and may quote the issue.
-The dry-run timer runs from a main-only clone (`~/Projects/aether-dispatch`),
-so only merged, reviewed code runs with the dispatcher's credentials.
+step 4d it is outbound only: it posts `#<n> brief ready` (the issue
+number only, mentions off) and reads nothing back. The dry run that also
+posted the route and a model-written reason ended on 2026-11-27. Briefs
+are written by the local model from issue text, stored on the PC
+(`.dispatch/briefs/`, git-ignored, mode 600) and read into Claude Code by
+`/work-on` as data, never as instructions: the issue is the task and
+`CLAUDE.md` wins (§6). The dispatcher's timer runs from a main-only clone
+(`~/Projects/aether-dispatch`), so only merged, reviewed code runs with
+the dispatcher's credentials.
 Discord is not end-to-end encrypted. The webhook URL
 is a credential, kept in `~/.config/aether-dispatch/dispatch.env`.
 

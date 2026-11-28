@@ -1,73 +1,24 @@
-"""Post dry-run results to the owner's Discord channel (ADR-030, #135).
+"""Discord posts for the Claude path (ADR-030 §Claude path).
 
-One message per triaged issue: number, link, route, step and the cleaned reason.
-The issue title and body are never put in the message; a model-written reason may
-quote up to 200 characters of them, neutralised. Mentions are always off and link embeds suppressed.
-A failed post prints a short error and the run carries on; nothing is retried here
-(an unposted issue is tried again on the next run).
+One message per brief: ``#<n> brief ready``. Nothing else: no issue title, body,
+reason, code or file contents. Mentions are always off and link embeds suppressed.
+A failed post prints a short error and the run carries on; the post is tried again
+on the next run, never in a loop.
 """
 
-import fcntl
-import json
-import os
-import re
 import sys
-import tempfile
-from collections.abc import Iterator
-from contextlib import contextmanager
-from pathlib import Path
 
 import httpx
 
-from dispatch.classify import clean_reason
 from dispatch.config import DispatchSettings
 
 TIMEOUT_S = 15.0
 SUPPRESS_EMBEDS = 1 << 2  # Discord message flag
-STATE_FILE = Path(__file__).resolve().parents[1] / ".dispatch" / "state.json"
-LOCK_FILE = STATE_FILE.with_name("notify.lock")
-
-# Discord markdown: escape each with a backslash so a reason can't format or link.
-_MARKDOWN = re.compile(r"([\\*_~`|>#\[\]()\-:<])")
 
 
-class StateError(Exception):
-    """The posted-issues state file can't be read."""
-
-
-class Busy(Exception):
-    """Another ``--notify`` run holds the lock."""
-
-
-@contextmanager
-def run_lock(path: Path = LOCK_FILE) -> Iterator[None]:
-    """One ``--notify`` run at a time (timer and manual), so state isn't lost or
-    issues posted twice. Non-blocking: a second run stops at once."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a") as handle:
-        try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise Busy from None
-        try:
-            yield
-        finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
-
-
-def neutralise(reason: str) -> str:
-    """One clean line, no '@', Discord markdown escaped."""
-    return _MARKDOWN.sub(r"\\\1", clean_reason(reason).replace("@", ""))
-
-
-def issue_url(settings: DispatchSettings, number: int) -> str:
-    return f"https://github.com/{settings.dispatch_owner}/{settings.dispatch_repo}/issues/{number}"
-
-
-def format_message(
-    settings: DispatchSettings, number: int, route: str, step: str, reason: str
-) -> str:
-    return f"#{number} → {route} ({step}): {neutralise(reason)}\n<{issue_url(settings, number)}>"
+def brief_ready(number: int) -> str:
+    """The only message the Claude path posts. ``number`` is an int, never issue text."""
+    return f"#{int(number)} brief ready"
 
 
 def build_payload(content: str) -> dict[str, object]:
@@ -99,34 +50,3 @@ def deliver(client: httpx.Client, settings: DispatchSettings, content: str) -> b
         print(f"discord: post failed (HTTP {response.status_code})", file=sys.stderr)
         return False
     return True
-
-
-def load_posted(path: Path = STATE_FILE) -> set[int]:
-    """Issue numbers already posted. A missing file is an empty set."""
-    try:
-        data = json.loads(path.read_text("utf-8"))
-    except FileNotFoundError:
-        return set()
-    except (OSError, ValueError) as exc:
-        raise StateError(f"state file unreadable: {path}") from exc
-    posted = data.get("posted") if isinstance(data, dict) else None
-    if not isinstance(posted, list) or not all(
-        isinstance(n, int) and not isinstance(n, bool) for n in posted
-    ):
-        raise StateError(f"state file malformed: {path}")
-    return set(posted)
-
-
-def save_posted(posted: set[int], path: Path = STATE_FILE) -> None:
-    """Atomic: write a temp file in the same folder, fsync, then rename over."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".state-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump({"posted": sorted(posted)}, handle)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise

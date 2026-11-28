@@ -111,7 +111,7 @@ def build_payload(issue: Issue, nonce: str | None = None) -> dict[str, object]:
         "temperature": 0,
         "max_tokens": MAX_TOKENS,
         "chat_template_kwargs": {"enable_thinking": False},
-        "metadata": {"trace_name": "dispatch-triage", "tags": ["dry-run", f"issue-{issue.number}"]},
+        "metadata": {"trace_name": "dispatch-triage", "tags": ["triage", f"issue-{issue.number}"]},
         "messages": build_messages(issue, nonce),
     }
 

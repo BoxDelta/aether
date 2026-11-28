@@ -56,7 +56,8 @@ ADR-009 onward have their own files here.
     Proposed (2026-11-26); build after Phase 2 exit criteria pass.
 -   **ADR-029:** End-of-phase code-health review. Proposed (2026-11-26).
 -   **ADR-030:** Dispatcher prototype during Phase 2. Accepted (owner,
-    2026-11-26).
+    2026-11-26); amended 2026-11-27 (dry run ended, one always-Claude list,
+    Claude path).
 -   **ADR-031:** Plane as a one-way mirror of GitHub Issues; partly
     supersedes ADR-010. Proposed (2026-11-26).
 -   **ADR-032:** An untrusted Ollama host needs `allow_cloud`, like the

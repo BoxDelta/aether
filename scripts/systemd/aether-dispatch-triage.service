@@ -1,11 +1,12 @@
-# Template (ADR-030, #135): dispatcher dry run, posting new results to Discord.
+# Template (ADR-030 step 4c): dispatcher run. Sorts new issues, writes Claude briefs
+# and posts "#<n> brief ready" to Discord.
 # A systemd *user* service. Not installed by the repo. Install steps:
 # dispatch/README.md. Runs from a main-only clone (~/Projects/aether-dispatch),
 # never the working clone, so only merged, reviewed code runs with the
 # dispatcher's credentials (like aether-backup.service, ADR-025 D8). It reads
 # only ~/.config/aether-dispatch/dispatch.env.
 [Unit]
-Description=AETHER dispatcher dry-run triage (posts to Discord)
+Description=AETHER dispatcher run (sort, Claude briefs, Discord)
 Documentation=https://github.com/BoxDelta/aether/blob/main/dispatch/README.md
 Wants=network-online.target
 After=network-online.target
@@ -20,7 +21,7 @@ Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin
 ExecStartPre=/bin/sh -c 'test "$$(git -C %h/Projects/aether-dispatch branch --show-current)" = main && test -z "$$(git -C %h/Projects/aether-dispatch status --porcelain)"'
 # Then bring it up to date with merged code only; a non-fast-forward fails the run.
 ExecStartPre=/usr/bin/git -C %h/Projects/aether-dispatch pull --ff-only origin main
-ExecStart=/usr/bin/env uv run python -m dispatch triage --notify
+ExecStart=/usr/bin/env uv run python -m dispatch run
 # Reports and state it writes are private.
 UMask=0077
 NoNewPrivileges=yes

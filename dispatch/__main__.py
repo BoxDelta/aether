@@ -1,9 +1,14 @@
-"""``uv run python -m dispatch triage [--issue N]`` and ``... eval <set.yaml>``.
+"""``uv run python -m dispatch run|triage [--issue N]`` and ``... eval <set.yaml>``.
 
-Dry run (ADR-030 step 4a): prints and records routes, changes nothing on GitHub.
+- ``triage``: sort and print only (the step 4a dry run, kept for checks).
+- ``run``: sort, then the Claude path (step 4c): a brief for each ``claude`` issue
+  and "#<n> brief ready" on Discord. Issues sorted ``local`` wait for step 4b.
+
+Nothing here writes to GitHub.
 """
 
 import argparse
+import os
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -15,7 +20,7 @@ import httpx
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
-from dispatch import classify, github, notify
+from dispatch import brief, classify, github, notify, state
 from dispatch.config import ConfigError, DispatchSettings, load_settings
 
 REPORTS_DIR = Path(__file__).resolve().parents[1] / ".dispatch" / "reports"
@@ -54,14 +59,55 @@ def format_table(rows: Sequence[Row]) -> str:
 
 
 def write_report(table: str, now: datetime, reports_dir: Path = REPORTS_DIR) -> Path:
-    reports_dir.mkdir(parents=True, exist_ok=True)
+    reports_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    reports_dir.chmod(0o700)
     path = reports_dir / f"{now.date().isoformat()}.md"
-    with path.open("a", encoding="utf-8") as report:
+    # Mode 600 whatever the umask: reports hold model reasons (manual runs too).
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "a", encoding="utf-8") as report:
         report.write(f"## Triage dry run {now.strftime('%H:%M:%S')}\n\n{table}\n\n")
     return path
 
 
 Triage = Callable[[github.Issue], classify.Decision]
+
+
+@dataclass(frozen=True, slots=True)
+class Sorted:
+    row: Row
+    issue: github.Issue | None  # None when the trust check failed
+    decision: classify.Decision | None
+
+
+def sort_issues(
+    gh: httpx.Client,
+    settings: DispatchSettings,
+    triage: Triage,
+    number: int | None,
+    skip: frozenset[int] = frozenset(),
+) -> list[Sorted]:
+    """Trusted issues, sorted. Issues in ``skip`` (already handled) are left out
+    before the trust check, the rules and the model."""
+    if number is None:
+        issues = github.list_auto_issues(gh, settings)
+    else:
+        one = github.get_issue(gh, settings, number)
+        if one is None:
+            return [Sorted(Row(number, "-", "trust", "pull request, not an issue"), None, None)]
+        issues = [one]
+    out = []
+    for issue in issues:
+        if issue.number in skip:
+            continue
+        trust = github.check_trust(gh, settings, issue)  # again, right before the step
+        if not trust.ok:
+            out.append(Sorted(Row(issue.number, "-", "trust", trust.reason), None, None))
+            continue
+        decision = triage(issue)
+        row = Row(issue.number, decision.route, decision.step, decision.reason)
+        out.append(Sorted(row, issue, decision))
+    return out
 
 
 def triage_rows(
@@ -71,26 +117,7 @@ def triage_rows(
     number: int | None,
     skip: frozenset[int] = frozenset(),
 ) -> list[Row]:
-    """Rows for trusted, sorted issues. Issues in ``skip`` (already posted) are left
-    out before the trust check, the rules and the model."""
-    if number is None:
-        issues = github.list_auto_issues(gh, settings)
-    else:
-        one = github.get_issue(gh, settings, number)
-        if one is None:
-            return [Row(number, "-", "trust", "pull request, not an issue")]
-        issues = [one]
-    rows = []
-    for issue in issues:
-        if issue.number in skip:
-            continue
-        trust = github.check_trust(gh, settings, issue)  # again, right before the step
-        if not trust.ok:
-            rows.append(Row(issue.number, "-", "trust", trust.reason))
-            continue
-        decision = triage(issue)
-        rows.append(Row(issue.number, decision.route, decision.step, decision.reason))
-    return rows
+    return [s.row for s in sort_issues(gh, settings, triage, number, skip)]
 
 
 def eval_rows(
@@ -119,24 +146,72 @@ def eval_rows(
     return lines, matches
 
 
-def post_new(
-    rows: Sequence[Row],
+Notes = Callable[[github.Issue], str]
+Trusted = Callable[[github.Issue], bool]
+
+
+def _always(_: github.Issue) -> bool:
+    return True
+
+
+@dataclass(frozen=True, slots=True)
+class BriefRun:
+    settings: DispatchSettings
+    now: datetime
+    template: str
+    state_file: Path = state.STATE_FILE
+    briefs_dir: Path = brief.BRIEFS_DIR
+    trusted: Trusted = _always  # the trust check again, right before the brief step
+
+
+def write_briefs(
+    items: Sequence[Sorted], notes: Notes, st: state.State, run: BriefRun
+) -> list[int]:
+    """A brief for each ``claude`` issue; ``local`` issues are recorded for step 4b.
+    State is saved after each issue, so a crash never repeats finished work."""
+    written = []
+    for item in items:
+        if item.issue is None or item.decision is None:
+            continue  # trust failed: checked again next run
+        number = item.issue.number
+        if item.decision.route == "local":
+            st.local.add(number)
+        elif not run.trusted(item.issue):
+            continue  # trust changed since sorting: nothing recorded, checked next run
+        else:
+            content = brief.Content(
+                item.issue,
+                notify_url(run.settings, number),
+                item.decision,
+                notes(item.issue),
+                run.now,
+            )
+            brief.write(number, brief.build(content, run.template), run.briefs_dir)
+            st.briefed.add(number)
+            written.append(number)
+        state.save(st, run.state_file)
+    return written
+
+
+def announce(
+    st: state.State,
     settings: DispatchSettings,
     discord: httpx.Client,
-    posted: set[int],
-    state_file: Path = notify.STATE_FILE,
+    state_file: Path = state.STATE_FILE,
 ) -> int:
-    """Post each sorted row once; record it only when Discord accepted it."""
+    """Post "#<n> brief ready" once per brief; record it only when Discord accepted.
+    Briefs whose post failed earlier are tried again here, without a model call."""
     sent = 0
-    for row in rows:
-        if row.step == "trust":
-            continue  # not sorted: checked again next run, never posted
-        content = notify.format_message(settings, row.issue, row.route, row.step, row.reason)
-        if notify.deliver(discord, settings, content):
-            posted.add(row.issue)
-            notify.save_posted(posted, state_file)
+    for number in sorted(st.briefed - st.announced):
+        if notify.deliver(discord, settings, notify.brief_ready(number)):
+            st.announced.add(number)
+            state.save(st, state_file)
             sent += 1
     return sent
+
+
+def notify_url(settings: DispatchSettings, number: int) -> str:
+    return f"https://github.com/{settings.dispatch_owner}/{settings.dispatch_repo}/issues/{number}"
 
 
 def load_eval_set(path: Path) -> EvalSet:
@@ -146,47 +221,54 @@ def load_eval_set(path: Path) -> EvalSet:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m dispatch")
     sub = parser.add_subparsers(dest="command", required=True)
-    triage = sub.add_parser("triage", help="dry-run sort of dispatch:auto issues")
+    triage = sub.add_parser("triage", help="sort dispatch:auto issues and print only")
     triage.add_argument("--issue", type=int, help="sort one issue (both owner checks apply)")
-    triage.add_argument(
-        "--notify", action="store_true", help="post issues not posted before to Discord"
-    )
+    run = sub.add_parser("run", help="sort new issues and write Claude briefs (step 4c)")
+    run.add_argument("--issue", type=int, help="one issue (both owner checks apply)")
     evaluate = sub.add_parser("eval", help="sort a fixed set of past issues")
     evaluate.add_argument("path", type=Path)
     return parser
 
 
-def _run_triage(
-    gh: httpx.Client, settings: DispatchSettings, triage: Triage, args: argparse.Namespace
-) -> int:
-    if not args.notify:
-        table = format_table(triage_rows(gh, settings, triage, args.issue))
-        print(table)
-        print(f"\nreport: {write_report(table, datetime.now().astimezone())}")
-        return 0
-    try:
-        with notify.run_lock():
-            return _notify_run(gh, settings, triage, args)
-    except notify.Busy:
-        print("another --notify run is in progress")
-        return 0
-
-
-def _notify_run(
-    gh: httpx.Client, settings: DispatchSettings, triage: Triage, args: argparse.Namespace
-) -> int:
-    posted = notify.load_posted()  # before the trust check, the rules and the model
-    rows = triage_rows(gh, settings, triage, args.issue, frozenset(posted))
-    if not rows:
-        print("nothing new")
-        return 0
+def _print_table(rows: Sequence[Row]) -> None:
     table = format_table(rows)
     print(table)
     print(f"\nreport: {write_report(table, datetime.now().astimezone())}")
-    with notify.make_client() as discord:
-        sent = post_new(rows, settings, discord, posted)
-    print(f"discord: posted {sent}")
-    return 0
+
+
+def _run(
+    gh: httpx.Client,
+    settings: DispatchSettings,
+    triage: Triage,
+    notes: Notes,
+    args: argparse.Namespace,
+) -> int:
+    try:
+        with state.run_lock():
+            st = state.load()  # before the trust check, the rules and the model
+            items = sort_issues(gh, settings, triage, args.issue, st.handled())
+            if items:
+                _print_table([item.row for item in items])
+                now = datetime.now().astimezone()
+                run = BriefRun(
+                    settings,
+                    now,
+                    brief.load_template(),
+                    trusted=lambda issue: github.check_trust(gh, settings, issue).ok,
+                )
+                written = write_briefs(items, notes, st, run)
+                print(f"briefs: wrote {len(written)}")
+            else:
+                print("nothing new")
+            if settings.dispatch_discord_webhook is None:
+                print("discord: no webhook configured, nothing posted")
+                return 0
+            with notify.make_client() as discord:
+                print(f"discord: posted {announce(st, settings, discord)}")
+            return 0
+    except state.Busy:
+        print("another run is in progress")
+        return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -196,14 +278,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ConfigError as exc:
         print(f"config error: {exc}", file=sys.stderr)
         return 2
-    if args.command == "triage" and args.notify and settings.dispatch_discord_webhook is None:
-        print("config error: --notify needs DISPATCH_DISCORD_WEBHOOK", file=sys.stderr)
-        return 2
     with github.make_client(settings) as gh, classify.make_client(settings) as llm:
         gate = classify.GpuGate()  # one per run
 
         def triage(issue: github.Issue) -> classify.Decision:
             return classify.triage(issue, llm, gate)
+
+        def notes(issue: github.Issue) -> str:
+            return brief.ask_notes(llm, issue, gate)
 
         try:
             if args.command == "eval":
@@ -211,11 +293,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 lines, matches = eval_rows(gh, settings, triage, eval_set)
                 print("\n".join(lines))
                 return 0 if matches == len(eval_set.issues) else 1
-            return _run_triage(gh, settings, triage, args)
+            if args.command == "run":
+                return _run(gh, settings, triage, notes, args)
+            _print_table(triage_rows(gh, settings, triage, args.issue))
+            return 0
         except github.GitHubError as exc:
             print(f"github error: {exc}", file=sys.stderr)
             return 2
-        except notify.StateError as exc:
+        except state.StateError as exc:
             print(f"state error: {exc}", file=sys.stderr)
             return 2
 

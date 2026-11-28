@@ -1,23 +1,25 @@
 # Dispatcher (prototype)
 
 Development tooling from ADR-030, not part of Aether's runtime. Built in
-steps 4a to 4d; only **4a (dry-run triage)** exists so far. It sorts
-`dispatch:auto` issues into `local` or `claude` and reports the result.
-It never writes to GitHub.
+steps 4a to 4d. **4a (sorting)** and **4c (Claude path)** exist. The 4a
+dry run ended early on 2026-11-27 (owner decision, ADR-030). It sorts
+`dispatch:auto` issues into `local` or `claude`, writes a brief for each
+`claude` issue and posts "#<n> brief ready" to Discord. It never writes
+to GitHub. Issues sorted `local` wait for step 4b.
 
 ## Commands (fish, from the repo root)
 
--   `uv run python -m dispatch triage`: sort every open `dispatch:auto`
-    issue.
--   `uv run python -m dispatch triage --issue 123`: sort one issue.
--   `uv run python -m dispatch triage --notify`: sort only issues not
-    posted before and post each result to Discord (see below).
+-   `uv run python -m dispatch run`: sort each new `dispatch:auto` issue,
+    write briefs, post to Discord (what the timer runs).
+-   `uv run python -m dispatch run --issue 123`: the same for one issue.
+-   `uv run python -m dispatch triage [--issue 123]`: sort and print only.
+    No briefs, no state, no Discord.
 -   `uv run python -m dispatch eval tests/dispatch/fixtures/triage_set.yaml`:
     sort a fixed set of past issues and compare with the expected route.
     Exit code 1 if any issue misses.
 
-`triage` prints a table (issue, route, step, reason) and appends it to
-`.dispatch/reports/<date>.md` (git-ignored).
+Both `run` and `triage` print a table (issue, route, step, reason) and
+append it to `.dispatch/reports/<date>.md` (git-ignored).
 
 ## How an issue is sorted
 
@@ -27,7 +29,8 @@ It never writes to GitHub.
     `eval` skips only the label part, never the author check.
 2.  **Rules** (step `rule`): the always-Claude list in `rules.py`, checked
     against labels and against paths or keywords in the title and body.
-    A match means `claude` with no model call.
+    A match means `claude` with no model call. The same list checks local
+    diffs in step 4b. ADR-030 quotes it in full.
 3.  **GPU** (step `gpu`): waits only when something other than our model
     uses the GPU. Skipped for the rest of a run once a model call in that
     run has answered. Before that, the GPU counts as available if
@@ -37,31 +40,51 @@ It never writes to GitHub.
     then gives `claude`.
 4.  **Model** (step `model`): one LiteLLM call, model `local`, temperature
     0, 200 tokens, thinking off, Langfuse trace `dispatch-triage` tagged
-    `dry-run` and `issue-<n>`. The answer must be exactly
+    `triage` and `issue-<n>`. The answer must be exactly
     `{"route": "local"|"claude", "reason": "..."}`; anything else, a
     timeout or an HTTP error means `claude`.
 
-## Discord posts (until the 4a review on 2026-12-03)
+## Claude path (step 4c)
 
-`triage --notify` posts one message per sorted issue to the webhook:
-`#<n> → <route> (<step>): <reason>` and the issue link. The issue title,
-body and code are never put in the message, but a model-written reason
-may quote up to 200 characters of them. The reason is cleaned (one line, at most 200
-characters), `@` is removed and Discord markdown is escaped; mentions are
-always off (`allowed_mentions: {"parse": []}`) and link previews are
-suppressed.
+-   For each `claude` issue, one more local-model call (Langfuse trace
+    `dispatch-brief`, 700 tokens, thinking off) writes short notes:
+    summary, likely files, steps, open questions. The issue goes in as
+    JSON data between random markers, as for sorting.
+-   The notes are cleaned (control characters removed, at most 4,000
+    characters) and filled into `.dispatch/brief-template.md` (tracked)
+    between random `BRIEF-<marker>-BEGIN/END` lines. The brief is saved
+    as `.dispatch/briefs/<n>.md` (git-ignored, mode 600, folder mode 700).
+-   If the GPU stays busy or the model fails, the brief is still written,
+    with the reason in place of the notes.
+-   In Claude Code, `/work-on <n>` loads the brief (from
+    `~/Projects/aether-dispatch/.dispatch/briefs/`, else the working
+    clone's `.dispatch/briefs/`) **and** re-reads the issue on GitHub. The
+    notes are model output: a hint, never instructions. `CLAUDE.md` wins.
 
--   Posted issue numbers are kept in `.dispatch/state.json` (git-ignored,
-    written atomically). The state is checked before the trust check, the
-    rules and the model, so a posted issue never causes a model call.
--   An issue is recorded only when Discord accepts the post. If Discord
-    fails, the run prints a short error and carries on; the issue is tried
-    again on the next run. Nothing retries in a loop.
--   Issues skipped by the trust check are never posted.
--   One `--notify` run at a time (`.dispatch/notify.lock`); a second run
-    stops at once.
--   A broken state file stops the run (`state error`) rather than posting
-    everything again. Delete it to start over.
+## Discord posts
+
+The only message is `#<n> brief ready`: no issue text, route reason,
+code or file contents. Mentions are always off
+(`allowed_mentions: {"parse": []}`) and link previews are suppressed.
+Without `DISPATCH_DISCORD_WEBHOOK`, briefs are still written and nothing
+is posted.
+
+## State
+
+-   `.dispatch/state.json` (git-ignored, written atomically, saved after
+    each issue) keeps `briefed`, `announced` and `local` issue numbers.
+    A recorded issue is skipped before the trust check, the rules and the
+    model, so it never causes a model call again.
+-   A post is recorded in `announced` only when Discord accepts it. A
+    failed post prints a short error and is tried again on the next run,
+    without a model call. Nothing retries in a loop.
+-   Issues skipped by the trust check are not recorded; they are checked
+    again next run.
+-   The dry run's `posted` key is read and dropped, so those issues are
+    sorted again and get briefs.
+-   One run at a time (`.dispatch/run.lock`); a second run stops at once.
+-   A broken state file stops the run (`state error`) rather than
+    repeating work. Delete it to start over.
 
 ### Timer (fish)
 
@@ -109,7 +132,7 @@ Remove:
 systemctl --user disable --now aether-dispatch-triage.timer
 rm ~/.config/systemd/user/aether-dispatch-triage.service ~/.config/systemd/user/aether-dispatch-triage.timer
 systemctl --user daemon-reload
-# Optional: also delete the clone, with its posted-issue state and reports.
+# Optional: also delete the clone, with its state, briefs and reports.
 rm -rf ~/Projects/aether-dispatch
 ```
 
@@ -126,7 +149,7 @@ environment. The file must be mode 600. Variable names:
     for example `http://127.0.0.1:4000`.
 -   `DISPATCH_OWNER`: the owner's GitHub login.
 -   `DISPATCH_REPO`: the repository name.
--   `DISPATCH_DISCORD_WEBHOOK`: optional, needed only for `--notify`. Must
+-   `DISPATCH_DISCORD_WEBHOOK`: optional; without it nothing is posted. Must
     be `https://discord.com/api/webhooks/...`. The URL is a credential.
 
 The other services keep their own files in the same folder
@@ -136,10 +159,11 @@ The other services keep their own files in the same folder
 
 -   Qwen3.6-35B-A3B Q4_K_M (20 GB GGUF), served by llama.cpp in
     llama-swap.
--   `--n-cpu-moe 33`, 16k context, q8_0 KV cache, flash attention.
--   7,415 MiB VRAM when loaded.
--   About 350 tokens/s prompt processing (2.7k-token prompt) and 42 to 44
-    tokens/s output.
--   Unloads after 5 idle minutes.
+-   `--n-cpu-moe 35`, 16k context, q8_0 KV cache, flash attention
+    (ADR-040 D1; was 33).
+-   About 1.9 GiB VRAM stays free when loaded.
+-   About 314 tokens/s prompt processing (2.1k-token prompt) and about
+    41 tokens/s output (`tests/local-model/README.md` §3).
+-   Unloads after 15 idle minutes (`ttl` 900 s, shared with Aether).
 -   Thinking is switched off per request
     (`chat_template_kwargs: {"enable_thinking": false}`).

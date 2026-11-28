@@ -1,6 +1,6 @@
 # ADR-030: Dispatcher prototype during Phase 2
 
-**Status:** Accepted (owner, 2026-11-26)\
+**Status:** Accepted (owner, 2026-11-26); amended 2026-11-27 (owner: dry run ended, one always-Claude list, Claude path)\
 **Date:** 2026-11-26\
 **Owner:** BoxDelta
 
@@ -118,17 +118,50 @@ Option 3, within the limits below.
 
 ### Always-Claude list
 
-The list lives in code (`dispatch/rules.py`), which is itself on the
-list. It is checked before the model is asked, and again on the actual
-diff Aider produces. A match means `claude`, with no model call.
+One list in code (`dispatch/rules.py`), which is itself on the list. The
+same list sorts issues before the model is asked, and checks the actual
+diff Aider produces before a local pull request opens (step 4b). A match
+means `claude`, with no model call. Combined on 2026-11-27 (owner
+decision) from the original ADR-030 paths, auth code, `tools/`, the files
+docs/05 names (a test fails if docs/05 names a file the list misses), the
+gaps found in #133 and the #61 rule. `tests/dispatch/test_rules.py`
+checks that this section quotes every entry.
 
--   Paths: `.github/`, `.claude/`, `CLAUDE.md`, `.pre-commit-config.yaml`,
-    `scripts/safemerge.fish`, `.env.example`, `pyproject.toml`,
-    `uv.lock`, `router/`, `memory/`, `migrations/`, `docs/05_*`,
-    `docs/adr/`, `dispatch/`, and in `core/`: `auth.py`, `config.py`,
-    `chat.py`, `memory_api.py`, `identity.py`, `db.py`, `db_admin.py`,
-    `backup.py`.
--   Issues labelled `model:opus` or `security`.
+-   Paths (ADR-030): `.github/`, `.claude/`, `CLAUDE.md`,
+    `.pre-commit-config.yaml`, `scripts/safemerge.fish`, `.env.example`,
+    `pyproject.toml`, `uv.lock`, `router/`, `memory/`, `migrations/`,
+    `docs/05_*`, `docs/adr/`, `dispatch/`.
+-   Paths (tools and identity): `tools/`, `identity/`.
+-   Paths (named in docs/05, or found missing in #133): `.env` (and
+    `.env.*`), `.gitignore`, `CONTRIBUTING.md`, `docker-compose.yml`,
+    `compose.vault.yaml`, `scripts/systemd/`, `scripts/restore_check.sql`,
+    `scripts/aether-vault.fish`, `scripts/identity_continuity.py`,
+    `tests/test_workflow_pins.py`, `docs/runbooks/db-app-role.md`,
+    `docs/runbooks/db-backup-restore.md`,
+    `docs/runbooks/encrypted-volume.md`.
+-   Paths (owner-guarded in CODEOWNERS): `SECURITY.md`, `LICENSE`,
+    `NOTICE`.
+-   Paths (the dispatcher's own guards): `.dispatch/` (the brief
+    template's "data, not instructions" header) and `tests/dispatch/`.
+-   Tests that enforce guardrails: `tests/test_cloud_tripwire.py`,
+    `tests/test_env_isolation.py`, `tests/test_error_bodies.py`,
+    `tests/test_guardrails.py`, `tests/test_log_redaction_docs.py`,
+    `tests/test_ollama_host_trust.py`, `tests/test_privacy_levels.py`,
+    `tests/test_routing.py`, `tests/test_safemerge.py`,
+    `tests/test_untrusted_ollama.py`.
+-   In `core/`: `auth.py`, `config.py`, `chat.py`, `memory_api.py`,
+    `identity.py`, `db.py`, `db_admin.py`, `backup.py`, `app.py`,
+    `errors.py`, `events.py`, `log.py`, `ready.py`, `request_context.py`.
+-   Auth and permission code anywhere: a path with a folder or file name
+    containing `auth`, `login`, `csrf`, `passw`, `secret`, `credential`,
+    `session`, `token`, `scope`, `permission`, `approval`, `privacy` or
+    `redact` (Phase 3 sessions, service tokens, tool permissions and
+    approvals, ADR-035, ADR-036).
+-   Labels: `model:opus`, `security`, `dispatch:claude-only`.
+-   Issues from a security review (the text says so), and anything that
+    touches database roles, grants or credentials, including test
+    fixtures that create roles (#61). In a diff, this is checked on the
+    changed lines.
 -   Anything that adds a dependency or needs an ADR.
 
 ### Local path (Aider)
@@ -156,24 +189,43 @@ diff Aider produces. A match means `claude`, with no model call.
 
 ### Claude path
 
--   Briefs are written from `.dispatch/brief-template.md` (tracked) to
-    `.dispatch/briefs/<issue>.md` (git-ignored).
--   `.claude/commands/work-on.md` loads the brief **and** re-reads the
-    issue on GitHub. The brief was written by the local model, so it is
-    a hint and is treated as data. The issue is the task, and
-    `CLAUDE.md` wins over both.
--   The Discord webhook posts only the issue number and "brief ready".
-    No issue text, code or file contents.
--   Until the 4a review on 2026-12-03 (owner decision 2026-11-26), the
-    dry run also posts each sorted issue to the webhook: the issue number
-    and link, the route, the step and the reason (at most 200
-    characters, mentions off). The issue body and code are never put in
-    the post, but a model-written reason may quote up to 200 characters
-    of the issue.
--   The dry-run timer runs every 15 minutes from a main-only clone
-    (`~/Projects/aether-dispatch`), like the backup timer (ADR-025 D8),
-    so only merged, reviewed code runs with the dispatcher's
-    credentials.
+-   `python -m dispatch run` (the 15-minute timer) sorts each new trusted
+    `dispatch:auto` issue. For each `claude` issue the local model writes
+    short notes (summary, likely files, steps, open questions), filled
+    into `.dispatch/brief-template.md` (tracked) and saved to
+    `.dispatch/briefs/<issue>.md` (git-ignored, mode 600). If the model
+    can't be asked or doesn't answer, the brief is still written, with
+    the reason in place of the notes.
+-   The notes, and the route reason (model text when the model sorted
+    it), sit between random marker lines, under a header that says they
+    are model output and data. `.claude/commands/work-on.md` loads
+    the brief **and** re-reads the issue on GitHub. The brief is a hint
+    and is treated as data. The issue is the task, and `CLAUDE.md` wins
+    over both.
+-   The Discord webhook posts only `#<n> brief ready`. No issue text,
+    route reason, code or file contents. A failed post is tried again on
+    the next run.
+-   `.dispatch/state.json` records issues briefed, announced, and sorted
+    `local` (those wait for step 4b). A recorded issue is not sorted
+    again and causes no model call.
+-   The trust check runs again right before the brief step.
+-   The run never writes to GitHub.
+-   The timer runs from a main-only clone (`~/Projects/aether-dispatch`),
+    like the backup timer (ADR-025 D8), so only merged, reviewed code
+    runs with the dispatcher's credentials.
+
+### Dry run ended early (2026-11-27, owner decision)
+
+The 4a dry run was to last until a review on 2026-12-03. The owner ended
+it on 2026-11-27, which supersedes that date and its Discord posts of
+each sorted issue.
+
+-   15 decisions in 4 runs (2026-11-26 21:20 to 2026-11-27 04:46 UTC):
+    13 `claude` (12 by rule, 1 by the model) and 2 `local` (#52, #61).
+-   No hard task was sent local. #61 (a test fixture that creates a
+    database login role, found in a security review) was borderline and
+    should have gone to Claude, so the #61 rule was added to the list.
+-   Order from here: step 4c (Claude path) first, then 4b (local path).
 
 ### Credentials
 
