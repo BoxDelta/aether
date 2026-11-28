@@ -10,6 +10,7 @@ import secrets
 import shutil
 import socket
 import subprocess
+import tempfile
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -63,13 +64,21 @@ SANDBOX_PYTHON = Path("/usr/bin/python3")  # the sandbox sees only /usr and /etc
 
 
 def _bwrap_works() -> bool:
+    """The real sandbox can start /usr/bin/python3 here. On some CI runners
+    bubblewrap works but that python is a link to a path outside /usr."""
     if shutil.which("bwrap") is None or not SANDBOX_PYTHON.exists():
         return False
-    probe = subprocess.run(
-        ["bwrap", "--ro-bind", "/", "/", "--unshare-all", "true"],  # noqa: S607
-        capture_output=True,
-        check=False,
-    )
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        dirs = [base / n for n in ("root", "work", "scratch", "gitdir")]
+        for folder in (dirs[0] / ".git", dirs[1], dirs[2] / "history", dirs[3]):
+            folder.mkdir(parents=True)
+        probe = subprocess.run(  # noqa: S603 - the dispatcher's own sandbox argv
+            [*local.sandbox_args(*dirs), str(SANDBOX_PYTHON), "-I", "-c", "pass"],
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
     return probe.returncode == 0
 
 
