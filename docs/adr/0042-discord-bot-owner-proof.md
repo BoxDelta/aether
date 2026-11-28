@@ -55,12 +55,20 @@ GitHub token cannot copy.
 5.  **The owner proof, bound to the issue.** The bot creates the issue,
     then edits its body once to end with one line:
     `<!-- aether-proof v1 ts nonce mac -->`. `mac` is HMAC-SHA256 with the
-    key `PROOF_KEY` (32 random bytes). The MAC input is a fixed domain
-    string, then these fields in order, each as UTF-8 bytes with a
-    fixed-width 8-byte big-endian length in front: repository
-    (`owner/name`), issue number, owner's Discord ID, route (`claude`),
-    `ts`, `nonce`, the title, and the exact body text before the proof line,
-    taken as one field and never re-parsed. The owner's ID, the repository
+    key `PROOF_KEY` (32 random bytes). The MAC input is the domain string
+    `aether-proof-v1`, then these fields in order, each as UTF-8 bytes with
+    a fixed-width 8-byte big-endian length in front: repository
+    (`owner/name`), issue number (decimal ASCII, no leading zeros), the
+    owner's Discord ID (decimal ASCII), route (`claude`), `ts` (integer Unix
+    seconds), `nonce` (16 random bytes as 32 lowercase hex characters), the
+    title, and the body text before the proof line, taken as one field and
+    never re-parsed. The body is that text, one LF, then the proof line, and
+    nothing after it; an empty or null body fails. The bot strips leading and
+    trailing whitespace from the title before signing (GitHub does too), and
+    refuses control characters. The verifier also refuses an item that is a
+    pull request (`pull_request` present), since issues and pull requests
+    share numbers, and allows 5 minutes of clock skew for "not in the
+    future". The owner's ID, the repository
     and the issue number are not in the visible line (the verifier supplies
     them from its configuration and the issue itself), so the public issue
     does not show the owner's Discord ID. The bot writes LF line endings,
@@ -85,7 +93,9 @@ GitHub token cannot copy.
 
     For such an issue the proof stands in for `dispatch:auto` and
     `dispatch:claude-only`. The labels the bot also adds are only there so
-    the dispatcher's label query finds the issue; their actor is ignored.
+    the dispatcher's label query finds the issue; their actor is ignored. The
+    bot adds them only after the proof edit, so an issue without a proof
+    never shows up in that query.
     The existing rules stay: a `dispatch:local-ok` the bot adds never
     counts, and a bot-opened issue without a valid proof is skipped. The
     bot also keeps the Discord interaction IDs it has served, and creates
@@ -94,22 +104,34 @@ GitHub token cannot copy.
     the ask list). It accepts an issue opened by `boxdelta-dispatch` only
     when `python -m dispatch verify <n>` succeeds, and keeps refusing every
     other author. `verify` runs only from the main-only clone
-    (`~/Projects/aether-dispatch`) with the fixed env file path, never from
-    a working branch, and **prints the verified title and body**; `/work-on`
-    uses only that text, so an edit between the check and the read changes
-    nothing. The session is not given the key: a deny rule for
-    `~/.config/aether-dispatch/**` (an owner-approved `.claude/settings.json`
-    edit) goes in the same PR. HMAC is symmetric, so anything that can verify
-    can also sign; that is why the key sits only in the two env files and
-    `verify` only runs from reviewed, merged code.
+    (`~/Projects/aether-dispatch`), **ignores `DISPATCH_ENV_FILE`** and
+    reads the fixed `~/.config/aether-dispatch/dispatch.env` (the
+    dispatcher's own proof check does the same; a test sets the variable
+    and checks it is ignored). It **prints the verified title and body**;
+    `/work-on` uses only that text, so an edit between the check and the
+    read changes nothing.
+    -   HMAC is symmetric: anything that can verify can also sign. So the
+        key must not reach a Claude session. A `Read(~/.config/aether-dispatch/**)`
+        deny rule stops only Claude's Read tool, not Bash (`cat`, `python`,
+        `env`), and a session that can run Bash can also run or edit code in
+        a clone it can write to. A prompt-injected session could therefore
+        read the key and forge proofs.
+    -   So the `/work-on` PR must put a real barrier in place before it
+        accepts any bot-opened issue: either Claude Code's sandbox with
+        `filesystem.denyRead` on that directory and a narrow allow for the
+        exact `verify` command (the owner approves the `.claude/settings.json`
+        change), or `verify` as a separate service the session can only call.
+        Until then `/work-on` keeps refusing bot-opened issues, and the
+        owner opens the issue by hand. If neither is acceptable, revisit
+        Ed25519 (Alternatives).
 8.  **Credentials**, all outside the repository, each revocable on its own:
     -   `DISCORD_BOT_TOKEN`, a second classic `public_repo` token of
         `boxdelta-dispatch` (used only by the bot) and the owner, server and
         channel IDs, in `~/.config/aether-dispatch/bot.env` only;
-    -   `PROOF_KEY` in `bot.env` (to sign) and `dispatch.env` (to verify).
-        The dispatcher holds neither the Discord token nor the bot's GitHub
-        token.
-    -   Both files must be mode 600 and not symlinks, or the program refuses
+    -   `PROOF_KEY` and the owner's Discord ID in `bot.env` (to sign) and
+        `dispatch.env` (to verify; variable `DISPATCH_OWNER_DISCORD_ID`,
+        not a secret but private). The dispatcher holds neither the Discord
+        token nor the bot's GitHub token.    -   Both files must be mode 600 and not symlinks, or the program refuses
         to start (as `dispatch/config.py` does). A setter script like
         `scripts/dispatch_set_token.py` (stdin only, never printed) sets the
         secrets. To rotate `PROOF_KEY`, change both files together; proofs in
@@ -117,7 +139,12 @@ GitHub token cannot copy.
     -   The bot's GitHub client has an allowlist: create an issue, edit that
         issue's body once, add the two labels. Anything else (comments,
         other labels, other issues, merges) is refused in code and a test
-        checks it.
+        checks it. **This binds only the honest bot**: a stolen bot token is
+        a full `public_repo` token of the machine user and can edit any issue
+        body (the open #216 hole), close issues, comment and change labels.
+        It still cannot produce a proof, so trust holds. The runbook covers
+        revoking each token separately; the second token mainly adds
+        exposure, because the bot is the network-facing process.
     -   The variable names go into `dispatch/README.md` when the bot is
         built.
 9.  **Privacy and logs.** Replies are visible only to the owner and carry
@@ -203,8 +230,9 @@ GitHub token cannot copy.
 -   The bot process holds `PROOF_KEY` and both tokens, and the dispatcher
     and `verify` hold `PROOF_KEY` too. Anyone who runs code as the owner's
     user on this PC can read `dispatch.env` or `bot.env` and forge a proof;
-    the Claude Code deny rule (decision 7) stops the session reading them,
-    not other programs.
+    the Claude Code deny rule alone stops only the Read tool (decision 7),
+    so the real barrier for the session is the sandbox or service chosen
+    before the `/work-on` PR.
 -   `verify` is as trustworthy as the clone it runs from: only merged,
     reviewed code.
 -   Comments and later edits to a bot issue's labels are not covered; the
