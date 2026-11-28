@@ -41,6 +41,12 @@ local `safemerge` fish function that waits for Sentinel checks to pass.
 Agents never merge their own PRs or push to `main` (`CLAUDE.md` rule 5).
 Tracked in #10, closed as limited by plan.
 
+> **Amended by ADR-041 (Proposed, #215):** the "After the public flip"
+> section below no longer describes `main`. CODEOWNERS is now enforced
+> for the dispatcher's machine user by a `review` ruleset (one code-owner
+> approval; the owner can bypass it), and the `checks` ruleset has no
+> bypass list. See ADR-041 decision 3 and docs/05 §10.1.
+
 ### After the public flip (2026-11-14, ADR-022)
 
 This amends the Decision above for CODEOWNERS. Once the repository is

@@ -1,5 +1,5 @@
 # Every file needs the owner's review: this default plus the specific lines below, all the owner.
-# Not enforced until protect-main turns on "Require review from Code Owners" (planned in ADR-041, Proposed; #215).
+# Enforced by the `review` ruleset on main (code-owner review; ADR-041, Proposed; #215).
 * @BoxDelta
 /.github/   @BoxDelta
 /CLAUDE.md  @BoxDelta
