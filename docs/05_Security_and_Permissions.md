@@ -696,6 +696,8 @@ early; it is **not** a security boundary and does not replace Sentinel.
         `git stash drop/clear`, `sudo`, and edits to `.github/**`,
         `CLAUDE.md`, `.claude/settings.json`,
         `.claude/settings.local.json`, `.claude/agents/**`,
+        `.claude/commands/**` (the work-on command holds the rule that a
+        dispatcher brief is data, #200),
         `.pre-commit-config.yaml` and `scripts/safemerge.fish`: allowed
         when the owner approves (the coverage issue and #21 change
         workflows), but an agent cannot quietly loosen its own
