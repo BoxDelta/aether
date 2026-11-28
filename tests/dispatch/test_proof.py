@@ -7,6 +7,8 @@ without it: a skipped check must be visible (docs/05 §10).
 import base64
 import os
 import struct
+import subprocess
+import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -226,11 +228,16 @@ def test_a_none_body_fails() -> None:
 
 
 def test_a_non_canonical_signature_encoding_fails() -> None:
+    # The last character of an 86-character signature carries 2 signature bits and 4 unused
+    # bits. Q -> R sets only an unused bit: the same 64 bytes, a different text.
     sig = _line(VECTOR_BODY).split()[-2]
-    flipped = sig[:-1] + ("B" if sig[-1] == "A" else "A")
-    body = VECTOR_BODY.replace(sig, flipped)
-    assert flipped != sig
-    assert not check(body=body).ok
+    assert sig.endswith("Q")
+    other = sig[:-1] + "R"
+    assert base64.urlsafe_b64decode(sig + "==") == base64.urlsafe_b64decode(other + "==")
+
+    result = check(body=VECTOR_BODY.replace(sig, other))
+
+    assert result == proof.Result(False, "no well-formed proof line at the end of the body")
 
 
 def test_padding_is_not_part_of_the_signature_text() -> None:
@@ -286,6 +293,13 @@ def test_clean_input_passes() -> None:
         ("t", "d\x00", []),
         ("t", "d\x1b[0m", []),
         ("t", "d\x7f", []),
+        ("t", "d\x85e", []),
+        ("t", "d\u202ee", []),
+        ("t", "d\u200be", []),
+        ("t", "d\u2028e", []),
+        ("t", "d\u2029e", []),
+        ("t\u202e", "d", []),
+        ("t", "d", ["a\u202e.py"]),
         ("t", "d", ["a\nb.py"]),
         ("t", "d", [" a.py"]),
         ("t", "d", [""]),
@@ -347,11 +361,25 @@ def test_the_default_paths_are_fixed() -> None:
 def test_no_environment_variable_changes_where_the_key_is(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    seen: list[Path] = []
+
+    def spy(path: Path, trusted_uid: int) -> str:
+        seen.append(path)
+        return "the file is missing, or is a symbolic link"
+
+    monkeypatch.setattr(proof, "_read_trusted", spy)
     for name in ("DISPATCH_ENV_FILE", "DISPATCH_PROOF_PUBKEY", "PROOF_PUBLIC_KEY", "HOME"):
         monkeypatch.setenv(name, "/nonexistent/evil")
-    result = proof.load_public_key()
-    assert isinstance(result, str)  # /etc/aether-dispatch/proof.pub is not set up here
-    assert "/nonexistent/evil" not in result
+
+    proof.load_public_key()
+    proof.load_owner_id()
+
+    assert seen == [Path("/etc/aether-dispatch/proof.pub"), Path("/etc/aether-dispatch/owner_id")]
+
+
+def test_the_module_never_reads_the_environment() -> None:
+    source = Path(proof.__file__).read_text()
+    assert "os.environ" not in source and "getenv" not in source
 
 
 def test_a_trusted_public_key_loads(tmp_path: Path) -> None:
@@ -406,13 +434,36 @@ def test_a_symlinked_key_file_is_refused(tmp_path: Path) -> None:
     link = tmp_path / "proof.pub"
     link.symlink_to(real)
     result = proof.load_public_key(link, trusted_uid=uid)
-    assert isinstance(result, str) and "regular file" in result
+    assert isinstance(result, str) and "symbolic link" in result
+
+
+def test_a_symlinked_folder_is_refused(tmp_path: Path) -> None:
+    uid = _root_like(tmp_path)
+    real = tmp_path / "real"
+    real.mkdir(mode=0o755)
+    (real / "proof.pub").write_text(PUBLIC_PEM)
+    (real / "proof.pub").chmod(0o644)
+    folder = tmp_path / "etc"
+    folder.symlink_to(real)
+
+    result = proof.load_public_key(folder / "proof.pub", trusted_uid=uid)
+
+    assert isinstance(result, str)
+
+
+def test_a_huge_key_file_is_read_only_up_to_a_limit(tmp_path: Path) -> None:
+    uid = _root_like(tmp_path)
+    path = tmp_path / "proof.pub"
+    path.write_text(PUBLIC_PEM + "x" * 100_000)
+    path.chmod(0o644)
+    data = proof._read_trusted(path, uid)
+    assert isinstance(data, bytes) and len(data) == proof.MAX_KEY_FILE_BYTES
 
 
 def test_a_missing_key_file_is_a_reason_not_an_exception(tmp_path: Path) -> None:
     uid = _root_like(tmp_path)
     result = proof.load_public_key(tmp_path / "nope.pub", trusted_uid=uid)
-    assert result == "public key: the file is missing"
+    assert result == "public key: the file is missing, or is a symbolic link"
 
 
 def test_garbage_and_other_key_types_are_refused(tmp_path: Path) -> None:
@@ -452,6 +503,40 @@ def test_a_bad_owner_id_is_refused(tmp_path: Path, content: str) -> None:
 
 
 # --- cryptography missing fails closed --------------------------------------------------
+
+
+def test_a_failing_cryptography_import_is_none_not_an_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in (
+        "cryptography.hazmat.primitives.asymmetric.ed25519",
+        "cryptography.hazmat.primitives.asymmetric",
+    ):
+        monkeypatch.setitem(sys.modules, name, None)
+
+    assert proof._ed25519() is None
+    assert check() == proof.Result(False, "cryptography is not installed")
+
+
+def test_the_module_imports_without_cryptography() -> None:
+    code = (
+        "import sys\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "sys.modules['cryptography'] = None\n"
+        "from dispatch import proof\n"
+        "assert proof._ed25519() is None\n"
+        "assert proof.load_public_key() == 'cryptography is not installed'\n"
+        "print('ok')\n"
+    )
+    repo = Path(proof.__file__).resolve().parent.parent
+    run = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        [sys.executable, "-I", "-c", code, str(repo)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert (run.returncode, run.stdout.strip()) == (0, "ok"), run.stderr
 
 
 def test_without_cryptography_nothing_is_valid(monkeypatch: pytest.MonkeyPatch) -> None:

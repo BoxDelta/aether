@@ -136,6 +136,13 @@ trusted through it today.
 It needs `cryptography`, in the `dispatch` dependency group:
 `uv sync --locked --group dispatch`. The proof tests fail without it.
 
+Dependency check (docs/03 §8), recorded when the version was pinned:
+`cryptography==50.0.2` (Apache-2.0 or BSD-3-Clause, uploaded 2026-09-30,
+wheels for the project's Python 3.14 on x86_64 Linux), with `cffi` 2.1.1
+(MIT, cp314 wheel) and `pycparser` 3.12 (BSD-3-Clause). All three are exact
+in `uv.lock` with hashes, and the Sentinel audit covers them
+(`pip-audit --all-groups`).
+
 ## Discord posts
 
 The only messages are `#<n> brief ready` and `#<n> local PR #<p> opened`:

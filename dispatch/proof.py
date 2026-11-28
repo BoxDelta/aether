@@ -16,11 +16,13 @@ bot issues are skipped and nothing else changes.
 from __future__ import annotations
 
 import base64
+import os
 import re
 import secrets
 import stat
 import struct
 import time
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,10 +49,13 @@ MAX_TITLE = 120
 MAX_DETAILS = 2000
 MAX_FILES = 5
 MAX_FILE_NAME = 200
+MAX_KEY_FILE_BYTES = 4096
 
 # What the bot refuses in a title, details or file name: it could fake or end a proof
 # line, or an HTML comment.
 FORBIDDEN_TEXT = ("<!--", "-->", "aether-proof")
+
+_HIDDEN = frozenset({"Cc", "Cf", "Zl", "Zp"})
 
 _PROOF_LINE = re.compile(
     r"<!-- aether-proof v2 (?P<ts>0|[1-9][0-9]{0,11}) (?P<nonce>[0-9a-f]{32}) "
@@ -120,7 +125,9 @@ def _bad_text(label: str, value: str) -> str | None:
     if "\r" in value:
         return f"the {label} contains a carriage return"
     allowed = "\n\t" if label == "details" else ""
-    if any((ord(c) < 32 and c not in allowed) or ord(c) == 127 for c in value):
+    # Control, format (bidi marks, zero-width) and line or paragraph separators could make
+    # the public issue look different from the text that was signed.
+    if any(c not in allowed and unicodedata.category(c) in _HIDDEN for c in value):
         return f"the {label} contains a control character"
     return None
 
@@ -205,20 +212,28 @@ def _ed25519() -> Any | None:
     return ed25519
 
 
-def _trusted_file(path: Path, trusted_uid: int) -> str | None:
-    """Why this file can't be trusted, or None: a root-owned regular file that only its
-    owner can write, in a directory that is the same. Symlinks are refused."""
+def _read_trusted(path: Path, trusted_uid: int) -> bytes | str:
+    """The file's bytes, or a reason it can't be trusted. It must be a regular file
+    owned by ``trusted_uid`` that nobody else can write, in a folder that is the same.
+    Symlinks (the file, or its folder) are refused, and the checks run on the open
+    descriptor, so the file can't be swapped between the check and the read."""
     try:
-        info = path.lstat()
-        parent = path.parent.stat()
+        parent = path.parent.lstat()
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     except OSError:
-        return "the file is missing"
-    if not stat.S_ISREG(info.st_mode):
-        return "the file is not a regular file"
-    for item in (info, parent):
-        if item.st_uid != trusted_uid or item.st_mode & 0o022:
+        return "the file is missing, or is a symbolic link"
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or not stat.S_ISDIR(parent.st_mode):
+            return "the file is not a regular file in a real folder"
+        if any(i.st_uid != trusted_uid or i.st_mode & 0o022 for i in (info, parent)):
             return "the file or its folder is not root-owned and write-protected"
-    return None
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            return handle.read(MAX_KEY_FILE_BYTES + 1)[:MAX_KEY_FILE_BYTES]
+    except OSError:
+        return "the file cannot be read"
+    finally:
+        os.close(descriptor)
 
 
 def load_public_key(
@@ -227,17 +242,16 @@ def load_public_key(
     """The public key, or a reason it could not be used. The default path is fixed."""
     if _ed25519() is None:
         return "cryptography is not installed"
-    problem = _trusted_file(path, trusted_uid)
-    if problem:
-        return f"public key: {problem}"
+    data = _read_trusted(path, trusted_uid)
+    if isinstance(data, str):
+        return f"public key: {data}"
     from cryptography.hazmat.primitives import serialization
-
-    try:
-        key = serialization.load_pem_public_key(path.read_bytes())
-    except (OSError, ValueError):
-        return "public key: cannot be read"
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
+    try:
+        key = serialization.load_pem_public_key(data)
+    except ValueError:
+        return "public key: cannot be read"
     if not isinstance(key, Ed25519PublicKey):
         return "public key: not an Ed25519 key"
     return key
@@ -245,11 +259,12 @@ def load_public_key(
 
 def load_owner_id(path: Path = OWNER_ID_PATH, *, trusted_uid: int = 0) -> str | None:
     """The owner's numeric Discord ID from the root-owned file, or None."""
-    if _trusted_file(path, trusted_uid):
+    data = _read_trusted(path, trusted_uid)
+    if isinstance(data, str):
         return None
     try:
-        value = path.read_text(encoding="ascii").strip()
-    except (OSError, ValueError):
+        value = data.decode("ascii").strip()
+    except ValueError:
         return None
     return value if re.fullmatch(r"[0-9]{1,20}", value) else None
 
