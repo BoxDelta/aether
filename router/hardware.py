@@ -192,7 +192,10 @@ def probe() -> HardwareSnapshot:
 
 
 def has_local_headroom(
-    snapshot: HardwareSnapshot, min_free_vram_bytes: int = MIN_FREE_VRAM_BYTES
+    snapshot: HardwareSnapshot,
+    min_free_vram_bytes: int = MIN_FREE_VRAM_BYTES,
+    *,
+    count_local_model: bool = False,
 ) -> Headroom:
     """Whether local inference may run without eating into the desktop's VRAM.
 
@@ -200,15 +203,18 @@ def has_local_headroom(
     responsiveness before local throughput, so routing prefers cloud unless it
     has a reason (privacy, manual override) to go local anyway.
 
-    While the local model is loaded (ADR-040), its own allocation is counted as room
-    it already has: a request to it takes no new VRAM, so the model must not block
-    routing to itself. The room is free VRAM plus that allocation, which other GPU
-    users still shrink. Not loaded, or not reported: free VRAM alone, as before.
+    With ``count_local_model`` (only for a request that goes to the llama-swap model
+    itself, ADR-040) its own allocation counts as room it already has: the request
+    takes no new VRAM, so a warm model must not block routing to itself. The room is
+    free VRAM plus that allocation. Note this means the 1.5 GiB reserve cannot fail
+    while the model is resident (room is then total VRAM minus other users); it only
+    applies when the model is not loaded. Not loaded, not reported, or the flag off
+    (other providers, the dispatcher): free VRAM alone, as before.
     """
     free = snapshot.gpu.vram_free_bytes
     if free is None:
         return Headroom(False, "GPU state unknown")
-    own = snapshot.gpu.local_model_bytes or 0
+    own = (snapshot.gpu.local_model_bytes or 0) if count_local_model else 0
     room = free + own
     room_mib, need_mib = room // MIB, min_free_vram_bytes // MIB
     counted = f" (includes the local model's {own // MIB} MiB)" if own else ""

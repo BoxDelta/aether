@@ -290,7 +290,7 @@ for the highest level present.
 
 Unclassified content is treated as Personal. Routing tests must prove
 that Sensitive content never reaches a cloud adapter or an untrusted
-Ollama host, and that Secret content never reaches any adapter.
+Ollama or llama-swap host, and that Secret content never reaches any adapter.
 
 In code, the level names and their order are defined once, in
 `router/contract.py` (`PrivacyLevel`). The non-Secret subset (identity
@@ -568,7 +568,14 @@ differences:
 -   Known limitations: the same as Ollama's (a private-range address is
     trusted even on a network the owner doesn't control; `allow_cloud` also
     covers an off-network llama-swap host, which its name doesn't say); the
-    GPU probe matches the model's process by its name (`llama-server`) only.
+    GPU probe matches the model's process by its name (`llama-server`) only, so
+    any process with that name raises the room counted (it can bypass the VRAM
+    reserve, never privacy). While the llama-swap model is loaded, the room
+    counted for a request to it is total VRAM minus other users, so the 1.5 GiB
+    reserve cannot fail then (owner decision pending, PR notes); other providers
+    and the dispatcher use free VRAM alone. A key sent to an off-network `http`
+    URL travels in plain text (Core logs a fixed warning); a key under 8
+    characters is refused at startup because it could not be redacted.
 
 ## 8. Execution isolation
 
@@ -947,7 +954,7 @@ shapes only; they cannot recognise personal data.
             event metadata and invented memory data only (deleted in
             stage 7, #152).
         -   memory sent or copied out on purpose: to model providers by
-            retrieval (local Ollama, whose logs can hold prompts with
+            retrieval (local Ollama, llama-swap and llama-server (Docker json logs too), whose logs can hold prompts with
             debug logging on; the cloud or an off-network Ollama host
             with `allow_cloud`), the export file wherever it is saved
             (§7.1: keep it off synced or shared folders), and `/memory`

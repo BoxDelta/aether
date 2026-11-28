@@ -365,7 +365,7 @@ def loaded(free_mib: int, model_mib: int | None) -> HardwareSnapshot:
 def test_the_loaded_model_does_not_block_local_routing() -> None:
     # ADR-040 / tests/local-model/README.md §2.3: 1,131 MiB free with Qwen loaded.
     assert not has_local_headroom(loaded(1131, None)).ok  # not counted: blocked, as before
-    result = has_local_headroom(loaded(1131, 6006))
+    result = has_local_headroom(loaded(1131, 6006), count_local_model=True)
     assert result.ok
     assert result.reason == (
         "free VRAM 7137 MiB (includes the local model's 6006 MiB) meets reserve 1536 MiB"
@@ -382,3 +382,9 @@ def test_not_loaded_is_unchanged() -> None:
     assert has_local_headroom(loaded(1536, None)).ok
     assert not has_local_headroom(loaded(1535, None)).ok
     assert has_local_headroom(snapshot(None)).reason == "GPU state unknown"
+
+
+def test_the_model_is_counted_only_when_asked() -> None:
+    snap = loaded(1131, 6006)  # another local provider or the dispatcher: plain check
+    assert not has_local_headroom(snap).ok
+    assert has_local_headroom(snap, count_local_model=True).ok

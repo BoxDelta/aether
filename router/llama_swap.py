@@ -30,6 +30,7 @@ import httpx
 from pydantic import SecretStr
 
 from core.config import ConfigError, Settings
+from core.log import MIN_SECRET_LENGTH
 from router.contract import (
     FinishReason,
     ModelRequest,
@@ -57,6 +58,7 @@ LITELLM_PORTS = frozenset({4000})
 
 _FINISH_REASONS: dict[str, FinishReason] = {"stop": "stop", "length": "length"}
 
+KEY_ERROR = "LLAMA_SWAP_API_KEY must be at least 8 characters"
 URL_ERROR = "LLAMA_SWAP_URL must be an http(s) URL without a username or password"
 
 
@@ -84,6 +86,9 @@ class LlamaSwapProvider(Provider):
         category = classify_host(url)
         trusted = category in TRUSTED_CATEGORIES
         origin = _origin(url)
+        if api_key is not None and len(api_key.get_secret_value()) < MIN_SECRET_LENGTH:
+            # Shorter keys can't be redacted or refused by value (core.log).
+            raise ConfigError(KEY_ERROR)
         port = httpx.URL(url).port
         super().__init__(
             ProviderInfo(
@@ -106,6 +111,11 @@ class LlamaSwapProvider(Provider):
             logger.warning(
                 "LLAMA_SWAP_URL is not loopback or a private address; llama-swap is treated "
                 "like the cloud: it takes only requests with allow_cloud, at most personal.",
+            )
+        if not trusted and api_key is not None and httpx.URL(url).scheme == "http":
+            logger.warning(
+                "LLAMA_SWAP_URL is an http address off this network: the API key and the "
+                "prompts are sent in plain text. Use https or a local address.",
             )
         if port in LITELLM_PORTS:
             logger.warning(

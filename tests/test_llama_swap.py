@@ -528,3 +528,38 @@ def test_from_settings_needs_a_model() -> None:
         LlamaSwapProvider.from_settings(Settings(_env_file=None))
     p = LlamaSwapProvider.from_settings(Settings(_env_file=None, llama_swap_model=MODEL))
     assert p.info.default_model == MODEL
+
+
+def test_a_short_key_is_refused_without_echo() -> None:
+    with pytest.raises(ConfigError) as caught:
+        LlamaSwapProvider(URL, MODEL, api_key=SecretStr("abc123"))
+    assert "abc123" not in str(caught.value)
+
+
+def test_key_over_plain_http_off_network_warns(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger="aether.router.llama_swap"):
+        LlamaSwapProvider("http://gpu-box.example.org:9292", MODEL, api_key=SecretStr(KEY))
+    assert any("plain text" in r.getMessage() for r in caplog.records)
+    assert all(KEY not in r.getMessage() for r in caplog.records)
+
+
+def test_only_a_llama_swap_request_counts_the_model_in_routing(identity: Identity) -> None:
+    from tests.fakes import FakeProvider
+
+    # 1,131 MiB free, llama-server holds 6,006 MiB.
+    def probe() -> Any:
+        from router.hardware import MIB, GpuState, HardwareSnapshot
+
+        gpu = GpuState("nvml", 8192 * MIB, 1131 * MIB, 5, 6006 * MIB)
+        return HardwareSnapshot(gpu=gpu, ram_available_bytes=16 * 1024**3)
+
+    p, _ = provider()
+    cloud = FakeProvider("claude", "cloud")
+    r = Router([p, cloud], identity, secret_check=CHECK, probe=probe)
+    out = asyncio.run(r.handle(request(), RouteOptions(allow_cloud=True)))
+    assert out.decision.provider == PROVIDER_NAME  # warm model does not push to cloud
+
+    other = FakeProvider("ollama", "local")
+    r2 = Router([other, cloud], identity, secret_check=CHECK, probe=probe)
+    out2 = asyncio.run(r2.handle(request(), RouteOptions(allow_cloud=True)))
+    assert out2.decision.provider == "claude"  # plain check: 1,131 MiB < reserve
