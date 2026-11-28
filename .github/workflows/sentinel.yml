@@ -29,7 +29,7 @@ jobs:
           version: "0.13.8"
           enable-cache: true
       - name: Install dependencies from lockfile
-        run: uv sync --locked
+        run: uv sync --locked --group dispatch
       - name: Ruff lint
         run: uv run ruff check --output-format=github .
       - name: Ruff format
