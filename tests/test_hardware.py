@@ -388,3 +388,15 @@ def test_the_model_is_counted_only_when_asked() -> None:
     snap = loaded(1131, 6006)  # another local provider or the dispatcher: plain check
     assert not has_local_headroom(snap).ok
     assert has_local_headroom(snap, count_local_model=True).ok
+
+
+def test_cold_start_needs_the_model_plus_the_reserve() -> None:
+    model = 5200 * MIB
+    ok = has_local_headroom(loaded(6736, None), count_local_model=True, model_bytes=model)
+    assert ok.ok and "model not loaded" in ok.reason
+    no = has_local_headroom(loaded(6735, None), count_local_model=True, model_bytes=model)
+    assert not no.ok and "below model 5200 MiB plus reserve 1536 MiB" in no.reason
+    # Loaded: the counted behaviour (#277), whatever model_bytes says.
+    assert has_local_headroom(loaded(1131, 6006), count_local_model=True, model_bytes=model).ok
+    # Flag off (other providers, dispatcher): reserve only, model size ignored.
+    assert has_local_headroom(loaded(2000, None), model_bytes=model).ok

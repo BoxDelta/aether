@@ -23,8 +23,9 @@ runs in the dispatcher stack, outside this repository.
 -   **Keep verbose request logging off** in llama-swap and llama-server
     (their logs sit on the unencrypted disk). Don't start llama-server with
     options that print prompts.
--   Use a loopback or private-LAN URL. Any other host is treated like the
-    cloud (needs `allow_cloud`, at most Personal) and there is no opt-in.
+-   Use a loopback URL. Any other host, a private-LAN address included, is
+    treated like the cloud (needs `allow_cloud`, at most Personal, Public memory only) and there is
+    no opt-in.
 -   Aether never keeps the model warm: no pings, and `/ready` only lists
     models. llama-swap's `ttl` (900 s) unloads it after the last request,
     dispatcher traffic included.

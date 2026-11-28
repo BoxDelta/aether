@@ -275,9 +275,9 @@ for the highest level present.
                                               allowlist, #120)
 
   Sensitive     Health, finances, private     A trusted local host only
-                messages, other people's      (llama-swap or Ollama on
-                details                       loopback or a private
-                                              address; Ollama also
+                messages, other people's      (llama-swap on loopback
+                details                       only; Ollama on loopback or
+                                              a private address, also
                                               opted in with
                                               `AETHER_OLLAMA_TRUST_HOST`);
                                               as memory, only with the
@@ -540,11 +540,11 @@ differences:
     startup warning; it stays a warning, not a block. The URL's path, query
     and fragment are dropped, and a URL with a username or password stops
     Core at startup.
--   Trusted host (loopback, private or link-local literal, or `localhost`):
-    `sensitive`, memory up to `sensitive` (Sensitive memory only with the
-    request's `include_sensitive`). Any other host is off-network: up to
-    `personal`, only with `allow_cloud`, memory up to Personal only with
-    `allow_cloud`, the content tripwire (#8), the
+-   Trusted host: **loopback only** (`localhost`, 127.0.0.0/8, ::1), stricter
+    than Ollama: `sensitive`, memory up to `sensitive` (Sensitive memory only
+    with the request's `include_sensitive`). Any other host, a private or
+    link-local address included, is off-network: up to `personal`, only with
+    `allow_cloud`, **Public memory only**, the content tripwire (#8), the
     "[off-network host: data leaves this network]" route mark and one
     fixed-text startup warning. **There is no trust opt-in** (no
     `AETHER_OLLAMA_TRUST_HOST` equivalent).
@@ -552,9 +552,8 @@ differences:
     variables, so the API key and the prompt only go to the host that was
     checked.
 -   `LLAMA_SWAP_API_KEY` is redacted from logs by value and refused by
-    `SecretCheck` as memory content. Bearer auth over plain HTTP to a
-    private-LAN host has the same limit as Ollama: anyone on that network
-    can read it.
+    `SecretCheck` as memory content, and is sent only in the `Authorization`
+    header of requests to the checked host.
 -   Every request sets `chat_template_kwargs.enable_thinking=false`; a reply
     with empty content is a provider error, never an empty answer. One
     request at a time. `/ready` lists models (`GET /v1/models`) and never
@@ -565,14 +564,18 @@ differences:
 -   Ollama is off unless `AETHER_OLLAMA_ENABLED=true`; llama-swap is on only
     when `LLAMA_SWAP_MODEL` is set. With neither, only the cloud provider
     exists, so a default (local-only) request has no route.
--   Known limitations: the same as Ollama's (a private-range address is
-    trusted even on a network the owner doesn't control; `allow_cloud` also
-    covers an off-network llama-swap host, which its name doesn't say); the
+-   Cold start: while the model is not loaded (or NVML can't see it), routing
+    to llama-swap needs free VRAM of at least the model's size
+    (`LLAMA_SWAP_MODEL_VRAM_MIB`, default 5200) plus the 1.5 GiB reserve;
+    otherwise it looks elsewhere (the cloud with `allow_cloud`, else local
+    without headroom as before).
+-   Known limitations: `allow_cloud` also covers an off-network llama-swap
+    host, which its name doesn't say; the
     GPU probe matches the model's process by its name (`llama-server`) only, so
     any process with that name raises the room counted (it can bypass the VRAM
     reserve, never privacy). While the llama-swap model is loaded, the room
     counted for a request to it is total VRAM minus other users, so the 1.5 GiB
-    reserve cannot fail then (owner decision pending, PR notes); other providers
+    reserve cannot fail then (kept as built, owner decision #277); other providers
     and the dispatcher use free VRAM alone. A key sent to an off-network `http`
     URL travels in plain text (Core logs a fixed warning); a key under 8
     characters is refused at startup because it could not be redacted.

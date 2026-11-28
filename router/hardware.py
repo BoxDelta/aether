@@ -196,6 +196,7 @@ def has_local_headroom(
     min_free_vram_bytes: int = MIN_FREE_VRAM_BYTES,
     *,
     count_local_model: bool = False,
+    model_bytes: int = 0,
 ) -> Headroom:
     """Whether local inference may run without eating into the desktop's VRAM.
 
@@ -208,14 +209,30 @@ def has_local_headroom(
     takes no new VRAM, so a warm model must not block routing to itself. The room is
     free VRAM plus that allocation. Note this means the 1.5 GiB reserve cannot fail
     while the model is resident (room is then total VRAM minus other users); it only
-    applies when the model is not loaded. Not loaded, not reported, or the flag off
-    (other providers, the dispatcher): free VRAM alone, as before.
+    applies when the model is not loaded (#277: kept as built).
+
+    With the flag and the model *not* loaded (or NVML can't see it), the request would
+    load it, so free VRAM must cover ``model_bytes`` plus the reserve (ADR-040,
+    cold start); otherwise there is no headroom and routing looks elsewhere. The flag
+    off (other providers, the dispatcher): free VRAM against the reserve, as before.
     """
     free = snapshot.gpu.vram_free_bytes
     if free is None:
         return Headroom(False, "GPU state unknown")
     own = (snapshot.gpu.local_model_bytes or 0) if count_local_model else 0
     room = free + own
+    if count_local_model and not own and model_bytes:
+        needed = model_bytes + min_free_vram_bytes
+        free_mib, need_mib = free // MIB, needed // MIB
+        if free < needed:
+            return Headroom(
+                False,
+                f"model not loaded: free VRAM {free_mib} MiB below model "
+                f"{model_bytes // MIB} MiB plus reserve {min_free_vram_bytes // MIB} MiB",
+            )
+        return Headroom(
+            True, f"model not loaded: free VRAM {free_mib} MiB meets {need_mib} MiB needed"
+        )
     room_mib, need_mib = room // MIB, min_free_vram_bytes // MIB
     counted = f" (includes the local model's {own // MIB} MiB)" if own else ""
     if room < min_free_vram_bytes:

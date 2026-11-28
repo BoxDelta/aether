@@ -114,6 +114,9 @@ Option 4.
     -   When the model is not loaded, the check is the same as today:
         enough free VRAM for the model plus the reserve, otherwise
         cloud.
+    -   Implemented (#278): with the model not loaded, routing to llama-swap
+        needs free VRAM of at least `LLAMA_SWAP_MODEL_VRAM_MIB` (default
+        5200) plus the reserve.
     -   The probe change is tested with fakes.
 -   **llama-server flags:** `--jinja -ngl 99 --n-cpu-moe 35 -c 16384
     -fa on --cache-type-k q8_0 --cache-type-v q8_0` (D1).

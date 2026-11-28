@@ -359,6 +359,10 @@ class Router:
                     extra={"provider": provider.name, "error_type": type(exc).__name__},
                 )
 
+    def _model_bytes(self) -> int:
+        provider = self._by_name.get(LLAMA_SWAP_NAME)
+        return provider.vram_bytes if isinstance(provider, LlamaSwapProvider) else 0
+
     async def _headroom(self) -> tuple[Headroom | None, Headroom | None]:
         """(plain, counting the local model's own VRAM); None when the probe fails."""
         try:
@@ -369,7 +373,12 @@ class Router:
             return None, None
         return (
             has_local_headroom(snapshot, self._min_free_vram_bytes),
-            has_local_headroom(snapshot, self._min_free_vram_bytes, count_local_model=True),
+            has_local_headroom(
+                snapshot,
+                self._min_free_vram_bytes,
+                count_local_model=True,
+                model_bytes=self._model_bytes(),
+            ),
         )
 
     async def decide(

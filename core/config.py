@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     llama_swap_url: AnyHttpUrl = AnyHttpUrl("http://127.0.0.1:9292")
     llama_swap_model: str | None = None
     llama_swap_api_key: SecretStr | None = None
+    # VRAM the loaded model takes, in MiB (measured: about 5,200 with --n-cpu-moe 35,
+    # tests/local-model/README.md). While it is not loaded, routing needs this much
+    # free VRAM plus the 1.5 GiB reserve before it picks llama-swap (ADR-040).
+    llama_swap_model_vram_mib: int = Field(default=5200, ge=1, le=65536)
     # Ollama stays as a fallback but is off unless switched on (ADR-040).
     aether_ollama_enabled: bool = False
     ollama_host: AnyHttpUrl = AnyHttpUrl("http://localhost:11434")
@@ -146,6 +150,12 @@ class Settings(BaseSettings):
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @field_validator("llama_swap_model_vram_mib", mode="before")
+    @classmethod
+    def _empty_vram_is_default(cls, value: object) -> object:
+        # Left empty (as in .env.example): the default.
+        return 5200 if isinstance(value, str) and not value.strip() else value
 
     @field_validator("log_level", mode="before")
     @classmethod

@@ -375,8 +375,11 @@ def test_close_closes_the_client() -> None:
         ("http://127.0.0.1:9292", True),
         ("http://localhost:9292", True),
         ("http://[::1]:9292", True),
-        ("http://192.168.1.20:9292", True),
-        ("http://10.0.0.5:9292", True),
+        ("http://127.8.9.10:9292", True),
+        # Unlike Ollama, private addresses are not trusted (ADR-040):
+        ("http://192.168.1.20:9292", False),
+        ("http://10.0.0.5:9292", False),
+        ("http://169.254.1.1:9292", False),
         (UNTRUSTED, False),
         ("http://gpu-box:9292", False),
         ("http://8.8.8.8:9292", False),
@@ -389,8 +392,9 @@ def test_host_trust_sets_privacy_and_memory_caps(url: str, trusted: bool) -> Non
     assert info.kind == "local" and info.off_network is (not trusted)
     assert info.needs_allow_cloud is (not trusted)
     assert info.max_privacy == ("sensitive" if trusted else "personal")
-    assert info.memory_limit == ("sensitive" if trusted else "personal")
+    assert info.memory_limit == ("sensitive" if trusted else "public")  # ADR-040
     assert info.memory_limit_for(allow_cloud=False) == (info.memory_limit if trusted else None)
+    assert info.memory_limit_for(allow_cloud=True) == ("sensitive" if trusted else "public")
 
 
 def test_there_is_no_trust_opt_in() -> None:
@@ -563,3 +567,71 @@ def test_only_a_llama_swap_request_counts_the_model_in_routing(identity: Identit
     r2 = Router([other, cloud], identity, secret_check=CHECK, probe=probe)
     out2 = asyncio.run(r2.handle(request(), RouteOptions(allow_cloud=True)))
     assert out2.decision.provider == "claude"  # plain check: 1,131 MiB < reserve
+
+
+def test_a_private_lan_host_needs_allow_cloud_and_gets_public_memory(identity: Identity) -> None:
+    p, rec = provider(url="http://192.168.1.20:9292")
+    r = router(p, identity)
+
+    with pytest.raises(NoRoute, match="off-network"):
+        asyncio.run(r.handle(request(), RouteOptions()))
+    assert rec.chats() == []
+    out = asyncio.run(r.handle(request(), RouteOptions(allow_cloud=True)))
+    assert out.decision.reason.endswith(OFF_NETWORK_MARK)
+
+
+def _probe(free_mib: int, model_mib: int | None) -> Any:
+    from router.hardware import MIB, GpuState, HardwareSnapshot
+
+    def probe() -> HardwareSnapshot:
+        gpu = GpuState(
+            "nvml", 8192 * MIB, free_mib * MIB, 5, model_mib * MIB if model_mib else None
+        )
+        return HardwareSnapshot(gpu=gpu, ram_available_bytes=16 * 1024**3)
+
+    return probe
+
+
+@pytest.mark.parametrize(
+    ("free_mib", "goes_local"),
+    [(7105, True), (5200 + 1536, True), (5200 + 1535, False), (3000, False)],
+)
+def test_cold_start_needs_model_size_plus_reserve(
+    identity: Identity, free_mib: int, goes_local: bool
+) -> None:
+    from tests.fakes import FakeProvider
+
+    p, _ = provider()  # default model size: 5200 MiB
+    cloud = FakeProvider("claude", "cloud")
+    r = Router([p, cloud], identity, secret_check=CHECK, probe=_probe(free_mib, None))
+
+    out = asyncio.run(r.handle(request(), RouteOptions(allow_cloud=True)))
+
+    assert (out.decision.provider == PROVIDER_NAME) is goes_local
+    if not goes_local:
+        assert "model not loaded" in out.decision.reason
+
+
+def test_loaded_model_keeps_the_counted_behaviour(identity: Identity) -> None:
+    from tests.fakes import FakeProvider
+
+    p, _ = provider()
+    r = Router(
+        [p, FakeProvider("claude", "cloud")],
+        identity,
+        secret_check=CHECK,
+        probe=_probe(1131, 6006),
+    )
+
+    out = asyncio.run(r.handle(request(), RouteOptions(allow_cloud=True)))
+
+    assert out.decision.provider == PROVIDER_NAME
+
+
+def test_model_vram_setting() -> None:
+    assert Settings(_env_file=None).llama_swap_model_vram_mib == 5200
+    assert Settings(_env_file=None, llama_swap_model_vram_mib="").llama_swap_model_vram_mib == 5200  # type: ignore[arg-type]
+    p = LlamaSwapProvider.from_settings(
+        Settings(_env_file=None, llama_swap_model=MODEL, llama_swap_model_vram_mib=6000)
+    )
+    assert p.vram_bytes == 6000 * 1024 * 1024

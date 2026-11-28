@@ -9,10 +9,11 @@ Rules this adapter keeps (each has a test):
 
 - Thinking is off on every request (``chat_template_kwargs.enable_thinking=false``);
   a reply with empty content is ``ProviderBadResponse``, never an empty answer.
-- Host trust is the Ollama rule (ADR-023, ADR-032), from the URL text alone: a
-  loopback or private host is trusted (up to ``sensitive``); any other host is
-  off-network, capped at ``personal``, and needs ``allow_cloud``, so the content
-  tripwire runs. There is no trust opt-in for this adapter.
+- Host trust (ADR-023, ADR-032, ADR-040), from the URL text alone: only a loopback
+  host is trusted (up to ``sensitive``), stricter than Ollama, which also trusts
+  private addresses. Any other host is off-network, capped at ``personal``, gets
+  Public memory only, and needs ``allow_cloud``, so the content tripwire runs.
+  There is no trust opt-in for this adapter.
 - The client follows no redirects and ignores proxy variables, so the API key and
   the prompt only go to the configured host.
 - One request at a time (the model is shared with the dispatcher, docs/03 §3).
@@ -42,7 +43,7 @@ from router.contract import (
     ProviderUnavailable,
     Usage,
 )
-from router.host_trust import TRUSTED_CATEGORIES, HostCategory, classify_host
+from router.host_trust import HostCategory, classify_host
 
 logger = logging.getLogger("aether.router.llama_swap")
 
@@ -82,9 +83,11 @@ class LlamaSwapProvider(Provider):
         transport: httpx.AsyncBaseTransport | None = None,
         memory_max_records: int | None = None,
         memory_max_chars: int | None = None,
+        vram_mib: int = 5200,
     ) -> None:
         category = classify_host(url)
-        trusted = category in TRUSTED_CATEGORIES
+        # Loopback only (ADR-040): unlike Ollama, a private-LAN address is not trusted.
+        trusted = category == "loopback"
         origin = _origin(url)
         if api_key is not None and len(api_key.get_secret_value()) < MIN_SECRET_LENGTH:
             # Shorter keys can't be redacted or refused by value (core.log).
@@ -97,7 +100,8 @@ class LlamaSwapProvider(Provider):
                 default_model=default_model,
                 # Sensitive context only on a trusted host; never Secret (docs/05 §7.1).
                 max_privacy="sensitive" if trusted else "personal",
-                memory_limit="sensitive" if trusted else "personal",
+                # An untrusted host gets Public memory only (ADR-040).
+                memory_limit="sensitive" if trusted else "public",
                 # Any other host is off-network (ADR-032): like the cloud, it needs
                 # allow_cloud for requests and memory. No opt-in (ADR-040).
                 off_network=not trusted,
@@ -109,7 +113,7 @@ class LlamaSwapProvider(Provider):
         if not trusted:
             # Fixed text only: no variable reaches the log call, so the host can't leak.
             logger.warning(
-                "LLAMA_SWAP_URL is not loopback or a private address; llama-swap is treated "
+                "LLAMA_SWAP_URL is not loopback; llama-swap is treated "
                 "like the cloud: it takes only requests with allow_cloud, at most personal.",
             )
         if not trusted and api_key is not None and httpx.URL(url).scheme == "http":
@@ -123,6 +127,7 @@ class LlamaSwapProvider(Provider):
                 "llama-swap directly: LiteLLM and Langfuse log full prompts.",
             )
         self._origin = origin
+        self.vram_bytes = vram_mib * 1024 * 1024  # what a cold start needs free (ADR-040)
         headers = {"Authorization": f"Bearer {api_key.get_secret_value()}"} if api_key else {}
         client_kwargs: dict[str, Any] = {
             "timeout": httpx.Timeout(None, connect=CONNECT_TIMEOUT_S),
@@ -147,6 +152,7 @@ class LlamaSwapProvider(Provider):
             url=str(settings.llama_swap_url),
             default_model=settings.llama_swap_model,
             api_key=settings.llama_swap_api_key,
+            vram_mib=settings.llama_swap_model_vram_mib,
         )
 
     async def _generate(self, request: ModelRequest) -> ModelResponse:
