@@ -121,6 +121,28 @@ Docker; the first run builds it (network needed for that build only).
 Measured on 2026-11-27 (a one-line docs change, no push): Aider about
 25 s, the whole try about 40 s once the image exists.
 
+## Owner signature (step 4d, ADR-042; module only so far)
+
+`dispatch/proof.py` holds the check for issues the Discord bot makes: an
+Ed25519 signature in the last line of the body, bound to the repository, the
+issue number, the owner's Discord ID, the route (`claude`), a time, the exact
+title and the exact body text. The bot (not built yet) signs with a key only
+its own Linux user can read. The dispatcher and `verify` (not built yet) hold
+only the public key, from `/etc/aether-dispatch/proof.pub`, and the owner's ID
+from `/etc/aether-dispatch/owner_id`: root-owned files at fixed paths that no
+environment variable changes. Nothing calls the module yet, so no issue is
+trusted through it today.
+
+It needs `cryptography`, in the `dispatch` dependency group:
+`uv sync --locked --group dispatch`. The proof tests fail without it.
+
+Dependency check (docs/03 §8), recorded when the version was pinned:
+`cryptography==50.0.2` (Apache-2.0 or BSD-3-Clause, uploaded 2026-09-30,
+wheels for the project's Python 3.14 on x86_64 Linux), with `cffi` 2.1.1
+(MIT, cp314 wheel) and `pycparser` 3.12 (BSD-3-Clause). All three are exact
+in `uv.lock` with hashes, and the Sentinel audit covers them
+(`pip-audit --all-groups`).
+
 ## Discord posts
 
 The only messages are `#<n> brief ready` and `#<n> local PR #<p> opened`:
