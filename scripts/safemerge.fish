@@ -25,7 +25,7 @@ function safemerge --description 'Wait for Sentinel checks, then merge the PR (o
     set -l c "([.[] | select(.name == \"checks\" and .state == \"SUCCESS\")] | length > 0) and ([.[] | select(.name == \"secrets\" and .state == \"SUCCESS\")] | length > 0) | if . then \"yes\" else \"no\" end"
     set -l admin
     if test "$author" = BoxDelta
-        # The owner has no second reviewer, so --admin skips the approval rule (and every other rule).
+        # The owner has no second reviewer, so --admin skips only the `review` ruleset (the owner's bypass).
         # That needs the reviewed hash: a push by anyone after your review must never be merged.
         if test -z "$reviewed"
             echo "PR author is BoxDelta: pass the reviewed commit (safemerge $pr <hash>) so --admin merges only what you saw; not merging"
@@ -44,7 +44,7 @@ function safemerge --description 'Wait for Sentinel checks, then merge the PR (o
     gh pr checks $pr --repo BoxDelta/aether --watch --fail-fast
     or return 1
     if test -n "$admin"
-        # --admin skips GitHub's required checks, so require Sentinel's two jobs to have succeeded.
+        # The `checks` ruleset has no bypass, so GitHub also requires these; checked here as a second layer.
         set -l ok (gh pr checks $pr --repo BoxDelta/aether --json name,state --jq $c)
         or return 1
         if test "$ok" != yes
