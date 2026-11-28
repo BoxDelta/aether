@@ -57,8 +57,10 @@ port**; it acts only for the owner's numeric Discord user ID, in one
 numeric server and channel, and ignores everyone else silently. It runs as
 its own Linux user (`aether-bot`, a system-level systemd unit, from a
 root-owned copy of reviewed `main`), and that user alone can read its
-Discord token, its own GitHub token and its Ed25519 private key; nothing
-running as the owner's user (Claude Code, the dispatcher) can sign. The bot
+Discord token, its own GitHub token and its Ed25519 private key, so by
+file permissions nothing running as the owner's user (Claude Code, the
+dispatcher) can sign. That holds only while the owner's user is not
+root-equivalent through the `docker` group, which is open in ADR-042. The bot
 signs each issue it creates, bound to the repository and issue number, and
 the dispatcher and `/work-on` verify it with a public key in a root-owned
 file, because nothing the machine user does counts as the owner's without

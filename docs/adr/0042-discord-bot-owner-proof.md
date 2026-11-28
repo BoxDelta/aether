@@ -9,7 +9,10 @@ token live in the bot's own files, owned by another Linux user) and §Local
 path (the dispatcher never adds `dispatch:auto`; the bot, a separate
 program, does); ADR-041 decision 4; ADR-022 decision 6 and `CLAUDE.md`
 rule 12 (agents act only on issues the owner wrote). The `CLAUDE.md`
-change is in the pull request that proposes this ADR.
+change is in the pull request that proposes this ADR, and applies only once
+this ADR is Accepted and `verify` exists; docs/05 §10.1 and
+`CONTRIBUTING.md` (which state the rule the old way) change in the
+acceptance PR.
 
 ## Context
 
@@ -21,8 +24,10 @@ owner's: the issue must be opened by `BoxDelta`, and the trust labels must
 be added by `BoxDelta`. So an issue made by the bot would never be picked
 up, and if it were, a stolen machine-user token could create trusted
 issues. The bot needs a way to show that a request came from the owner that
-a stolen GitHub token cannot copy, and that nothing running as the owner's
-own Linux user (Claude Code, the dispatcher) can produce either.
+a stolen GitHub token cannot copy, and that a Claude Code session or the
+dispatcher cannot produce either. It does not raise trust against a takeover
+of the owner's own user: anything running as the owner can already make
+trusted issues with the owner's admin `gh` credentials (ADR-041 Limits).
 
 ## Decision
 
@@ -36,10 +41,12 @@ own Linux user (Claude Code, the dispatcher) can produce either.
     owner's user session. Its private signing key, `DISCORD_BOT_TOKEN`, its
     GitHub token and its state are readable only by `aether-bot`. The code it
     runs is a root-owned checkout of reviewed `main` under `/opt/aether-bot`,
-    which the owner's user cannot write, so nothing running as the owner
-    (Claude Code, the dispatcher, a prompt-injected session) can read the key
-    or change the code that holds it. The unit is hardened (see the
-    runbook). The one-time setup is in the appendix.
+    which the owner's user cannot write, so, by file permissions alone, nothing
+    running as the owner (Claude Code, the dispatcher, a prompt-injected
+    session) can read the key or change the code that holds it. **That holds
+    only if the owner's user is not root-equivalent** (see Limits: the
+    `docker` group). The unit is hardened (see the appendix, which also holds
+    the one-time setup).
 3.  **Input: one slash command, `/task`.** Options: `title`, `details`,
     `files` (optional, up to 5). Slash commands only, so the bot needs no
     Message Content intent and parses no free text. Discord delivers the
@@ -71,7 +78,8 @@ own Linux user (Claude Code, the dispatcher) can produce either.
     zeros), the owner's Discord ID (decimal ASCII), route (`claude`), `ts`
     (integer Unix seconds), `nonce` (16 random bytes as 32 lowercase hex
     characters), the title, and the body text before the proof line, taken as
-    one field and never re-parsed. The body is that text, one LF, then the
+    one field and never re-parsed. The repository string is a constant in
+    the code, never read from the API or the environment. The body is that text, one LF, then the
     proof line, and nothing after it; an empty or null body fails. The bot
     strips leading and trailing whitespace from the title before signing
     (GitHub does too) and refuses control characters. The repository, issue
@@ -165,9 +173,16 @@ own Linux user (Claude Code, the dispatcher) can produce either.
         environment, so the dispatcher, which runs with the owner's
         credentials, never installs the gateway library.
 
-    Sentinel's `uv sync --locked` installs only default groups, so the
-    pull request that adds the groups must also change the Sentinel step
-    (a `.github/` edit, with the owner's approval) or the proof tests skip.
+    Sentinel's `uv sync --locked` installs only default groups, and
+    `mypy` would fail on the missing import first. So the pull request that
+    adds the groups also changes the Sentinel step to `--group dispatch` (a
+    `.github/` edit, with the owner's approval), and the proof tests must
+    **fail, not skip**, when `cryptography` is missing (docs/05 §10: a skipped
+    check must be visible). `discord.py` is imported only in a thin layer of
+    the bot, lazily; the rest of the bot is tested in Sentinel against a fake
+    gateway. The trust check imports `cryptography` lazily and treats an
+    import failure as "no valid signature" (bot issues skipped, every other
+    path unaffected); a test covers it.
 
 ### docs/03 §8 checklist for `cryptography`
 
@@ -185,8 +200,9 @@ own Linux user (Claude Code, the dispatcher) can produce either.
     when pinned; it is not in `uv.lock` yet.
 -   New privileged execution path: no. It is a library with no network or
     file access of its own.
--   Failure isolation: if it fails to import, the dispatcher skips bot
-    issues (fails closed); every other path is unaffected.
+-   Failure isolation: a requirement, with a test (decision 12): if it fails
+    to import, the dispatcher skips bot issues (fails closed) and every other
+    path is unaffected.
 
 ### docs/03 §8 checklist for `discord.py`
 
@@ -203,8 +219,9 @@ own Linux user (Claude Code, the dispatcher) can produce either.
 -   Replaceable: yes. The signature and the issue creation do not depend on
     the library; another client could call them.
 -   Runs on this PC: `discord.py` is pure Python but brings `aiohttp` and its
-    transitive packages (`multidict`, `yarl`, `frozenlist`, `propcache`),
-    some with compiled parts, none in `uv.lock` yet. When the version is
+    transitive packages (for example `multidict`, `yarl`, `frozenlist`,
+    `propcache`, `aiohappyeyeballs`, `aiosignal`, `attrs`, `idna`, and
+    `audioop-lts` on Python 3.13 and later), some with compiled parts, none in `uv.lock` yet. When the version is
     pinned, list them with their licences, and check the lot against the
     project's Python (`.python-version`, 3.14) including any backport
     package it asks for.
@@ -252,15 +269,40 @@ own Linux user (Claude Code, the dispatcher) can produce either.
     owner was at the keyboard. A takeover of the owner's Discord account (use
     two-factor authentication, keep the server private with only the owner
     in it) defeats it.
+-   **The `docker` group.** At the time of writing the owner's user is in
+    the `docker` group (checked 2026-11-28), and Docker's socket is
+    root-equivalent: a container can read `/etc/aether-bot/proof.key`, replace
+    `/etc/aether-dispatch/proof.pub`, or rewrite `/opt/aether-bot`, with no
+    password and no Claude Code prompt (the dispatcher's local path and the
+    Postgres backup already use `docker` as the owner, ADR-025 D8). Until that
+    changes, the separate user protects against a session that cannot use
+    Docker, which is not a boundary. **The owner decides before accepting
+    this ADR**, one of: (a) rootless Docker or Podman, and the owner leaves
+    the `docker` group (touches Postgres, the backup timer and the local
+    path's test runner); (b) the private key on a hardware token that needs a
+    touch (a larger change to the bot); (c) accept the limit, record it, and
+    put `Bash(docker *)` on the ask list (a prompt, not a boundary). The
+    runbook checks the group.
 -   Root can read the key, and so can anyone who gets root on this PC or
     `aether-bot`'s files by another route. The owner's own sudo is the
-    boundary: the runbook checks that it asks for a password, so Claude Code
-    cannot use it unattended (`Bash(sudo *)` is also on the ask list).
+    boundary, and only while nothing has written to the owner's shell
+    configuration (a `sudo` function or a PATH entry would capture the
+    password): run the runbook and updates from a fresh login shell with
+    `command sudo` and absolute paths. `pkexec`, `run0`, `systemd-run`,
+    `systemctl` and `su` are not on the Claude Code ask list; adding them is
+    a follow-up (`.claude/settings.json`, owner approval). GNOME can show a
+    polkit password dialog for them.
+-   The private key lives in the same process as `discord.py` and `aiohttp`,
+    which parse network input from Discord. The separate dependency group
+    protects the dispatcher, not the key. A small signing process with no
+    network access, called by the bot, would fix that; not chosen now.
 -   The bot's code is only as good as the commit the owner deploys. The
     update step shows the commit before it is deployed.
 -   Comments and later edits to a bot issue's labels are not covered; the
     dispatcher ignores comments, and bot labels carry no trust.
 -   Discord is not end-to-end encrypted, and Discord can read task text.
+-   The separate Linux user raises no trust against a takeover of the owner's
+    own user (the context above).
 -   `/work-on` is a rule a session follows. The signature stops forgery, not
     a session that skips the check.
 
@@ -298,7 +340,9 @@ portal with "Public Bot" off and no privileged intents.
 cat /etc/aether-bot/proof.key                     # Permission denied
 cat /etc/aether-bot/bot.env                       # Permission denied
 sudo -u aether-bot cat ~/.config/aether-dispatch/dispatch.env   # Permission denied
-sudo -n true; echo $status                        # non-zero: sudo asks for a password
+sudo -k; sudo -n true; echo $status               # non-zero: sudo asks for a password
+sudo -l | grep -i nopasswd                        # no output
+id -nG | string match -q '*docker*'; and echo "owner is root-equivalent via Docker (see Limits)"
 ls -l /etc/aether-dispatch                        # both files root:root, -rw-r--r--
 ```
 
@@ -308,24 +352,39 @@ merged; the exact commands and the unit file come with it).
 ```fish
 sudo install -d -o root -g root -m 755 /opt/aether-bot
 sudo git clone https://github.com/BoxDelta/aether.git /opt/aether-bot/repo
-sudo env UV_PROJECT_ENVIRONMENT=/opt/aether-bot/venv uv sync --locked --no-dev --group dispatch --group dispatch-bot --project /opt/aether-bot/repo
+sudo env UV_PROJECT_ENVIRONMENT=/opt/aether-bot/venv UV_PYTHON_INSTALL_DIR=/opt/aether-bot/python /usr/bin/uv sync --locked --no-build --no-dev --group dispatch --group dispatch-bot --project /opt/aether-bot/repo
 sudo install -o root -g root -m 644 /opt/aether-bot/repo/scripts/systemd/system/aether-bot.service /etc/systemd/system/aether-bot.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now aether-bot.service
 ```
 
-The unit runs as `aether-bot` with `NoNewPrivileges`, `ProtectSystem=strict`,
-`ProtectHome=true`, `PrivateTmp`, `PrivateDevices`, `ProtectKernel*`,
-an empty `CapabilityBoundingSet`, `RestrictAddressFamilies=AF_INET AF_INET6`,
-a system-call filter, and write access only to `/var/lib/aether-bot`.
+`uv` is the pacman copy at `/usr/bin/uv` (root-owned), called by absolute
+path, because `sudo` must not run a file the owner's user can write. The
+`--no-build` flag installs wheels only, so no package build runs as root, and
+`UV_PYTHON_INSTALL_DIR` keeps the interpreter where `aether-bot` can run it.
 
-**Updating the bot.** Look at what would be deployed, then deploy it:
+The unit runs as `aether-bot` with `NoNewPrivileges`, `ProtectSystem=strict`,
+`ProtectHome=true`, `ProtectProc=invisible`, `ProcSubset=pid`, `PrivateTmp`,
+`PrivateDevices`, `ProtectKernel*`, `RestrictNamespaces`, `RestrictSUIDSGID`,
+`LockPersonality`, `UMask=0077`, an empty `CapabilityBoundingSet`,
+`RestrictAddressFamilies=AF_INET AF_INET6`, `IPAddressDeny=localhost
+link-local multicast` (so a compromised dependency cannot reach LiteLLM,
+Postgres, n8n or the other local services; allow the DNS resolver if it is
+local), a system-call filter, and write access only to `/var/lib/aether-bot`.
+
+**Updating the bot.** Everything merged to `main` reaches the process that
+holds the key, so read the whole diff of the bot's code, dependencies and
+unit before deploying (a Dependabot bump of `discord.py` or `aiohttp` counts):
 
 ```fish
 sudo git -C /opt/aether-bot/repo fetch origin main
 sudo git -C /opt/aether-bot/repo log --oneline HEAD..origin/main
+sudo git -C /opt/aether-bot/repo diff --stat HEAD origin/main -- dispatch pyproject.toml uv.lock scripts/systemd
+sudo git -C /opt/aether-bot/repo diff HEAD origin/main -- dispatch scripts/systemd
 sudo git -C /opt/aether-bot/repo merge --ff-only origin/main
-sudo env UV_PROJECT_ENVIRONMENT=/opt/aether-bot/venv uv sync --locked --no-dev --group dispatch --group dispatch-bot --project /opt/aether-bot/repo
+sudo env UV_PROJECT_ENVIRONMENT=/opt/aether-bot/venv UV_PYTHON_INSTALL_DIR=/opt/aether-bot/python /usr/bin/uv sync --locked --no-build --no-dev --group dispatch --group dispatch-bot --project /opt/aether-bot/repo
+sudo install -o root -g root -m 644 /opt/aether-bot/repo/scripts/systemd/system/aether-bot.service /etc/systemd/system/aether-bot.service
+sudo systemctl daemon-reload
 sudo systemctl restart aether-bot.service
 ```
 
