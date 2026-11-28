@@ -51,7 +51,7 @@ the security-reviewer subagent, not the local path.
    backlog).
 3. Merge ADRs 034 to 037.
 4. Sentinel track part A (section 3a).
-5. Accept ADR-040 and build the llama-swap adapter before Step 4.
+5. Build the llama-swap adapter (ADR-040, Accepted) before Step 4.
 
 ### Step 1: API foundation (docs/05)
 1. Login, session cookie, logout, CSRF; service tokens with scopes for n8n.
