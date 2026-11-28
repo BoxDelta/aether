@@ -304,3 +304,43 @@ def test_nvidia_smi_fallback_is_probed_on_every_call(monkeypatch: pytest.MonkeyP
     for _ in range(3):
         assert probe_gpu().source == "nvidia-smi"
     assert len(seen) == 3
+
+
+# --- the llama-swap model: loaded or cold (ADR-040) ---------------------------------
+
+
+def free_only(free_mib: int | None) -> HardwareSnapshot:
+    gpu = UNKNOWN_GPU if free_mib is None else GpuState("nvml", 8 * GIB, free_mib * MIB, 5)
+    return HardwareSnapshot(gpu=gpu, ram_available_bytes=16 * GIB)
+
+
+MODEL = 5200 * MIB
+
+
+def test_a_loaded_model_needs_no_new_vram() -> None:
+    # tests/local-model/README.md §2.3: 1,131 MiB free with Qwen loaded.
+    result = has_local_headroom(free_only(1131), model_bytes=MODEL, model_loaded=True)
+    assert result.ok and result.reason == "model loaded: no new VRAM needed"
+    assert has_local_headroom(free_only(None), model_bytes=MODEL, model_loaded=True).ok
+
+
+def test_a_cold_model_needs_its_size_plus_the_reserve() -> None:
+    ok = has_local_headroom(free_only(6736), model_bytes=MODEL)
+    assert ok.ok and "model not loaded" in ok.reason
+    no = has_local_headroom(free_only(6735), model_bytes=MODEL)
+    assert not no.ok and "below model 5200 MiB plus reserve 1536 MiB" in no.reason
+    assert not has_local_headroom(free_only(None), model_bytes=MODEL).ok
+
+
+def test_without_a_model_size_it_is_the_plain_check() -> None:
+    assert has_local_headroom(free_only(2000)).ok
+    assert not has_local_headroom(free_only(1535)).ok
+    assert has_local_headroom(snapshot(None)).reason == "GPU state unknown"
+    # model_loaded alone changes nothing: the plain check has no model.
+    assert not has_local_headroom(free_only(1000), model_loaded=True).ok
+
+
+def test_the_probe_reports_free_vram_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    mod, _ = fake_nvml(free=2 * GIB)
+    use_nvml(monkeypatch, mod)
+    assert not hasattr(probe_gpu(), "local_model_bytes")

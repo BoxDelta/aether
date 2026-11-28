@@ -57,7 +57,7 @@ host environment is Arch / GNOME, with Android access planned.
   `adr/`                                         Architecture decision records
 
   `runbooks/`                                    Step-by-step checks on the real PC
-                                                 (Phase 1 exit check, #23)
+                                                 (exit checks; llama-swap setup)
   ----------------------------------------------------------------------------------
 
 ## Issue references

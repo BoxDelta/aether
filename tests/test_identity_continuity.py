@@ -5,6 +5,7 @@ import re
 
 import pytest
 
+from core.config import Settings
 from core.identity import load_identity
 from core.log import REDACTED, Redactor, SecretCheck
 from router.contract import (
@@ -15,7 +16,16 @@ from router.contract import (
     ProviderTimeout,
     Usage,
 )
-from scripts.identity_continuity import PROMPTS, load_prompts, parse_args, render, run, summary
+from router.llama_swap import LlamaSwapProvider
+from scripts.identity_continuity import (
+    PROMPTS,
+    load_prompts,
+    make_provider,
+    parse_args,
+    render,
+    run,
+    summary,
+)
 
 FAKE_KEY = "sk-ant-api03-FAKE-continuity-0123456789"  # gitleaks:allow
 
@@ -165,3 +175,9 @@ def test_parse_args_rejects_bad_limits(bad: str, capsys: pytest.CaptureFixture[s
         parse_args(["claude", "--max-tokens", bad])
 
     assert "must be a whole number from 1 to 32000" in capsys.readouterr().err
+
+
+def test_llama_swap_is_a_provider_choice() -> None:
+    assert parse_args(["llama-swap"]).provider == "llama-swap"
+    settings = Settings(_env_file=None, llama_swap_model="qwen-test")
+    assert isinstance(make_provider("llama-swap", settings), LlamaSwapProvider)

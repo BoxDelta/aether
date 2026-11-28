@@ -557,13 +557,32 @@ def test_duplicate_provider_names_rejected(identity: Identity) -> None:
         )
 
 
-def test_from_settings_builds_local_then_cloud(identity: Identity) -> None:
+def test_from_settings_defaults_to_cloud_only(identity: Identity) -> None:
+    # No LLAMA_SWAP_MODEL and Ollama off (ADR-040): only the cloud provider exists.
     settings = Settings(_env_file=None, anthropic_api_key=SecretStr("not-a-real-key"))
     router = Router.from_settings(settings, identity)
+    assert [(p.name, p.info.kind) for p in router._providers] == [("claude", "cloud")]
+
+
+def test_from_settings_prefers_llama_swap_then_ollama_then_cloud(identity: Identity) -> None:
+    settings = Settings(
+        _env_file=None,
+        anthropic_api_key=SecretStr("not-a-real-key"),
+        llama_swap_model="qwen-test",
+        aether_ollama_enabled=True,
+    )
+    router = Router.from_settings(settings, identity)
     assert [(p.name, p.info.kind) for p in router._providers] == [
+        ("llama-swap", "local"),
         ("ollama", "local"),
         ("claude", "cloud"),
     ]
+
+
+def test_from_settings_with_llama_swap_only(identity: Identity) -> None:
+    settings = Settings(_env_file=None, llama_swap_model="qwen-test")
+    router = Router.from_settings(settings, identity)
+    assert [p.name for p in router._providers] == ["llama-swap", "claude"]
 
 
 # --- #121: override checks only itself; cancellation; one log line on no failover ----
@@ -652,3 +671,29 @@ def test_no_failover_logs_one_line_not_also_no_route(
     messages = [r.getMessage() for r in caplog.records]
     assert "No failover" in messages
     assert "No route" not in messages
+
+
+def test_a_cancelled_decision_cancels_the_running_check_too(identity: Identity) -> None:
+    import httpx
+
+    from router.llama_swap import LlamaSwapProvider
+
+    async def hang(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "m"}]})
+        await asyncio.Event().wait()  # /running never answers
+        raise AssertionError("unreachable")
+
+    p = LlamaSwapProvider("http://127.0.0.1:9292", "m", transport=httpx.MockTransport(hang))
+    router = Router([p], identity, secret_check=CHECK, probe=lambda: snapshot(4.0))
+
+    async def body() -> list[asyncio.Task[object]]:
+        task = asyncio.ensure_future(router.decide(req(), RouteOptions()))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+        return [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+
+    assert asyncio.run(body()) == []

@@ -8,6 +8,7 @@ and stack info; bool, number and None extras are kept as they are), in this orde
 
 1. Exact values of configured secrets (``secrets_from()``), longest first:
    - ``ANTHROPIC_API_KEY``;
+   - ``LLAMA_SWAP_API_KEY``;
    - ``AETHER_API_TOKEN``;
    - the passwords in ``DATABASE_URL`` and ``DATABASE_MIGRATION_URL``, both as
      written and percent-decoded.
@@ -179,6 +180,8 @@ def secrets_from(settings: Settings) -> list[str]:
     secrets: list[str] = []
     if settings.anthropic_api_key is not None:
         secrets.append(settings.anthropic_api_key.get_secret_value())
+    if settings.llama_swap_api_key is not None:
+        secrets.append(settings.llama_swap_api_key.get_secret_value())
     if settings.aether_api_token is not None:
         secrets.append(settings.aether_api_token.get_secret_value())
     for url in (settings.database_url, settings.database_migration_url):

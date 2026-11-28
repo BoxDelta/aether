@@ -16,6 +16,7 @@ from core.identity import load_identity
 from core.log import configure_logging
 from router.claude import ClaudeProvider
 from router.contract import ModelRequest, ModelResponse, Provider, ProviderInfo
+from router.llama_swap import LlamaSwapProvider
 from router.ollama import OllamaProvider
 from router.routing import Router
 from tests.fakes import CHECK
@@ -111,15 +112,19 @@ def test_app_shutdown_closes_real_adapters_and_engine(monkeypatch: pytest.Monkey
         _env_file=None,
         anthropic_api_key=SecretStr(FAKE_KEY),
         database_url=SecretStr(url),
+        llama_swap_model="qwen-test",
+        aether_ollama_enabled=True,
     )
     app = create_app(settings)
-    ollama, claude = app.state.router._providers
+    llama_swap, ollama, claude = app.state.router._providers
+    assert isinstance(llama_swap, LlamaSwapProvider)
     assert isinstance(ollama, OllamaProvider) and isinstance(claude, ClaudeProvider)
     disposed = track_dispose(monkeypatch)
 
     with TestClient(app):
         pass
 
+    assert llama_swap._client.is_closed
     assert ollama._client._client.is_closed
     assert claude._client is not None and claude._client.is_closed()
     assert disposed == [True]

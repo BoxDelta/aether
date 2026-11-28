@@ -106,7 +106,8 @@ Option 4.
     §3). The dispatcher reaches it through LiteLLM as today. That
     carries no Aether context, because it is a separate client (ADR-030).
     More parallel requests come only after measuring them.
--   **GPU probe:** the probe counts the model's own allocation.
+-   **GPU probe:** the probe counts the model's own allocation (amended
+    2026-11-28, see Amendment: loaded or cold now comes from `/running`).
     -   NVML lists `llama-server` with its memory, so free VRAM plus that
         allocation is the room the local model already has.
     -   Local routing is not blocked by the model it would use, and other
@@ -114,6 +115,9 @@ Option 4.
     -   When the model is not loaded, the check is the same as today:
         enough free VRAM for the model plus the reserve, otherwise
         cloud.
+    -   Implemented (#278): with the model not loaded, routing to llama-swap
+        needs free VRAM of at least `LLAMA_SWAP_MODEL_VRAM_MIB` (default
+        5200) plus the reserve.
     -   The probe change is tested with fakes.
 -   **llama-server flags:** `--jinja -ngl 99 --n-cpu-moe 35 -c 16384
     -fa on --cache-type-k q8_0 --cache-type-v q8_0` (D1).
@@ -134,6 +138,29 @@ Option 4.
 -   **Placement:** this is part of the ADR-030 fold-in track. It lands
     before Phase 3 Step 4 (chat view, docs/08), so daily use starts on
     the new model.
+
+## Amendment (2026-11-28, approved by the owner)
+
+Recorded here; the Decision above is otherwise unchanged.
+
+-   **Host trust is loopback only.** Only `localhost`, 127.0.0.0/8 and ::1
+    are trusted for llama-swap. This is stricter than Ollama: private and
+    link-local addresses are untrusted too. An untrusted host is
+    off-network: it needs `allow_cloud`, gets `public` memory only, at most
+    `personal` requests, the content tripwire and the route mark. This
+    replaces "a loopback or private host is trusted" and "the same rules as
+    Ollama" under Host trust, and the note about Bearer auth to a
+    private-LAN host.
+-   **Loaded or cold comes from llama-swap's `/running` endpoint**, read
+    over the same client as every other call (the configured host, loopback
+    when trusted; no redirects, no proxies, 1 s timeout), never from the GPU. If it can't be reached, the
+    model counts as cold. NVML supplies free VRAM only, so the GPU probe no
+    longer reads `llama-server`'s allocation (this replaces the GPU probe
+    bullet's use of NVML's process list).
+-   **Loaded:** no new VRAM is needed, so the reserve is not checked
+    (#277). **Cold:** free VRAM must cover the model
+    (`LLAMA_SWAP_MODEL_VRAM_MIB`, default 5200) plus the 1.5 GiB reserve
+    (#278).
 
 ## Decisions for the owner
 

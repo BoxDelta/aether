@@ -21,7 +21,9 @@ are in `docs/adr/`; a longer tour is in `docs/CODE_TOUR.md`.
     `backup.py` verified backups.
 -   `router/` (Nexus): `contract.py` provider contract and privacy
     levels, `routing.py` rules and failover, `identity_call.py` the one
-    function every model call goes through, `ollama.py` (local),
+    function every model call goes through, `llama_swap.py` (local,
+    ADR-040), `ollama.py` (local, off by default), `host_trust.py` (which
+    hosts are trusted),
     `claude.py` (cloud), `hardware.py` GPU/RAM probe,
     `memory_context.py` the memory a call gets and its backstop,
     `echo.py` the echo backstop.

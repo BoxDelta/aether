@@ -167,18 +167,49 @@ def probe() -> HardwareSnapshot:
 
 
 def has_local_headroom(
-    snapshot: HardwareSnapshot, min_free_vram_bytes: int = MIN_FREE_VRAM_BYTES
+    snapshot: HardwareSnapshot,
+    min_free_vram_bytes: int = MIN_FREE_VRAM_BYTES,
+    *,
+    model_bytes: int | None = None,
+    model_loaded: bool = False,
 ) -> Headroom:
     """Whether local inference may run without eating into the desktop's VRAM.
 
     Unknown GPU state counts as *no* headroom: the Charter puts desktop
     responsiveness before local throughput, so routing prefers cloud unless it
     has a reason (privacy, manual override) to go local anyway.
+
+    The GPU numbers are free VRAM only. For a request to the llama-swap model
+    (``model_bytes`` set, ADR-040) whether the model is loaded comes from llama-swap
+    itself (``model_loaded``, from its ``/running`` endpoint), never from the GPU:
+
+    - loaded: the request takes no new VRAM, so the 1.5 GiB reserve is not checked
+      (#277, kept as built); the GPU state doesn't matter;
+    - not loaded (or llama-swap couldn't say): the request would load it, so free
+      VRAM must cover ``model_bytes`` plus the reserve, and an unknown GPU is no
+      headroom.
+
+    ``model_bytes`` None (other providers, the dispatcher): free VRAM against the
+    reserve, as before.
     """
     free = snapshot.gpu.vram_free_bytes
+    if model_bytes is not None and model_loaded:
+        return Headroom(True, "model loaded: no new VRAM needed")
     if free is None:
         return Headroom(False, "GPU state unknown")
-    free_mib, need_mib = free // MIB, min_free_vram_bytes // MIB
+    free_mib = free // MIB
+    if model_bytes is not None:
+        needed = model_bytes + min_free_vram_bytes
+        if free < needed:
+            return Headroom(
+                False,
+                f"model not loaded: free VRAM {free_mib} MiB below model "
+                f"{model_bytes // MIB} MiB plus reserve {min_free_vram_bytes // MIB} MiB",
+            )
+        return Headroom(
+            True, f"model not loaded: free VRAM {free_mib} MiB meets {needed // MIB} MiB needed"
+        )
+    need_mib = min_free_vram_bytes // MIB
     if free < min_free_vram_bytes:
         return Headroom(False, f"free VRAM {free_mib} MiB below reserve {need_mib} MiB")
     return Headroom(True, f"free VRAM {free_mib} MiB meets reserve {need_mib} MiB")

@@ -99,8 +99,13 @@ storage, or direct unmediated host execution.
 
 -   `GET /health` is liveness only, and the one route without the API
     token (ADR-021).
--   `GET /ready` (#59, token required) runs three checks concurrently,
+-   `GET /ready` (#59, token required) runs four checks concurrently,
     each limited to 3 s, and returns one status word per component:
+    -   `llama_swap` (ADR-040): `ok` when llama-swap lists the default
+        model (`GET /v1/models`; this never loads the model);
+        `off_network` when the host is untrusted; otherwise
+        `unavailable`, `not_configured` (no `LLAMA_SWAP_MODEL`),
+        `timeout` or `error`.
     -   `ollama`: `ok` when Ollama answers and the default model is
         pulled; `off_network` when it does but the host is untrusted, so
         it takes only requests with `allow_cloud` (ADR-032); otherwise
@@ -196,7 +201,10 @@ performs acceptably until tested on the actual system.
 utilization (GPU 0) and available RAM. Uses NVML (`nvidia-ml-py`), falls
 back to parsing `nvidia-smi`, else reports "unknown".
 `has_local_headroom()` is true only when free VRAM is at least the Charter
-reserve of 1.5 GiB. Unknown GPU state counts as no headroom, so routing
+reserve of 1.5 GiB. For a request to the llama-swap model, loaded or cold
+comes from llama-swap's `/running` (never from NVML): loaded needs no new
+VRAM; cold needs `LLAMA_SWAP_MODEL_VRAM_MIB` (default 5200) plus the reserve. Unknown GPU state counts as no headroom (except for a request to a loaded
+llama-swap model, which needs no new VRAM), so routing
 prefers cloud unless privacy or a manual override says otherwise. Each
 result includes a loggable reason. The free VRAM figure already accounts
 for any model Ollama has loaded. It does not predict how much a model
@@ -227,7 +235,8 @@ with `ast` and reports each violation as file:line. It allows `.generate`
 only in `router/identity_call.py`. It allows `._generate` only in
 `router/contract.py`, because calling it directly skips the privacy check,
 timeout and error scrubbing. It allows `anthropic` imports only in
-`router/claude.py` and `ollama` imports only in `router/ollama.py`.
+`router/claude.py` and `ollama` imports only in `router/ollama.py`. The
+llama-swap adapter uses `httpx` only, so it needs no such rule.
 Sensitive data never goes to cloud. Per-request owner approval for
 Sensitive → cloud (docs/05 §7.1) isn't implemented yet.
 

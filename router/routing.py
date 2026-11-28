@@ -79,6 +79,7 @@ from router.contract import (
 )
 from router.hardware import MIN_FREE_VRAM_BYTES, HardwareSnapshot, Headroom, has_local_headroom
 from router.identity_call import call_with_identity
+from router.llama_swap import LlamaSwapProvider
 from router.memory_context import (
     MemoryContext,
     MemorySource,
@@ -326,9 +327,17 @@ class Router:
     def from_settings(
         cls, settings: Settings, identity: Identity, *, memory: MemorySource | None = None
     ) -> "Router":
-        # Local first: on equal footing, the local provider is preferred.
+        # Local first: on equal footing, the local provider is preferred, and
+        # llama-swap before Ollama (ADR-040). llama-swap needs a model name; Ollama
+        # is off unless AETHER_OLLAMA_ENABLED is set.
+        providers: list[Provider] = []
+        if settings.llama_swap_model is not None:
+            providers.append(LlamaSwapProvider.from_settings(settings))
+        if settings.aether_ollama_enabled:
+            providers.append(OllamaProvider.from_settings(settings))
+        providers.append(ClaudeProvider.from_settings(settings))
         return cls(
-            [OllamaProvider.from_settings(settings), ClaudeProvider.from_settings(settings)],
+            providers,
             identity,
             secret_check=SecretCheck.from_settings(settings),
             memory=memory,
@@ -349,14 +358,29 @@ class Router:
                     extra={"provider": provider.name, "error_type": type(exc).__name__},
                 )
 
-    async def _headroom(self) -> Headroom | None:
+    async def _snapshot(self) -> HardwareSnapshot | None:
         try:
             # The probe blocks (NVML / nvidia-smi subprocess); keep the event loop free.
-            snapshot = await asyncio.to_thread(self._probe)
+            return await asyncio.to_thread(self._probe)
         except Exception as exc:  # probe must not raise; treat a failure as unknown
             logger.warning("Hardware probe failed", extra={"reason": type(exc).__name__})
             return None
-        return has_local_headroom(snapshot, self._min_free_vram_bytes)
+
+    def _headroom(
+        self, snapshot: HardwareSnapshot | None, target: Provider | None, loaded: bool
+    ) -> Headroom | None:
+        """The VRAM check for the provider a request would go to (None: not probed)."""
+        if isinstance(target, LlamaSwapProvider):
+            # A loaded model needs no GPU reading; a cold one needs free VRAM.
+            if snapshot is None and not loaded:
+                return None
+            return has_local_headroom(
+                snapshot or HardwareSnapshot(gpu=hardware.UNKNOWN_GPU, ram_available_bytes=None),
+                self._min_free_vram_bytes,
+                model_bytes=target.vram_bytes,
+                model_loaded=loaded,
+            )
+        return has_local_headroom(snapshot, self._min_free_vram_bytes) if snapshot else None
 
     async def decide(
         self,
@@ -392,17 +416,31 @@ class Router:
                 # checked, and a cloud override runs no GPU probe (#121).
                 eligible = [p for p in eligible if p.name == options.override]
             need_probe = any(p.info.kind == "local" for p in eligible)
-            headroom_task = asyncio.ensure_future(self._headroom()) if need_probe else None
+            llama_swap = next((p for p in eligible if isinstance(p, LlamaSwapProvider)), None)
+            snapshot_task = asyncio.ensure_future(self._snapshot()) if need_probe else None
+            # Loaded or cold comes from llama-swap's /running, not from the GPU.
+            loaded_task = (
+                asyncio.ensure_future(llama_swap.is_loaded()) if llama_swap is not None else None
+            )
             try:
                 statuses = await asyncio.gather(*(_available(p) for p in eligible))
-                headroom = await headroom_task if headroom_task is not None else None
+                snapshot = await snapshot_task if snapshot_task is not None else None
+                loaded = await loaded_task if loaded_task is not None else False
             finally:
                 # Cancelled (a client disconnect) or failed: don't leave the probe
-                # task behind unawaited (#121).
-                if headroom_task is not None and not headroom_task.done():
-                    headroom_task.cancel()
+                # tasks behind unawaited (#121).
+                for task in (snapshot_task, loaded_task):
+                    if task is not None and not task.done():
+                        task.cancel()
 
             available = {p.name: ok for p, ok in zip(eligible, statuses, strict=True)}
+            # The model-aware check applies only to a request that goes to the
+            # llama-swap model itself (ADR-040): the first usable local provider, as
+            # choose_route picks it. Any other local provider gets the plain check.
+            first_local = next(
+                (p for p in eligible if p.info.kind == "local" and available.get(p.name)), None
+            )
+            headroom = self._headroom(snapshot, first_local, loaded)
             candidates = [
                 Candidate(
                     name=p.name,
