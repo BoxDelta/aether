@@ -550,7 +550,7 @@ def test_patch_and_delete_need_a_uuid(core: tuple[Core, TestClient]) -> None:
         ("post", "/memory", {"json": record(**{"diagnosis.migraine": "x"})}, ["body"]),
         ("post", "/memory/search", {"json": {"query": "teal", "Sam's address": 1}}, ["body"]),
         ("get", "/memory", {"params": {"diagnosis.migraine": "1"}}, ["query"]),
-        ("get", "/memory/export", {"params": {"my-bank-pin": "4711"}}, ["query"]),
+        ("get", "/memory/export", {"params": {"my-bank-pin": "4711z"}}, ["query"]),
     ],
 )
 def test_an_unknown_field_name_is_never_echoed(
@@ -563,7 +563,7 @@ def test_an_unknown_field_name_is_never_echoed(
     c, client = core
     r = getattr(client, method)(path, **kwargs)
     assert field_errors(r) == [[*loc, UNKNOWN_FIELD]]
-    for name in ("diagnosis", "migraine", "Sam", "bank", "4711"):
+    for name in ("diagnosis", "migraine", "Sam", "bank", "4711z"):
         assert name not in r.text
     assert_clean(c, r)
 
