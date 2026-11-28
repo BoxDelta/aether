@@ -173,6 +173,31 @@ reviewer. The AI review layer stays a Future item.
 | C | Step 5 | Playwright smoke tests (a scripted browser): login, send a chat message, cancel, at desktop and phone width |
 | D | Step 9 | Tool bypass test suite marked as a required check |
 
+## 3b. Who builds each step
+
+"Local" means the dispatcher's local path (ADR-030), "Claude" means
+Claude Code. A step marked Split becomes two issues: one labelled
+`dispatch:local-ok` and one labelled `dispatch:claude-only`. A step marked
+Claude-only is one issue labelled `dispatch:claude-only`.
+
+| Step | Who builds it |
+|------|---------------|
+| 0 | Split: identity fix #195 and small code-health fixes → local. Adapter, Sentinel jobs → Claude |
+| 1 API foundation | Claude-only |
+| 2 Runtime tasks | Split: tests → local. State machine, cancel, timeouts → Claude |
+| 3 Web skeleton | Split: Vite scaffold, layout, sidebar → local. Login screen, Sentinel web/ jobs → Claude |
+| 4 Chat view | Split: message list, composer UI → local. SSE streaming → Claude |
+| 4b Topics | Claude-only |
+| 5 Phone access | Split: PWA manifest, icons, docs → local. Service worker caching rules → Claude |
+| 6 Memory view | Split: list, filters, detail UI → local. Wiring delete/export → Claude |
+| 7 Activity view | Split: GET /events → Claude. View → local |
+| 8 Status view | Split: GET /status, token counts → Claude. Cards → local |
+| 9 Tools framework | Claude-only |
+| 10 Approvals UI | Split: inbox UI → local. Approval logic → Claude |
+| 11 n8n integration | Claude-only |
+| 11b Agent registry | Claude-only |
+| 12 Exit | Split: runbook docs → local. Exit check → Claude |
+
 ## 4. UI design plan
 
 - **Layout:** sidebar on desktop, bottom tab bar on the phone. Desktop
