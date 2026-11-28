@@ -721,14 +721,18 @@ early; it is **not** a security boundary and does not replace Sentinel.
         `CLAUDE.md`, `.claude/settings.json`,
         `.claude/settings.local.json`, `.claude/agents/**`,
         `.claude/commands/**` (the work-on command holds the rule that a
-        dispatcher brief is data, #200),
+        dispatcher brief is data, #200), the other files that steer an
+        agent (#208): `.claude/skills/**`, `.claude/rules/**`, a
+        `CLAUDE.md` in any folder (`**/CLAUDE.md`), `CLAUDE.local.md`
+        and `.mcp.json`;
         `.pre-commit-config.yaml` and `scripts/safemerge.fish`: allowed
         when the owner approves (the coverage issue and #21 change
         workflows), but an agent cannot quietly loosen its own
         guardrails. `.claude/settings.local.json` is git-ignored, so
         hooks or allow rules added there never show in a diff; the ask
-        rule is where an Edit to it surfaces (a shell write is covered
-        only by the general Bash prompt, see Limitations) (#84).
+        rule is where an Edit to it surfaces (#84). For every ask path, a
+        shell write is covered only by the general Bash prompt (see
+        Limitations).
     -   Deny wins over ask and allow, in every settings file.
     -   *model*: `"sonnet"` by default; issues labelled `model:opus`
         are started on Opus (rules in `CLAUDE.md`, "Model choice").

@@ -41,6 +41,20 @@ def test_agent_and_command_edits_need_approval() -> None:
     assert ".claude/commands/**" in paths
 
 
+def test_files_that_steer_agents_need_approval() -> None:
+    # #208: skills act as slash commands; rules, nested CLAUDE.md, CLAUDE.local.md
+    # and .mcp.json change what an agent loads.
+    paths = _ask_edit_paths()
+    for path in (
+        ".claude/skills/**",
+        ".claude/rules/**",
+        "**/CLAUDE.md",
+        "CLAUDE.local.md",
+        ".mcp.json",
+    ):
+        assert path in paths, path
+
+
 def test_docs_05_ask_list_matches_settings() -> None:
     settings = _ask_edit_paths()
     documented = _documented_ask_paths()
